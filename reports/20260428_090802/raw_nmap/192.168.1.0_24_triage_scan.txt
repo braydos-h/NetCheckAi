@@ -1,0 +1,141 @@
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:38 +0930
+Nmap scan report for 192.168.1.1
+Host is up (0.00013s latency).
+Not shown: 96 filtered tcp ports (no-response), 2 closed tcp ports (reset)
+Some closed ports may be reported as filtered due to --defeat-rst-ratelimit
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.4 (protocol 2.0)
+80/tcp open  http    Golang net/http server
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port80-TCP:V=7.98%I=7%D=4/28%Time=69F0791F%P=i686-pc-windows-windows%r(
+SF:GetRequest,1000,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20n
+SF:osniff\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x20202
+SF:6\x2009:08:44\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\
+SF:n\r\n<!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"
+SF:Content-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<l
+SF:ink\x20rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<
+SF:title>Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet
+SF:\"\x20type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"s
+SF:creen\">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\
+SF:"width=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x
+SF:20\x20\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,
+SF:\x20\.button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x2
+SF:0\x20\x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20
+SF:\x20\x20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.butt
+SF:on-link:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20")%r(HTTPOptions,
+SF:B9,"HTTP/1\.0\x20405\x20Method\x20Not\x20Allowed\r\nContent-Type:\x20te
+SF:xt/plain;\x20charset=utf-8\r\nX-Content-Type-Options:\x20nosniff\r\nDat
+SF:e:\x20Tue,\x2028\x20Apr\x202026\x2009:08:44\x20GMT\r\nContent-Length:\x
+SF:2019\r\n\r\nMethod\x20not\x20allowed\n")%r(RTSPRequest,67,"HTTP/1\.1\x2
+SF:0400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf-8
+SF:\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request")%r(FourOhFourReq
+SF:uest,1000,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20nosniff
+SF:\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x200
+SF:9:08:44\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\n\r\n<
+SF:!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"Conten
+SF:t-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<link\x2
+SF:0rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<title>
+SF:Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet\"\x20
+SF:type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"screen\
+SF:">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\"width
+SF:=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x20\x20
+SF:\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,\x20\.
+SF:button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-lin
+SF:k:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20");
+MAC Address: 74:24:9F:06:E6:F5 (Tibro)
+
+Nmap scan report for 192.168.1.40
+Host is up (0.0015s latency).
+Not shown: 97 closed tcp ports (reset)
+PORT      STATE SERVICE    VERSION
+2001/tcp  open  upnp       Platinum unpnd 1.0.4.9 (arch: i686; UPnP 1.0; DLNADOC 1.50)
+3000/tcp  open  tcpwrapped
+49152/tcp open  upnp
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port49152-TCP:V=7.98%I=7%D=4/28%Time=69F0791F%P=i686-pc-windows-windows
+SF:%r(FourOhFourRequest,F5,"HTTP/1\.0\x20500\x20Internal\x20Server\x20Erro
+SF:r\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\
+SF:x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nC
+SF:ONTENT-LENGTH:\x2060\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><
+SF:h1>500\x20Internal\x20Server\x20Error</h1></body></html>")%r(GetRequest
+SF:,F5,"HTTP/1\.0\x20500\x20Internal\x20Server\x20Error\r\nSERVER:\x20Linu
+SF:x/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LG
+SF:E_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2060
+SF:\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>500\x20Internal\x
+SF:20Server\x20Error</h1></body></html>")%r(HTTPOptions,E9,"HTTP/0\.0\x205
+SF:01\x20Not\x20Implemented\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1
+SF:,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.0
+SF:0\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2054\r\nCONTENT-TYPE:\x20text/ht
+SF:ml\r\n\r\n<html><body><h1>501\x20Not\x20Implemented</h1></body></html>"
+SF:)%r(RTSPRequest,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Li
+SF:nux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20
+SF:LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x20
+SF:50\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20R
+SF:equest</h1></body></html>")%r(RPCCheck,E1,"HTTP/0\.0\x20400\x20Bad\x20R
+SF:equest\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x2
+SF:0LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50
+SF:\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><b
+SF:ody><h1>400\x20Bad\x20Request</h1></body></html>")%r(DNSVersionBindReqT
+SF:CP,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-
+SF:612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/
+SF:1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT
+SF:-TYPE:\x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20Request</h1></
+SF:body></html>")%r(SIPOptions,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nS
+SF:ERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20Web
+SF:OS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT
+SF:-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>400
+SF:\x20Bad\x20Request</h1></body></html>");
+MAC Address: 40:2F:86:21:9E:12 (LG Innotek)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Nmap scan report for 192.168.1.212
+Host is up (0.0036s latency).
+Not shown: 95 closed tcp ports (reset)
+PORT     STATE SERVICE       VERSION
+135/tcp  open  msrpc         Microsoft Windows RPC
+139/tcp  open  netbios-ssn   Microsoft Windows netbios-ssn
+445/tcp  open  microsoft-ds?
+5357/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+6646/tcp open  tcpwrapped
+MAC Address: 1C:BF:C0:AF:DC:E1 (Chongqing Fugui Electronics)
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Nmap scan report for 192.168.1.225
+Host is up (0.019s latency).
+Not shown: 96 closed tcp ports (reset), 1 filtered tcp port (no-response)
+Some closed ports may be reported as filtered due to --defeat-rst-ratelimit
+PORT    STATE SERVICE    VERSION
+22/tcp  open  ssh        Dropbear sshd 2012.55 (protocol 2.0)
+80/tcp  open  http       TP-LINK WAP http config
+443/tcp open  ssl/https?
+MAC Address: 2A:87:BA:0B:7B:B5 (Unknown)
+Service Info: OS: Linux; Device: WAP; CPE: cpe:/o:linux:linux_kernel
+
+Nmap scan report for 192.168.1.165
+Host is up (0.000012s latency).
+Not shown: 99 closed tcp ports (reset)
+PORT    STATE SERVICE VERSION
+135/tcp open  msrpc   Microsoft Windows RPC
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 6 IP addresses (6 hosts up) scanned in 62.00 seconds
+STDERR:

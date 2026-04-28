@@ -106,11 +106,10 @@ class NVDClient:
         """Synchronous wrapper around :meth:`search`."""
         try:
             loop = asyncio.get_running_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, self.search(query))
-                    return future.result()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, self.search(query))
+                return future.result()
         except RuntimeError:
             pass
         return asyncio.run(self.search(query))

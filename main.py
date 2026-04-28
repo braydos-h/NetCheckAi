@@ -30,6 +30,7 @@ from tools.nmap_tools import (
     ScanProfileName,
     classify_safe_nmap_command,
     extract_triage_ranked,
+    ip_sort_key,
     parse_ipv4_networks,
     parse_live_hosts,
     parse_nmap_xml,
@@ -53,7 +54,9 @@ from tools.sub_agents import (
     spawn_sub_agents,
 )
 from tools.activity_log import ActivityLog
-from tools.interactive_ui import interactive_menu
+
+from tools.config_loader import load_config
+from tools.utils import get_field, to_plain_data
 
 
 SYSTEM_PROMPT = """You are a defensive local-network vulnerability assessor.
@@ -194,10 +197,10 @@ class ControllerPolicy:
     def approve(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str, str | None, str | None]:
         if self.tool_calls_used >= self.max_tool_calls:
             return False, f"BLOCKED: max_tool_calls={self.max_tool_calls} reached.", None, None
-        self.tool_calls_used += 1
 
         try:
             if tool_name == "run_nmap_ping_sweep":
+                self.tool_calls_used += 1
                 network = validate_subnet(
                     str(arguments.get("subnet", "")),
                     self.allowed_private_cidrs,
@@ -206,6 +209,7 @@ class ControllerPolicy:
                 return self._approve_ping(str(network))
 
             if tool_name == "run_nmap_triage_scan":
+                self.tool_calls_used += 1
                 network = validate_subnet(
                     str(arguments.get("subnet", "")),
                     self.allowed_private_cidrs,
@@ -214,15 +218,19 @@ class ControllerPolicy:
                 return self._approve_triage(str(network))
 
             if tool_name == "run_nmap_basic_scan":
+                self.tool_calls_used += 1
                 return self._approve_host("basic_scan", str(arguments.get("ip", "")))
 
             if tool_name == "run_nmap_service_scan":
+                self.tool_calls_used += 1
                 return self._approve_host("service_scan", str(arguments.get("ip", "")))
 
             if tool_name == "run_nmap_vuln_scan":
+                self.tool_calls_used += 1
                 return self._approve_host("vuln_scan", str(arguments.get("ip", "")))
 
             if tool_name == "run_limited_terminal":
+                self.tool_calls_used += 1
                 classified = classify_safe_nmap_command(str(arguments.get("command", "")))
                 if classified.kind == "ping_sweep":
                     return self._approve_ping(classified.target)
@@ -231,6 +239,11 @@ class ControllerPolicy:
                 return self._approve_host(classified.kind, classified.target)
 
             if tool_name == "search_vulnerability_intel":
+                self.tool_calls_used += 1
+                return self._approve_search(str(arguments.get("query", "")))
+
+            if tool_name == "search_cve_intel":
+                self.tool_calls_used += 1
                 return self._approve_search(str(arguments.get("query", "")))
 
         except ValueError as exc:
@@ -336,16 +349,6 @@ class ControllerPolicy:
             return True, "", kind, host
 
         return False, "BLOCKED: unsupported scan kind.", None, None
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"{path} must contain a YAML mapping.")
-    return loaded
 
 
 def validate_requested_subnets(
@@ -588,7 +591,7 @@ async def run_agent_loop(
     triage_outputs: dict[str, str] = {}
 
     while policy.tool_calls_used < policy.max_tool_calls and not policy.evidence_sufficient:
-        assistant_message = stream_ollama_chat(
+        assistant_message = await stream_ollama_chat(
             client,
             model,
             messages,
@@ -632,7 +635,14 @@ async def run_agent_loop(
                     ui.pending(action_desc)
 
             ui.tool(name, arguments)
-            result = await session.call_tool(name, arguments=arguments)
+            try:
+                result = await session.call_tool(name, arguments=arguments)
+            except Exception as exc:
+                error_msg = f"ERROR: MCP tool call failed for {name}: {exc}"
+                if ui.activity:
+                    ui.activity.log("error", error_msg, detail=str(exc))
+                messages.append({"role": "tool", "tool_name": name, "content": error_msg})
+                continue
             text = mcp_result_to_text(result)
             policy.mark_success(kind, target, text)
             messages.append({"role": "tool", "tool_name": name, "content": text})
@@ -698,7 +708,7 @@ async def run_agent_loop(
                 ),
             }
         )
-        final_message = stream_ollama_chat(
+        final_message = await stream_ollama_chat(
             client,
             model,
             messages,
@@ -720,7 +730,7 @@ def sync_runner_discovery_state(runner: SafeNmapRunner, policy: ControllerPolicy
         runner.live_hosts_by_subnet[subnet] = set(hosts)
 
 
-def stream_ollama_chat(
+async def stream_ollama_chat(
     client: Any,
     model: str,
     messages: list[dict[str, Any]],
@@ -737,7 +747,9 @@ def stream_ollama_chat(
     thinking_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
 
-    for part in client.chat(model, **kwargs):
+    loop = asyncio.get_running_loop()
+    sync_chunks = list(await loop.run_in_executor(None, lambda: list(client.chat(model, **kwargs))))
+    for part in sync_chunks:
         message = get_field(part, "message", {}) or {}
         content = get_field(message, "content", "") or ""
         thinking = get_field(message, "thinking", "") or ""
@@ -902,7 +914,7 @@ def write_reports(
         host_reports[host] = markdown
 
     # Legacy generation for hosts scanned directly by main agent (not sub-agent)
-    for host in sorted(policy.assessed_hosts, key=ipaddress.ip_address):
+    for host in sorted(policy.assessed_hosts, key=ip_sort_key):
         if host in host_reports:
             continue
         raw_path = reports_dir / "raw_nmap" / f"{safe_name(host)}_scan.txt"
@@ -1009,8 +1021,10 @@ def generate_legacy_markdown(client: Any, model: str, prompt: str) -> str:
         {"role": "system", "content": REPORT_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    response = stream_ollama_chat(client, model, messages, tools=None, stream_to_console=False)
-    return response["content"].strip()
+    reply = client.chat(model, messages=messages, stream=False)
+    message = get_field(reply, "message", {}) or {}
+    content = get_field(message, "content", "") or ""
+    return content.strip()
 
 
 def read_text_limited(path: Path, limit: int) -> str:
@@ -1038,22 +1052,7 @@ def summarize_transcript_for_report(transcript: list[dict[str, Any]], limit: int
     return text
 
 
-def get_field(obj: Any, name: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
 
-
-def to_plain_data(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json", by_alias=True, exclude_none=True)
-    if isinstance(value, dict):
-        return {key: to_plain_data(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [to_plain_data(item) for item in value]
-    if isinstance(value, tuple):
-        return [to_plain_data(item) for item in value]
-    return value
 
 
 def configure_stdio() -> None:
@@ -1120,8 +1119,9 @@ async def async_main(args: argparse.Namespace) -> int:
         latest_link.symlink_to(reports_dir, target_is_directory=True)
     except OSError:
         if platform.system() == "Windows":
-            import subprocess as sp
-            sp.run(["cmd", "/c", "mklink", "/J", str(latest_link), str(reports_dir)], check=False, capture_output=True)
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(latest_link), str(reports_dir)], check=False, capture_output=True)
+            if not latest_link.exists():
+                print(f"[WARN] Could not create 'latest' link; reports directory is {reports_dir}", file=sys.stderr)
 
     safety = config.get("safety", {}) or {}
     max_hosts = int(args.max_hosts or safety.get("max_hosts", 32))
@@ -1267,7 +1267,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     # If no CLI args provided and stdin is a tty, launch interactive menu
     if not argv and sys.stdin.isatty():
-        from tools.interactive_ui import interactive_menu
+
         config = load_config(Path("config.yaml"))
         try:
             settings = interactive_menu(config)

@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///C:/Program Files (x86)/Nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.98 scan initiated Tue Apr 28 18:38:31 2026 as: &quot;C:\\Program Files (x86)\\Nmap\\nmap.EXE&quot; -sV -&#45;top-ports 100 -&#45;open -oX C:\\Users\\Alex\\Documents\\GitHub2\\NetCheckAi\\reports\\20260428_090802\\xml_nmap\\192.168.1.0_24_triage_scan.xml 192.168.1.1 192.168.1.40 192.168.1.84 192.168.1.165 192.168.1.212 192.168.1.225 -->
+<nmaprun scanner="nmap" args="&quot;C:\\Program Files (x86)\\Nmap\\nmap.EXE&quot; -sV -&#45;top-ports 100 -&#45;open -oX C:\\Users\\Alex\\Documents\\GitHub2\\NetCheckAi\\reports\\20260428_090802\\xml_nmap\\192.168.1.0_24_triage_scan.xml 192.168.1.1 192.168.1.40 192.168.1.84 192.168.1.165 192.168.1.212 192.168.1.225" start="1777367311" startstr="Tue Apr 28 18:38:31 2026" version="7.98" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="100" services="7,9,13,21-23,25-26,37,53,79-81,88,106,110-111,113,119,135,139,143-144,179,199,389,427,443-445,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000-2001,2049,2121,2717,3000,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5357,5432,5631,5666,5800,5900,6000-6001,6646,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49152-49157"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.1" addrtype="ipv4"/>
+<address addr="74:24:9F:06:E6:F5" addrtype="mac" vendor="Tibro"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.40" addrtype="ipv4"/>
+<address addr="40:2F:86:21:9E:12" addrtype="mac" vendor="LG Innotek"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.225" addrtype="ipv4"/>
+<address addr="2A:87:BA:0B:7B:B5" addrtype="mac"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.212" addrtype="ipv4"/>
+<address addr="1C:BF:C0:AF:DC:E1" addrtype="mac" vendor="Chongqing Fugui Electronics"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.84" addrtype="ipv4"/>
+<address addr="DE:CE:C2:15:48:71" addrtype="mac"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<host starttime="1777367317" endtime="1777367367"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.1" addrtype="ipv4"/>
+<address addr="74:24:9F:06:E6:F5" addrtype="mac" vendor="Tibro"/>
+<hostnames>
+</hostnames>
+<ports><extraports state="filtered" count="96">
+<extrareasons reason="no-response" count="96" proto="tcp" ports="7,9,13,21,23,25-26,37,79,81,88,106,110-111,113,119,135,139,143-144,179,199,389,427,444-445,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000-2001,2049,2121,2717,3000,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5357,5432,5631,5666,5800,5900,6000-6001,6646,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49152-49157"/>
+</extraports>
+<extraports state="closed" count="2">
+<extrareasons reason="reset" count="2" proto="tcp" ports="53,443"/>
+</extraports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="OpenSSH" version="8.4" extrainfo="protocol 2.0" method="probed" conf="10"><cpe>cpe:/a:openbsd:openssh:8.4</cpe></service></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="Golang net/http server" servicefp="SF-Port80-TCP:V=7.98%I=7%D=4/28%Time=69F0791F%P=i686-pc-windows-windows%r(GetRequest,1000,&quot;HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20nosniff\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x2009:08:44\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\n\r\n&lt;!doctype\x20html&gt;\r\n&lt;html&gt;\r\n&lt;head&gt;\r\n\t&lt;meta\x20http-equiv=\&quot;Content-Type\&quot;\x20content=\&quot;text/html;\x20charset=utf-8\&quot;\x20/&gt;\r\n\t&lt;link\x20rel=\&quot;shortcut\x20icon\&quot;\x20href=\&quot;static/favicon\.ico\&quot;&gt;\r\n\t&lt;title&gt;Starlink&lt;/title&gt;\r\n\r\n\x20\x20\x20\x20&lt;link\x20rel=\&quot;stylesheet\&quot;\x20type=\&quot;text/css\&quot;\x20href=\&quot;static/css/layout\.css\&quot;\x20media=\&quot;screen\&quot;&gt;\r\n\r\n\x20\x20\x20\x20&lt;meta\x20name=\&quot;viewport\&quot;\x20content=\&quot;width=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\&quot;&gt;\r\n\x20\x20\x20\x20&lt;style&gt;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,\x20\.button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20\x20\x20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20&quot;)%r(HTTPOptions,B9,&quot;HTTP/1\.0\x20405\x20Method\x20Not\x20Allowed\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nX-Content-Type-Options:\x20nosniff\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x2009:08:44\x20GMT\r\nContent-Length:\x2019\r\n\r\nMethod\x20not\x20allowed\n&quot;)%r(RTSPRequest,67,&quot;HTTP/1\.1\x20400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request&quot;)%r(FourOhFourRequest,1000,&quot;HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20nosniff\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x2009:08:44\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\n\r\n&lt;!doctype\x20html&gt;\r\n&lt;html&gt;\r\n&lt;head&gt;\r\n\t&lt;meta\x20http-equiv=\&quot;Content-Type\&quot;\x20content=\&quot;text/html;\x20charset=utf-8\&quot;\x20/&gt;\r\n\t&lt;link\x20rel=\&quot;shortcut\x20icon\&quot;\x20href=\&quot;static/favicon\.ico\&quot;&gt;\r\n\t&lt;title&gt;Starlink&lt;/title&gt;\r\n\r\n\x20\x20\x20\x20&lt;link\x20rel=\&quot;stylesheet\&quot;\x20type=\&quot;text/css\&quot;\x20href=\&quot;static/css/layout\.css\&quot;\x20media=\&quot;screen\&quot;&gt;\r\n\r\n\x20\x20\x20\x20&lt;meta\x20name=\&quot;viewport\&quot;\x20content=\&quot;width=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\&quot;&gt;\r\n\x20\x20\x20\x20&lt;style&gt;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,\x20\.button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20\x20\x20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20&quot;);" method="probed" conf="10"><cpe>cpe:/a:golang:go</cpe></service></port>
+</ports>
+<times srtt="125" rttvar="1435" to="100000"/>
+</host>
+<host starttime="1777367317" endtime="1777367367"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.40" addrtype="ipv4"/>
+<address addr="40:2F:86:21:9E:12" addrtype="mac" vendor="LG Innotek"/>
+<hostnames>
+</hostnames>
+<ports><extraports state="closed" count="97">
+<extrareasons reason="reset" count="97" proto="tcp" ports="7,9,13,21-23,25-26,37,53,79-81,88,106,110-111,113,119,135,139,143-144,179,199,389,427,443-445,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000,2049,2121,2717,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5357,5432,5631,5666,5800,5900,6000-6001,6646,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49153-49157"/>
+</extraports>
+<port protocol="tcp" portid="2001"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="upnp" product="Platinum unpnd" version="1.0.4.9" extrainfo="arch: i686; UPnP 1.0; DLNADOC 1.50" ostype="Linux" method="probed" conf="10"><cpe>cpe:/a:plutinosoft:platinum:1.0.4.9</cpe><cpe>cpe:/o:linux:linux_kernel</cpe></service></port>
+<port protocol="tcp" portid="3000"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="tcpwrapped" method="probed" conf="8"/></port>
+<port protocol="tcp" portid="49152"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="upnp" servicefp="SF-Port49152-TCP:V=7.98%I=7%D=4/28%Time=69F0791F%P=i686-pc-windows-windows%r(FourOhFourRequest,F5,&quot;HTTP/1\.0\x20500\x20Internal\x20Server\x20Error\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2060\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;500\x20Internal\x20Server\x20Error&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(GetRequest,F5,&quot;HTTP/1\.0\x20500\x20Internal\x20Server\x20Error\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2060\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;500\x20Internal\x20Server\x20Error&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(HTTPOptions,E9,&quot;HTTP/0\.0\x20501\x20Not\x20Implemented\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2054\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;501\x20Not\x20Implemented&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(RTSPRequest,E1,&quot;HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;400\x20Bad\x20Request&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(RPCCheck,E1,&quot;HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;400\x20Bad\x20Request&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(DNSVersionBindReqTCP,E1,&quot;HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;400\x20Bad\x20Request&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;)%r(SIPOptions,E1,&quot;HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n&lt;html&gt;&lt;body&gt;&lt;h1&gt;400\x20Bad\x20Request&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;&quot;);" method="probed" conf="10"/></port>
+</ports>
+<times srtt="1496" rttvar="540" to="100000"/>
+</host>
+<host starttime="1777367317" endtime="1777367367"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.212" addrtype="ipv4"/>
+<address addr="1C:BF:C0:AF:DC:E1" addrtype="mac" vendor="Chongqing Fugui Electronics"/>
+<hostnames>
+</hostnames>
+<ports><extraports state="closed" count="95">
+<extrareasons reason="reset" count="95" proto="tcp" ports="7,9,13,21-23,25-26,37,53,79-81,88,106,110-111,113,119,143-144,179,199,389,427,443-444,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000-2001,2049,2121,2717,3000,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5432,5631,5666,5800,5900,6000-6001,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49152-49157"/>
+</extraports>
+<port protocol="tcp" portid="135"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="msrpc" product="Microsoft Windows RPC" ostype="Windows" method="probed" conf="10"><cpe>cpe:/o:microsoft:windows</cpe></service></port>
+<port protocol="tcp" portid="139"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="netbios-ssn" product="Microsoft Windows netbios-ssn" ostype="Windows" method="probed" conf="10"><cpe>cpe:/o:microsoft:windows</cpe></service></port>
+<port protocol="tcp" portid="445"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="microsoft-ds" method="table" conf="3"/></port>
+<port protocol="tcp" portid="5357"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="http" product="Microsoft HTTPAPI httpd" version="2.0" extrainfo="SSDP/UPnP" ostype="Windows" method="probed" conf="10"><cpe>cpe:/o:microsoft:windows</cpe></service></port>
+<port protocol="tcp" portid="6646"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="tcpwrapped" method="probed" conf="8"/></port>
+</ports>
+<times srtt="3611" rttvar="666" to="100000"/>
+</host>
+<host starttime="1777367317" endtime="1777367367"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.225" addrtype="ipv4"/>
+<address addr="2A:87:BA:0B:7B:B5" addrtype="mac"/>
+<hostnames>
+</hostnames>
+<ports><extraports state="closed" count="96">
+<extrareasons reason="reset" count="96" proto="tcp" ports="7,9,13,21,23,25-26,37,79,81,88,106,110-111,113,119,135,139,143-144,179,199,389,427,444-445,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000-2001,2049,2121,2717,3000,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5357,5432,5631,5666,5800,5900,6000-6001,6646,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49152-49157"/>
+</extraports>
+<extraports state="filtered" count="1">
+<extrareasons reason="no-response" count="1" proto="tcp" ports="53"/>
+</extraports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="Dropbear sshd" version="2012.55" extrainfo="protocol 2.0" ostype="Linux" method="probed" conf="10"><cpe>cpe:/a:matt_johnston:dropbear_ssh_server:2012.55</cpe><cpe>cpe:/o:linux:linux_kernel</cpe></service></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="TP-LINK WAP http config" devicetype="WAP" method="probed" conf="10"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="https" tunnel="ssl" method="table" conf="3"/></port>
+</ports>
+<times srtt="18905" rttvar="1461" to="100000"/>
+</host>
+<host starttime="1777367367" endtime="1777367373"><status state="up" reason="localhost-response" reason_ttl="0"/>
+<address addr="192.168.1.165" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><extraports state="closed" count="99">
+<extrareasons reason="reset" count="99" proto="tcp" ports="7,9,13,21-23,25-26,37,53,79-81,88,106,110-111,113,119,139,143-144,179,199,389,427,443-445,465,513-515,543-544,548,554,587,631,646,873,990,993,995,1025-1029,1110,1433,1720,1723,1755,1900,2000-2001,2049,2121,2717,3000,3128,3306,3389,3986,4899,5000,5009,5051,5060,5101,5190,5357,5432,5631,5666,5800,5900,6000-6001,6646,7070,8000,8008-8009,8080-8081,8443,8888,9100,9999-10000,32768,49152-49157"/>
+</extraports>
+<port protocol="tcp" portid="135"><state state="open" reason="syn-ack" reason_ttl="128"/><service name="msrpc" product="Microsoft Windows RPC" ostype="Windows" method="probed" conf="10"><cpe>cpe:/o:microsoft:windows</cpe></service></port>
+</ports>
+<times srtt="12" rttvar="26" to="100000"/>
+</host>
+<runstats><finished time="1777367373" timestr="Tue Apr 28 18:39:33 2026" summary="Nmap done at Tue Apr 28 18:39:33 2026; 6 IP addresses (6 hosts up) scanned in 62.00 seconds" elapsed="62.00" exit="success"/><hosts up="6" down="0" total="6"/>
+</runstats>
+</nmaprun>

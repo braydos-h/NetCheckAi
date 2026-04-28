@@ -550,9 +550,12 @@ class SafeNmapRunner:
         if resolved:
             return resolved
 
-        windows_default = Path(r"C:\Program Files (x86)\Nmap\nmap.exe")
-        if windows_default.exists():
-            return str(windows_default)
+        for candidate in (
+            Path(r"C:\Program Files (x86)\Nmap\nmap.exe"),
+            Path(r"C:\Program Files\Nmap\nmap.exe"),
+        ):
+            if candidate.exists():
+                return str(candidate)
         return configured
 
     def _triage_argv_for_live_hosts(self, network: ipaddress.IPv4Network) -> tuple[str, ...] | None:

@@ -1,0 +1,22 @@
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:38 +0930
+Nmap scan report for 192.168.1.1
+Host is up (0.0020s latency).
+MAC Address: 74:24:9F:06:E6:F5 (Tibro)
+Nmap scan report for 192.168.1.40
+Host is up (0.0029s latency).
+MAC Address: 40:2F:86:21:9E:12 (LG Innotek)
+Nmap scan report for 192.168.1.84
+Host is up (0.068s latency).
+MAC Address: DE:CE:C2:15:48:71 (Unknown)
+Nmap scan report for 192.168.1.212
+Host is up (0.078s latency).
+MAC Address: 1C:BF:C0:AF:DC:E1 (Chongqing Fugui Electronics)
+Nmap scan report for 192.168.1.225
+Host is up (0.085s latency).
+MAC Address: 2A:87:BA:0B:7B:B5 (Unknown)
+Nmap scan report for 192.168.1.165
+Host is up.
+Nmap done: 256 IP addresses (6 hosts up) scanned in 7.03 seconds
+STDERR:

@@ -47,7 +47,6 @@ history:
 sub_agents:
   concurrency: 4
   max_rounds: 8
-  min_triage_score: 3
   mode: "auto"
 
 safety:
@@ -62,24 +61,6 @@ safety:
   require_triage_before_host_scans: true
   max_report_input_chars: 80000
   vuln_policy: "ai_decides"
-  blocked_commands:
-    - "rm"
-    - "curl"
-    - "wget"
-    - "nc"
-    - "netcat"
-    - "ssh"
-    - "hydra"
-    - "metasploit"
-    - "msfconsole"
-    - "python"
-    - "chmod"
-    - "sudo"
-    - "powershell"
-    - "pwsh"
-    - "cmd"
-    - "bash"
-    - "sh"
 
 cve_lookup:
   enabled: true

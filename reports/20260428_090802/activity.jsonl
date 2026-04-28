@@ -1,0 +1,23 @@
+{"time": "09:08:02", "category": "info", "message": "Run ID: 20260428_090802 | Profile: standard | Approval: auto | Sub-agents: on", "detail": "", "host": "", "severity": "info"}
+{"time": "09:08:06", "category": "info", "message": "MCP session initialized; loading tool schemas", "detail": "", "host": "", "severity": "info"}
+{"time": "09:08:06", "category": "info", "message": "8 tools available to the model", "detail": "", "host": "", "severity": "info"}
+{"time": "09:08:15", "category": "ping_sweep", "message": "run_nmap_ping_sweep", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}
+{"time": "09:08:22", "category": "ping", "message": "Ping sweep 192.168.1.0/24", "detail": "COMMAND: C:\\Program Files (x86)\\Nmap\\nmap.EXE -sn 192.168.1.0/24\nTARGET: 192.168.1.0/24\nRAW_REPORT: none\nOUTPUT:\nEXIT_CODE: 0\nSTDOUT:\nStarting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:38 +0930\n", "host": "", "severity": "info"}
+{"time": "09:08:31", "category": "triage_scan", "message": "run_nmap_triage_scan", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}
+{"time": "09:09:33", "category": "triage", "message": "Triage scan 192.168.1.0/24", "detail": "COMMAND: C:\\Program Files (x86)\\Nmap\\nmap.EXE -sV --top-ports 100 --open 192.168.1.1 192.168.1.40 192.168.1.84 192.168.1.165 192.168.1.212 192.168.1.225\nTARGET: 192.168.1.0/24\nRAW_REPORT: none\nOUTPUT:", "host": "", "severity": "info"}
+{"time": "09:10:09", "category": "basic_scan", "message": "run_nmap_basic_scan", "detail": "Args: {\"ip\": \"192.168.1.212\"}", "host": "", "severity": "info"}
+{"time": "09:10:30", "category": "basic_scan", "message": "run_nmap_basic_scan", "detail": "Args: {\"ip\": \"192.168.1.225\"}", "host": "", "severity": "info"}
+{"time": "09:10:40", "category": "info", "message": "spawning sub-agents for 5 suspicious host(s)", "detail": "", "host": "", "severity": "info"}
+{"time": "09:10:40", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.212", "detail": "IP: 192.168.1.212\nScore: 12\nSeverity: high\nReasons: several open ports (5); SMB/NetBIOS exposure: 139/tcp netbios-ssn Mi", "host": "192.168.1.212", "severity": "info"}
+{"time": "09:10:40", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.1", "detail": "IP: 192.168.1.1\nScore: 3\nSeverity: medium\nReasons: remote login surface: 22/tcp ssh OpenSSH 8.4 (protocol 2.0); web/admi", "host": "192.168.1.1", "severity": "info"}
+{"time": "09:10:40", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.225", "detail": "IP: 192.168.1.225\nScore: 3\nSeverity: medium\nReasons: remote login surface: 22/tcp ssh Dropbear sshd 2012.55 (protocol 2.", "host": "192.168.1.225", "severity": "info"}
+{"time": "09:10:40", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.40", "detail": "IP: 192.168.1.40\nScore: 0\nSeverity: low\nReasons: open services found but no obvious high-risk indicator\nServices: [{\"por", "host": "192.168.1.40", "severity": "info"}
+{"time": "09:10:53", "category": "basic_scan", "message": "Sub-agent 192.168.1.225: basic scan", "detail": "", "host": "192.168.1.225", "severity": "info"}
+{"time": "09:11:00", "category": "basic_scan", "message": "Sub-agent 192.168.1.40: basic scan", "detail": "", "host": "192.168.1.40", "severity": "info"}
+{"time": "09:11:03", "category": "basic_scan", "message": "Sub-agent 192.168.1.1: basic scan", "detail": "", "host": "192.168.1.1", "severity": "info"}
+{"time": "09:11:07", "category": "basic_scan", "message": "Sub-agent 192.168.1.212: basic scan", "detail": "", "host": "192.168.1.212", "severity": "info"}
+{"time": "09:11:10", "category": "service", "message": "Sub-agent 192.168.1.225: service scan", "detail": "", "host": "192.168.1.225", "severity": "info"}
+{"time": "09:11:30", "category": "service", "message": "Sub-agent 192.168.1.212: service scan", "detail": "", "host": "192.168.1.212", "severity": "info"}
+{"time": "09:11:43", "category": "vuln", "message": "Sub-agent 192.168.1.225: vuln scan", "detail": "", "host": "192.168.1.225", "severity": "info"}
+{"time": "09:11:44", "category": "service", "message": "Sub-agent 192.168.1.1: service scan", "detail": "", "host": "192.168.1.1", "severity": "info"}
+{"time": "09:12:17", "category": "service", "message": "Sub-agent 192.168.1.40: service scan", "detail": "", "host": "192.168.1.40", "severity": "info"}

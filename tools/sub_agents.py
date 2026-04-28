@@ -19,6 +19,7 @@ from tools.nmap_tools import (
 )
 from tools.search_tools import VulnerabilitySearch, sanitize_query
 from tools.cve_lookup import CVESearchSettings, NVDClient, format_cve_results
+from tools.utils import get_field
 
 
 if TYPE_CHECKING:
@@ -422,19 +423,17 @@ class HostSubAgent:
 
         self.finding.risk_level = str(data.get("risk_level", "low")).lower()
         self.finding.title = str(data.get("title", "")) or f"Assessment for {self.ip}"
-        self.finding.open_ports = data.get("open_ports", []) or []
+        open_ports = data.get("open_ports", []) or []
+        self.finding.open_ports = open_ports if isinstance(open_ports, list) else []
         self.finding.evidence = str(data.get("evidence", ""))[:4000]
         self.finding.severity_reason = str(data.get("severity_reason", ""))[:2000]
         self.finding.remediation = str(data.get("remediation", ""))[:4000]
-        self.finding.services_researched = data.get("services_researched", []) or []
-        self.finding.cves_found = data.get("cves_found", []) or []
-        self.finding.service_versions = data.get("service_versions", []) or []
-
-
-def get_field(obj: Any, name: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
+        services_researched = data.get("services_researched", []) or []
+        self.finding.services_researched = services_researched if isinstance(services_researched, list) else []
+        cves_found = data.get("cves_found", []) or []
+        self.finding.cves_found = cves_found if isinstance(cves_found, list) else []
+        service_versions = data.get("service_versions", []) or []
+        self.finding.service_versions = service_versions if isinstance(service_versions, list) else []
 
 
 async def spawn_sub_agents(

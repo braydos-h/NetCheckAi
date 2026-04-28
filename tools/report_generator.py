@@ -180,7 +180,7 @@ def generate_markdown(
         "# Network Assessment Report",
         f"\n**Run ID:** {run_id}",
         f"**Scope:** {', '.join(subnets)}",
-        f"**Generated:** {datetime.now(timezone.utc).isoformat().replace("+00:00", "")}Z\n",
+        f"**Generated:** {datetime.now(timezone.utc).isoformat().replace('+00:00', '')}Z\n",
     ]
 
     if comparison:
@@ -317,7 +317,7 @@ def generate_html(
 <div class=\"meta\">
   <strong>Run ID:</strong> {run_id}<br>
   <strong>Scope:</strong> {', '.join(subnets)}<br>
-  <strong>Generated:</strong> {datetime.now(timezone.utc).isoformat().replace("+00:00", "")}Z
+  <strong>Generated:</strong> {datetime.now(timezone.utc).isoformat().replace('+00:00', '')}Z
 </div>
 {comparison_html}
 <table>
@@ -364,15 +364,15 @@ def write_reports(
             raise
 
     written: list[Path] = []
-    if "markdown" in formats or "all" in formats:
+    if "markdown" in formats:
         md_path = run_dir / "network_summary.md"
         md_path.write_text(generate_markdown(findings, run_id, subnets, comparison), encoding="utf-8")
         written.append(md_path)
-    if "csv" in formats or "all" in formats:
+    if "csv" in formats:
         csv_path = run_dir / "findings.csv"
         csv_path.write_text(generate_csv(findings), encoding="utf-8")
         written.append(csv_path)
-    if "html" in formats or "all" in formats:
+    if "html" in formats:
         html_path = run_dir / "network_summary.html"
         html_path.write_text(generate_html(findings, run_id, subnets, comparison), encoding="utf-8")
         written.append(html_path)

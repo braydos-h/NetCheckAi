@@ -174,7 +174,7 @@ class ActivityLog:
         detail = f"Args: {json.dumps(arguments)}"
         if result:
             detail += f" | Result: {result[:120]}"
-        cat = name.replace("run_nmap_", "").replace("_", "_")
+        cat = name.replace("run_nmap_", "").replace("_", " ")
         self.log(cat, name, detail=detail)
 
     def blocked(self, reason: str) -> None:

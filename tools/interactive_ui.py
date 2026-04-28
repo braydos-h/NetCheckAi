@@ -27,7 +27,7 @@ CUSTOM_STYLE = Style([
     ("disabled", "fg:gray italic"),
 ])
 
-HISTORY_PATH = Path.home() / ".config" / "ai-powered-nmap" / "history.yaml"
+HISTORY_PATH = Path.home() / ".config" / "netcheckai" / "history.yaml"
 
 
 def _ensure_history_dir() -> None:
@@ -59,7 +59,7 @@ def ask_subnets(history: dict[str, Any]) -> list[str]:
         default=prev_str,
         instruction="Example: 192.168.1.0/24, 10.0.0.0/24",
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     subnets = [s.strip() for s in ans.split(",") if s.strip()]
     validated: list[str] = []
     for s in subnets:
@@ -80,7 +80,6 @@ def ask_profile(history: dict[str, Any]) -> str:
         Choice(
             title=f"{p:10} - {SCAN_PROFILES[p].description}",
             value=p,
-            checked=(p == default),
         )
         for p in profiles
     ]
@@ -88,7 +87,7 @@ def ask_profile(history: dict[str, Any]) -> str:
         "Select scan profile:",
         choices=choices,
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     return ans
 
 
@@ -98,7 +97,7 @@ def ask_sub_agents(history: dict[str, Any]) -> bool:
         "Enable parallel sub-agents for suspicious hosts?",
         default=default,
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
 
 
 def ask_approval_mode(history: dict[str, Any]) -> str:
@@ -113,7 +112,7 @@ def ask_approval_mode(history: dict[str, Any]) -> str:
         choices=choices,
         default=next((c for c in choices if c.value == default), choices[0]),
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     return ans
 
 
@@ -123,7 +122,7 @@ def ask_search(history: dict[str, Any]) -> bool:
         "Enable vulnerability-intelligence web search?",
         default=default,
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
 
 
 def ask_output_formats(history: dict[str, Any]) -> set[str]:
@@ -137,7 +136,7 @@ def ask_output_formats(history: dict[str, Any]) -> set[str]:
         "Select output report format(s):",
         choices=choices,
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     return set(ans) if ans else {"markdown"}
 
 
@@ -146,11 +145,11 @@ def ask_mcp_transport(history: dict[str, Any]) -> str:
     ans = select(
         "Select MCP transport:",
         choices=[
-            Choice("stdio (default, single process)", value="stdio", checked=(default == "stdio")),
-            Choice("http  (better for parallel sub-agents)", value="http", checked=(default == "http")),
+            Choice("stdio (default, single process)", value="stdio"),
+            Choice("http  (better for parallel sub-agents)", value="http"),
         ],
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     return ans
 
 
@@ -161,7 +160,7 @@ def ask_concurrency(history: dict[str, Any]) -> int:
         default=default,
         validate=lambda v: v.isdigit() and 1 <= int(v) <= 20 or "Enter 1-20",
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
     return int(ans)
 
 
@@ -181,7 +180,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         "Use Quick Start with last saved settings?",
         default=True if history else False,
         style=CUSTOM_STYLE,
-    ).unsafe_ask()
+    ).ask()
 
     if quick and history:
         subnets = history.get("subnets", [])
@@ -255,5 +254,5 @@ def approval_prompt(action_desc: str, ai_reason: str | None = None) -> bool:
     print("-" * 40)
     for line in lines:
         print(f"  {line}")
-    ans = confirm("Approve this action?", default=False, style=CUSTOM_STYLE).unsafe_ask()
+    ans = confirm("Approve this action?", default=False, style=CUSTOM_STYLE).ask()
     return ans

@@ -1,0 +1,58 @@
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.40
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:41 +0930
+Nmap scan report for 192.168.1.40
+Host is up (0.0018s latency).
+Not shown: 994 closed tcp ports (reset)
+PORT      STATE SERVICE    VERSION
+1062/tcp  open  upnp       Platinum unpnd 1.0.4.9 (arch: i686; UPnP 1.0; DLNADOC 1.50)
+2001/tcp  open  upnp       Platinum unpnd 1.0.4.9 (arch: i686; UPnP 1.0; DLNADOC 1.50)
+3000/tcp  open  tcpwrapped
+3001/tcp  open  ssl/http   LG smart TV http service
+7000/tcp  open  rtsp       AirTunes rtspd 377.25.06
+49152/tcp open  upnp
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port49152-TCP:V=7.98%I=7%D=4/28%Time=69F079AC%P=i686-pc-windows-windows
+SF:%r(FourOhFourRequest,F5,"HTTP/1\.0\x20500\x20Internal\x20Server\x20Erro
+SF:r\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\
+SF:x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nC
+SF:ONTENT-LENGTH:\x2060\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><
+SF:h1>500\x20Internal\x20Server\x20Error</h1></body></html>")%r(GetRequest
+SF:,F5,"HTTP/1\.0\x20500\x20Internal\x20Server\x20Error\r\nSERVER:\x20Linu
+SF:x/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LG
+SF:E_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2060
+SF:\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>500\x20Internal\x
+SF:20Server\x20Error</h1></body></html>")%r(HTTPOptions,E9,"HTTP/0\.0\x205
+SF:01\x20Not\x20Implemented\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1
+SF:,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.0
+SF:0\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2054\r\nCONTENT-TYPE:\x20text/ht
+SF:ml\r\n\r\n<html><body><h1>501\x20Not\x20Implemented</h1></body></html>"
+SF:)%r(RTSPRequest,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Li
+SF:nux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20
+SF:LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x20
+SF:50\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20R
+SF:equest</h1></body></html>")%r(RPCCheck,E1,"HTTP/0\.0\x20400\x20Bad\x20R
+SF:equest\r\nSERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x2
+SF:0LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50
+SF:\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><b
+SF:ody><h1>400\x20Bad\x20Request</h1></body></html>")%r(DNSVersionBindReqT
+SF:CP,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVER:\x20Linux/4\.4\.84-
+SF:612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20WebOS\x20TV\x20LGE_DLNA_SDK/
+SF:1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT-LENGTH:\x2050\r\nCONTENT
+SF:-TYPE:\x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20Request</h1></
+SF:body></html>")%r(SIPOptions,E1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nS
+SF:ERVER:\x20Linux/4\.4\.84-612\.40\.jimna\.1,\x20UPnP/1\.0,\x20LGE\x20Web
+SF:OS\x20TV\x20LGE_DLNA_SDK/1\.6\.0/00\.00\.00\x20DLNADOC/1\.50\r\nCONTENT
+SF:-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>400
+SF:\x20Bad\x20Request</h1></body></html>");
+MAC Address: 40:2F:86:21:9E:12 (LG Innotek)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 69.71 seconds
+STDERR:

@@ -1,0 +1,50 @@
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.212
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:40 +0930
+Nmap scan report for 192.168.1.212
+Host is up (0.0046s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT     STATE SERVICE       VERSION
+135/tcp  open  msrpc         Microsoft Windows RPC
+139/tcp  open  netbios-ssn   Microsoft Windows netbios-ssn
+445/tcp  open  microsoft-ds?
+5357/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+MAC Address: 1C:BF:C0:AF:DC:E1 (Chongqing Fugui Electronics)
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 20.95 seconds
+STDERR:
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.212
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:41 +0930
+Nmap scan report for 192.168.1.212
+Host is up (0.0024s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT     STATE SERVICE       VERSION
+135/tcp  open  msrpc         Microsoft Windows RPC
+139/tcp  open  netbios-ssn   Microsoft Windows netbios-ssn
+445/tcp  open  microsoft-ds?
+5357/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+MAC Address: 1C:BF:C0:AF:DC:E1 (Chongqing Fugui Electronics)
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 21.05 seconds
+STDERR:
+
+
+## service/script/os scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV -sC -O 192.168.1.212
+
+ERROR: Nmap command timed out after 180 seconds.

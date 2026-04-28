@@ -1,0 +1,84 @@
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.225
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:40 +0930
+Nmap scan report for 192.168.1.225
+Host is up (0.0045s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT    STATE    SERVICE    VERSION
+22/tcp  open     ssh        Dropbear sshd 2012.55 (protocol 2.0)
+53/tcp  filtered domain
+80/tcp  open     http       TP-LINK WAP http config
+443/tcp open     ssl/https?
+MAC Address: 2A:87:BA:0B:7B:B5 (Unknown)
+Service Info: OS: Linux; Device: WAP; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 10.01 seconds
+STDERR:
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.225
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:40 +0930
+Nmap scan report for 192.168.1.225
+Host is up (0.0049s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT    STATE    SERVICE    VERSION
+22/tcp  open     ssh        Dropbear sshd 2012.55 (protocol 2.0)
+53/tcp  filtered domain
+80/tcp  open     http       TP-LINK WAP http config
+443/tcp open     ssl/https?
+MAC Address: 2A:87:BA:0B:7B:B5 (Unknown)
+Service Info: OS: Linux; Device: WAP; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 10.01 seconds
+STDERR:
+
+
+## service/script/os scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV -sC -O 192.168.1.225
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:41 +0930
+Nmap scan report for 192.168.1.225
+Host is up (0.0065s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT    STATE    SERVICE    VERSION
+22/tcp  open     ssh        Dropbear sshd 2012.55 (protocol 2.0)
+| ssh-hostkey: 
+|   1024 11:c7:f0:08:e2:35:06:fe:0e:ef:1b:f6:3b:cf:98:4c (DSA)
+|_  1040 f6:6e:a5:31:cc:88:95:38:9f:c1:fb:52:1d:b3:bb:c6 (RSA)
+53/tcp  filtered domain
+80/tcp  open     http       TP-LINK WAP http config
+|_http-title: Site doesn't have a title (text/html; charset=utf-8).
+443/tcp open     ssl/https?
+| sslv2: 
+|   SSLv2 supported
+|_  ciphers: none
+MAC Address: 2A:87:BA:0B:7B:B5 (Unknown)
+Device type: general purpose
+Running: Linux 2.6.X
+OS CPE: cpe:/o:linux:linux_kernel:2.6
+OS details: Linux 2.6.23 - 2.6.38
+Network Distance: 1 hop
+Service Info: OS: Linux; Device: WAP; CPE: cpe:/o:linux:linux_kernel
+
+OS and Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 17.99 seconds
+STDERR:
+
+
+## vulnerability script scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE --script vuln -sV 192.168.1.225
+
+ERROR: Nmap command timed out after 300 seconds.
