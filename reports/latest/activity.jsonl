@@ -1,2 +1,0 @@
-{"time": "12:40:01", "category": "info", "message": "Run ID: 20260428_124001 | Profile: quick | Approval: auto | Sub-agents: on | Active checks: on | Exploit: standalone", "detail": "", "host": "", "severity": "info"}
-{"time": "12:40:01", "category": "info", "message": "WARNING: exploit actions are preapproved (full_access). The AI will auto-execute all commands. Target-scope enforcement, timeouts, and audit logs still apply.", "detail": "", "host": "", "severity": "info"}
