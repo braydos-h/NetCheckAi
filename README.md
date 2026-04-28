@@ -1,4 +1,4 @@
-# NetSentry Scout
+# NetCheckAi
 
 > **Turn noisy network scans into executive-ready risk insights in minutes.**
 
