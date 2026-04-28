@@ -1,4 +1,0 @@
-EXIT_CODE: 3221225786
-STDOUT:
-Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 14:49 +0930
-STDERR:

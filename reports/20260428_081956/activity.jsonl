@@ -1,3 +1,0 @@
-{"time": "08:19:56", "category": "info", "message": "Run ID: 20260428_081956 | Profile: standard | Approval: auto | Sub-agents: on", "detail": "", "host": "", "severity": "info"}
-{"time": "08:20:00", "category": "info", "message": "MCP session initialized; loading tool schemas", "detail": "", "host": "", "severity": "info"}
-{"time": "08:20:00", "category": "info", "message": "8 tools available to the model", "detail": "", "host": "", "severity": "info"}
