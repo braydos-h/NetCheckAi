@@ -53,6 +53,11 @@ from tools.sub_agents import (
 )
 from tools.activity_log import ActivityLog
 from tools.interactive_ui import interactive_menu
+from tools.active_checks import (
+    ActiveCheckPolicy,
+    ActiveCheckSettings,
+    read_active_check_records,
+)
 
 
 SYSTEM_PROMPT = """You are a defensive local-network vulnerability assessor.
@@ -560,6 +565,8 @@ async def run_agent_loop(
     use_sub_agents: bool,
     sub_agent_concurrency: int,
     max_sub_agent_rounds: int,
+    reports_dir: Path = Path("reports"),
+    active_settings: ActiveCheckSettings = ActiveCheckSettings(),
 ) -> tuple[list[dict[str, Any]], list[StructuredFinding]]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -715,6 +722,17 @@ async def run_agent_loop(
         if unique_ranked:
             ui.status(f"spawning sub-agents for {len(unique_ranked)} suspicious host(s)")
             sync_runner_discovery_state(runner, policy)
+            active_policy = None
+            if active_settings.enabled:
+                active_policy = ActiveCheckPolicy(
+                    settings=active_settings,
+                    reports_dir=reports_dir,
+                    approved_subnets=policy.approved_subnets,
+                    completed_ping_sweeps=policy.completed_ping_sweeps,
+                    live_hosts_by_subnet=policy.live_hosts_by_subnet,
+                    triaged_subnets=policy.triaged_subnets,
+                    activity_log=ui.activity,
+                )
             budget = AgentBudget(
                 max_tool_calls=policy.max_tool_calls - policy.tool_calls_used,
                 max_searches=policy.max_searches - policy.search_calls_used,
@@ -731,6 +749,7 @@ async def run_agent_loop(
                 concurrency=sub_agent_concurrency,
                 max_sub_agent_rounds=max_sub_agent_rounds,
                 activity_log=ui.activity,
+                active_policy=active_policy,
             )
             ui.status(f"sub-agents completed for {len(sub_findings)} host(s)")
 
@@ -903,6 +922,7 @@ SCAN_DEPTH_ORDER = {
     "Service": 3,
     "Vuln": 4,
     "Sub-agent": 5,
+    "Active": 6,
 }
 
 
@@ -969,6 +989,11 @@ def collect_host_evidence(
             key = port_key(port)
             existing = record.ports.get(key)
             record.ports[key] = richer_port(existing, port)
+
+    for record_data in read_active_check_records(reports_dir):
+        host = str(record_data.get("host", "")).strip()
+        if host and record_data.get("approved"):
+            host_record(host).scan_types.add("Active")
 
     return evidence
 
@@ -1043,7 +1068,7 @@ def scan_depth(record: HostEvidence) -> str:
 
 
 def deeply_scanned(record: HostEvidence) -> bool:
-    return bool(record.scan_types & {"Basic", "Service", "Vuln", "Sub-agent"})
+    return bool(record.scan_types & {"Basic", "Service", "Vuln", "Sub-agent", "Active"})
 
 
 def skipped_reason(record: HostEvidence) -> str:
@@ -1178,6 +1203,18 @@ def scan_status(text: str) -> str:
     return "Attempted"
 
 
+def active_records_for_host(records: list[dict[str, Any]], host: str) -> list[dict[str, Any]]:
+    return [record for record in records if str(record.get("host", "")) == host]
+
+
+def active_record_status(record: dict[str, Any]) -> str:
+    status = str(record.get("status", "") or "unknown")
+    if not record.get("approved"):
+        return status.capitalize()
+    exit_code = record.get("exit_code")
+    return f"{status.capitalize()} (exit {exit_code})" if exit_code is not None else status.capitalize()
+
+
 def ip_sort_for_report(value: str) -> tuple[int, str]:
     try:
         return (0, f"{int(ipaddress.ip_address(value)):012d}")
@@ -1189,7 +1226,9 @@ def build_host_report(
     record: HostEvidence,
     findings: list[Finding],
     sub_findings: list[StructuredFinding],
+    active_records: list[dict[str, Any]] | None = None,
 ) -> str:
+    active_records = active_records or []
     lines = [
         f"# Host {record.ip}",
         "",
@@ -1222,6 +1261,18 @@ def build_host_report(
         ]
         if concrete_cves:
             lines.append(f"- Concrete CVE references returned: {', '.join(concrete_cves)}")
+
+    host_active_records = active_records_for_host(active_records, record.ip)
+    if host_active_records:
+        lines.extend(["", "### Active Checks", "", "| Status | Kind | Purpose | Command | Log |", "|---|---|---|---|---|"])
+        for active in host_active_records:
+            lines.append(
+                f"| {markdown_cell(active_record_status(active))} | "
+                f"{markdown_cell(active.get('kind', ''))} | "
+                f"{markdown_cell(active.get('purpose', ''))} | "
+                f"{markdown_cell(active.get('command', ''))} | "
+                f"{markdown_cell(active.get('log_path', ''))} |"
+            )
 
     lines.extend(["", "### Inferred", "", f"- Role: {host_role_inference(record)}"])
     for finding in findings:
@@ -1256,10 +1307,14 @@ def build_network_summary(
     findings: list[Finding],
     reports_dir: Path,
     policy: ControllerPolicy,
+    active_records: list[dict[str, Any]] | None = None,
 ) -> str:
+    active_records = active_records or []
     live_hosts = sorted(evidence, key=ip_sort_for_report)
     hosts_with_ports = [ip for ip in live_hosts if evidence[ip].ports]
     selected_hosts = [ip for ip in live_hosts if deeply_scanned(evidence[ip])]
+    approved_active = [record for record in active_records if record.get("approved")]
+    completed_active = [record for record in approved_active if record.get("status") == "completed"]
     severity_counts: dict[str, int] = {}
     for finding in findings:
         severity_counts[finding.severity.lower()] = severity_counts.get(finding.severity.lower(), 0) + 1
@@ -1276,6 +1331,8 @@ def build_network_summary(
         f"- Live hosts discovered: {len(live_hosts)}",
         f"- Hosts with open TCP ports: {len(hosts_with_ports)}",
         f"- Hosts selected for deeper scans: {len(selected_hosts)}",
+        f"- Active checks approved: {len(approved_active)}",
+        f"- Active checks completed: {len(completed_active)}",
         f"- Findings by severity: {format_severity_counts(severity_counts)}",
         "",
         "Top actions:",
@@ -1327,6 +1384,26 @@ def build_network_summary(
         lines.append(
             f"| {markdown_cell(scan_type)} | {markdown_cell(target)} | {markdown_cell(status)} | {markdown_cell(source)} |"
         )
+
+    if active_records:
+        lines.extend(
+            [
+                "",
+                "## Active Checks",
+                "",
+                "| Host | Status | Kind | Purpose | Command | Log |",
+                "|---|---|---|---|---|---|",
+            ]
+        )
+        for active in active_records:
+            lines.append(
+                f"| {markdown_cell(active.get('host', ''))} | "
+                f"{markdown_cell(active_record_status(active))} | "
+                f"{markdown_cell(active.get('kind', ''))} | "
+                f"{markdown_cell(active.get('purpose', ''))} | "
+                f"{markdown_cell(active.get('command', ''))} | "
+                f"{markdown_cell(active.get('log_path', ''))} |"
+            )
 
     lines.extend(
         [
@@ -1474,10 +1551,11 @@ def write_reports(
     findings = dedupe_findings(findings)
     findings.sort(key=finding_sort_key)
 
+    active_records = read_active_check_records(reports_dir)
     evidence = collect_host_evidence(reports_dir, policy, sub_findings)
     for record in evidence.values():
         host_findings = [finding for finding in findings if finding.host == record.ip]
-        markdown = build_host_report(record, host_findings, sub_findings)
+        markdown = build_host_report(record, host_findings, sub_findings, active_records)
         (reports_dir / f"host_{safe_name(record.ip)}.md").write_text(markdown, encoding="utf-8")
 
     written: list[Path] = []
@@ -1501,6 +1579,7 @@ def write_reports(
         findings=findings,
         reports_dir=reports_dir,
         policy=policy,
+        active_records=active_records,
     )
     markdown_path = reports_dir / "network_summary.md"
     markdown_path.write_text(network_summary, encoding="utf-8")
@@ -1570,6 +1649,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-sub-agents", action="store_true", help="Disable parallel sub-agents and use single-agent sequential scans")
     parser.add_argument("--sub-agent-concurrency", type=int, default=None, help="Max concurrent sub-agent scans (default from config)")
     parser.add_argument("--max-sub-agent-rounds", type=int, default=None, help="Max rounds per sub-agent (default from config)")
+    parser.add_argument("--active-checks", action="store_true", help="Enable user-approved active custom checks for scan-discovered hosts")
     return parser.parse_args(argv)
 
 
@@ -1629,10 +1709,27 @@ async def async_main(args: argparse.Namespace) -> int:
     max_sub_agent_rounds = int(
         args.max_sub_agent_rounds or config.get("sub_agents", {}).get("max_rounds", 8)
     )
+    active_config = config.get("active_checks", {}) or {}
+    active_enabled = bool(getattr(args, "active_checks", False) or active_config.get("enabled", False))
+    if active_enabled and not use_sub_agents:
+        raise ValueError("--active-checks requires sub-agents; remove --no-sub-agents.")
+    active_settings = ActiveCheckSettings(
+        enabled=active_enabled,
+        terminal=str(active_config.get("terminal", "visible")),
+        review=str(active_config.get("review", "summary_command")),
+        workspace_dir=Path(active_config.get("workspace_dir", "active_checks")),
+        command_timeout_seconds=int(active_config.get("command_timeout_seconds", 90)),
+        max_commands_per_host=int(active_config.get("max_commands_per_host", 3)),
+        max_code_chars=int(active_config.get("max_code_chars", 20_000)),
+        max_command_chars=int(active_config.get("max_command_chars", 500)),
+    )
 
     ui = Ui(plain=args.plain, activity=ActivityLog(reports_dir))
     ui.header(model, approved_subnets, args.mcp_transport)
-    ui.status(f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | Sub-agents: {'on' if use_sub_agents else 'off'}")
+    ui.status(
+        f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | "
+        f"Sub-agents: {'on' if use_sub_agents else 'off'} | Active checks: {'on' if active_enabled else 'off'}"
+    )
 
     if args.no_search:
         os.environ["DISABLE_VULN_SEARCH"] = "1"
@@ -1721,6 +1818,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 use_sub_agents=use_sub_agents,
                 sub_agent_concurrency=sub_agent_concurrency,
                 max_sub_agent_rounds=max_sub_agent_rounds,
+                reports_dir=reports_dir,
+                active_settings=active_settings,
             )
 
     ui.status("generating reports")

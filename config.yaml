@@ -50,6 +50,16 @@ sub_agents:
   min_triage_score: 3
   mode: "auto"
 
+active_checks:
+  enabled: false
+  terminal: "visible"
+  review: "summary_command"
+  workspace_dir: "active_checks"
+  command_timeout_seconds: 90
+  max_commands_per_host: 3
+  max_code_chars: 20000
+  max_command_chars: 500
+
 safety:
   allowed_private_cidrs:
     - "10.0.0.0/8"

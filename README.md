@@ -109,6 +109,7 @@ This repository contains a CLI experience and generated report artifacts, not a 
 | Discovery prerequisite | Host-level scans require prior ping sweep evidence |
 | Triage prerequisite | Host-level scans can require triage before deeper scanning |
 | Command allowlist | `run_limited_terminal` accepts only known safe Nmap command shapes |
+| Active-check gate | Optional generated checks require discovered-live + triaged host evidence, host approval, and per-command approval |
 | Shell metacharacter rejection | Command and search inputs reject shell metacharacters |
 | Offensive term blocking | Search blocks terms such as exploit payloads, brute force tooling, and Metasploit references |
 | Private data protection | Private IP addresses and local hostnames are blocked from public web search |
@@ -123,7 +124,8 @@ This repository contains a CLI experience and generated report artifacts, not a 
 | MCP tool calling | Model actions are constrained to MCP-exposed defensive tools |
 | Per-host sub-agents | Focused workers assess suspicious hosts after triage completes |
 | Structured sub-agent findings | Sub-agents return JSON-style findings with risk, evidence, remediation, researched services, and CVEs |
-| Defensive system prompts | Prompts explicitly prohibit exploitation, brute force, payloads, and unauthorized targets |
+| Defensive system prompts | Prompts prohibit unauthorized targets, brute force, payloads, persistence, and unapproved active behavior |
+| User-approved active checks | Optional mode lets sub-agents propose custom Python or reviewed commands for approved hosts only |
 | CVE enrichment | Known product/version strings can be checked against NVD CVE API 2.0 |
 
 ### Enterprise-Relevant Features
@@ -200,6 +202,8 @@ There is no web frontend in the current repository. The user interface is a term
 | `run_limited_terminal(command)` | Compatibility wrapper for allowlisted Nmap commands | Rejects all non-allowlisted commands |
 | `search_vulnerability_intel(query)` | Defensive public vulnerability/advisory search | Sanitized, no private IPs, no offensive terms |
 | `search_cve_intel(query)` | NVD CVE lookup for known product/version strings | Sanitized query, rate-limited and cached |
+
+Active custom checks are not exposed through the MCP server. They are local host sub-agent tools only, and are available only when `--active-checks` or `active_checks.enabled` is set.
 
 ### Auth And Identity
 
@@ -505,6 +509,7 @@ python main.py [options]
 | `--no-sub-agents` | Disable parallel per-host sub-agents |
 | `--sub-agent-concurrency <n>` | Max concurrent host sub-agent scans |
 | `--max-sub-agent-rounds <n>` | Max model/tool rounds per sub-agent |
+| `--active-checks` | Enable user-approved active custom checks for scan-discovered, triaged hosts |
 
 ---
 
@@ -1005,7 +1010,7 @@ Contributions should preserve the project's defensive operating model. The most 
 | Keep scope enforcement in code | Do not rely on prompts alone for security boundaries |
 | Preserve evidence | Raw and structured artifacts should remain available for audit |
 | Prefer deterministic reporting | AI can enrich findings, but reports should be grounded in parsed evidence |
-| Avoid offensive capability drift | Do not add exploit execution, brute force, payload delivery, or persistence features |
+| Gate active validation | Custom active checks must require code-level scope checks, host approval, per-command approval, timeouts, and audit logs |
 | Test safety changes | Scope, command, and search guardrails need regression tests |
 
 ### Suggested Workflow

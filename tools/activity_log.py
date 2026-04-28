@@ -38,6 +38,8 @@ ASCII_ICONS = {
     "agent_spawn": ">",
     "agent_done": "OK",
     "agent_fail": "X",
+    "active_approval": "A",
+    "active_check": "!",
     "report": "#",
     "blocked": "X",
     "info": "i",

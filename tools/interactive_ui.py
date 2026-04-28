@@ -101,6 +101,15 @@ def ask_sub_agents(history: dict[str, Any]) -> bool:
     ).unsafe_ask()
 
 
+def ask_active_checks(history: dict[str, Any]) -> bool:
+    default = history.get("active_checks", False)
+    return confirm(
+        "Enable user-approved active custom checks for suspicious hosts?",
+        default=default,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
 def ask_approval_mode(history: dict[str, Any]) -> str:
     choices = [
         Choice("auto   - AI proposes, no interruptions", value="auto"),
@@ -197,6 +206,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
     if quick and history:
         profile = history.get("profile", "standard")
         use_sub_agents = history.get("sub_agents", True)
+        active_checks = history.get("active_checks", False)
         approval_mode = history.get("approval_mode", "auto")
         search_enabled = history.get("search", True)
         output_formats = set(history.get("output_formats", ["markdown"]))
@@ -205,6 +215,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
     else:
         profile = ask_profile(history)
         use_sub_agents = ask_sub_agents(history)
+        active_checks = ask_active_checks(history) if use_sub_agents else False
         approval_mode = ask_approval_mode(history)
         search_enabled = ask_search(history)
         output_formats = ask_output_formats(history)
@@ -218,6 +229,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         "subnets": subnets,
         "profile": profile,
         "sub_agents": use_sub_agents,
+        "active_checks": active_checks,
         "approval_mode": approval_mode,
         "search": search_enabled,
         "output_formats": list(output_formats),
@@ -242,6 +254,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         "no_sub_agents": not use_sub_agents,
         "sub_agent_concurrency": concurrency,
         "max_sub_agent_rounds": None,
+        "active_checks": active_checks,
     }
 
 

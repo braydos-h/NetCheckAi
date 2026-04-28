@@ -19,6 +19,7 @@ from tools.nmap_tools import (
 )
 from tools.search_tools import VulnerabilitySearch, sanitize_query
 from tools.cve_lookup import CVESearchSettings, NVDClient, format_cve_results
+from tools.active_checks import ActiveCheckPolicy
 
 
 if TYPE_CHECKING:
@@ -34,6 +35,16 @@ Rules:
 - Do not scan other IPs, exploit, brute force, or weaponize anything.
 - Return your findings as a structured JSON report at the end.
 - Keep all advice remediation-focused.
+"""
+
+SUB_AGENT_ACTIVE_PROMPT = """Active-check mode is enabled for this run.
+
+Additional rules:
+- Active checks are allowed only through request_active_host_session, propose_active_python, or propose_active_shell.
+- First request active host approval with a concise reason.
+- After host approval, propose one command at a time with a purpose and risk note; the user must approve the exact command before it runs.
+- Keep generated Python self-contained and use the provided --target argument or ACTIVE_CHECK_TARGET environment variable.
+- Do not attempt brute force, credential theft, persistence, destructive changes, or network contact with any non-target host.
 """
 
 SUB_AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -112,6 +123,81 @@ SUB_AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+SUB_AGENT_ACTIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "request_active_host_session",
+            "description": "Ask the user to approve active custom checks for the assigned host in this run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Why active validation is useful for this host."}
+                },
+                "required": ["reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_active_python",
+            "description": (
+                "Propose generated Python for an approved active host session. The app saves the code, "
+                "normalizes execution to python <script> --target <ip>, shows summary plus exact command, "
+                "and runs it only after user approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Simple .py filename, e.g. check_http_banner.py."},
+                    "code": {"type": "string", "description": "Self-contained Python source code."},
+                    "command": {"type": "string", "description": "Suggested command summary; execution is normalized by the app."},
+                    "purpose": {"type": "string", "description": "What the check validates."},
+                    "risk_note": {"type": "string", "description": "Operational risk and why it is bounded."},
+                },
+                "required": ["filename", "code", "command", "purpose", "risk_note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_active_shell",
+            "description": (
+                "Propose a single reviewed terminal command for an approved active host session. "
+                "The command must include only the assigned target IP and runs only after user approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Exact command line to show and run if approved."},
+                    "purpose": {"type": "string", "description": "What the command validates."},
+                    "risk_note": {"type": "string", "description": "Operational risk and why it is bounded."},
+                },
+                "required": ["command", "purpose", "risk_note"],
+            },
+        },
+    },
+]
+
+
+def sub_agent_system_prompt(active_enabled: bool) -> str:
+    if not active_enabled:
+        return SUB_AGENT_SYSTEM_PROMPT
+    active_base = SUB_AGENT_SYSTEM_PROMPT.replace(
+        "- Do not scan other IPs, exploit, brute force, or weaponize anything.",
+        "- Do not scan other IPs, brute force, bypass authentication, persist, or weaponize anything.",
+    )
+    return active_base + "\n" + SUB_AGENT_ACTIVE_PROMPT
+
+
+def build_sub_agent_tool_schemas(active_enabled: bool) -> list[dict[str, Any]]:
+    schemas = list(SUB_AGENT_TOOL_SCHEMAS)
+    if active_enabled:
+        schemas.extend(SUB_AGENT_ACTIVE_TOOL_SCHEMAS)
+    return schemas
+
 
 @dataclass
 class StructuredFinding:
@@ -125,6 +211,7 @@ class StructuredFinding:
     host: str = ""
     service_versions: list[str] = field(default_factory=list)
     cves_found: list[str] = field(default_factory=list)
+    active_checks: list[dict[str, str]] = field(default_factory=list)
 
 
 class AgentBudget:
@@ -185,6 +272,7 @@ class SubAgentTools:
         budget: AgentBudget,
         nvd: NVDClient,
         activity_log: Any | None = None,
+        active_policy: ActiveCheckPolicy | None = None,
     ):
         self.ip = ip
         self.runner = runner
@@ -192,7 +280,12 @@ class SubAgentTools:
         self.nvd = nvd
         self.budget = budget
         self.activity_log = activity_log
+        self.active_policy = active_policy
         self.transcript: list[dict[str, Any]] = []
+
+    @property
+    def active_enabled(self) -> bool:
+        return bool(self.active_policy and self.active_policy.enabled)
 
     async def run_nmap_basic_scan(self) -> str:
         if not await self.budget.try_tool():
@@ -270,6 +363,55 @@ class SubAgentTools:
         self.transcript.append({"tool": "search_cve_intel", "query": query, "result": result})
         return result
 
+    async def request_active_host_session(self, reason: str) -> str:
+        if not self.active_policy:
+            return "BLOCKED: active checks are disabled for this run."
+        result = await self.active_policy.request_host_session(self.ip, reason)
+        self.transcript.append({"tool": "request_active_host_session", "reason": reason, "result": result})
+        return result
+
+    async def propose_active_python(
+        self,
+        *,
+        filename: str,
+        code: str,
+        command: str,
+        purpose: str,
+        risk_note: str,
+    ) -> str:
+        if not self.active_policy:
+            return "BLOCKED: active checks are disabled for this run."
+        if not await self.budget.try_tool():
+            if self.activity_log:
+                self.activity_log.budget_warning(0, "tool calls")
+            return "BLOCKED: global tool-call budget exhausted."
+        result = await self.active_policy.propose_active_python(
+            ip=self.ip,
+            filename=filename,
+            code=code,
+            command=command,
+            purpose=purpose,
+            risk_note=risk_note,
+        )
+        self.transcript.append({"tool": "propose_active_python", "purpose": purpose, "result": result})
+        return result
+
+    async def propose_active_shell(self, *, command: str, purpose: str, risk_note: str) -> str:
+        if not self.active_policy:
+            return "BLOCKED: active checks are disabled for this run."
+        if not await self.budget.try_tool():
+            if self.activity_log:
+                self.activity_log.budget_warning(0, "tool calls")
+            return "BLOCKED: global tool-call budget exhausted."
+        result = await self.active_policy.propose_active_shell(
+            ip=self.ip,
+            command=command,
+            purpose=purpose,
+            risk_note=risk_note,
+        )
+        self.transcript.append({"tool": "propose_active_shell", "purpose": purpose, "result": result})
+        return result
+
 
 class HostSubAgent:
     """Per-host focused LLM assessment worker."""
@@ -293,8 +435,9 @@ class HostSubAgent:
         self.finished = False
 
     async def run(self) -> StructuredFinding:
+        active_enabled = bool(getattr(self.tools, "active_enabled", False))
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT},
+            {"role": "system", "content": sub_agent_system_prompt(active_enabled)},
             {
                 "role": "user",
                 "content": (
@@ -306,7 +449,14 @@ class HostSubAgent:
                     "- run_nmap_vuln_scan (only if evidence suggests risk)\n"
                     "- search_vulnerability_intel (use for service/version strings, not IPs)\n"
                     "- search_cve_intel (use only when a known product/version is found; not for unknown services)\n"
-                    "- finish_assessment (submit your structured JSON findings)\n\n"
+                    + (
+                        "- request_active_host_session (ask the user before any custom active check)\n"
+                        "- propose_active_python (save generated Python and run only after command approval)\n"
+                        "- propose_active_shell (run one reviewed command only after command approval)\n"
+                        if active_enabled
+                        else ""
+                    )
+                    + "- finish_assessment (submit your structured JSON findings)\n\n"
                     "Run the scans in order, researching services as you go. "
                     "Then call finish_assessment with a JSON string like:\n"
                     '{"risk_level":"high","title":"Exposed SMB on Windows Server...",'
@@ -349,7 +499,12 @@ class HostSubAgent:
 
     def _sync_chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         compacted = self._compact_messages(messages)
-        kwargs: dict[str, Any] = {"messages": compacted, "stream": False, "tools": SUB_AGENT_TOOL_SCHEMAS}
+        active_enabled = bool(getattr(self.tools, "active_enabled", False))
+        kwargs: dict[str, Any] = {
+            "messages": compacted,
+            "stream": False,
+            "tools": build_sub_agent_tool_schemas(active_enabled),
+        }
         response = self.client.chat(self.model, **kwargs)
         message = get_field(response, "message", {}) or {}
         content = get_field(message, "content", "") or ""
@@ -414,6 +569,22 @@ class HostSubAgent:
             return await self.tools.search_vulnerability_intel(arguments.get("query", ""))
         if name == "search_cve_intel":
             return await self.tools.search_cve_intel(arguments.get("query", ""))
+        if name == "request_active_host_session":
+            return await self.tools.request_active_host_session(arguments.get("reason", ""))
+        if name == "propose_active_python":
+            return await self.tools.propose_active_python(
+                filename=arguments.get("filename", ""),
+                code=arguments.get("code", ""),
+                command=arguments.get("command", ""),
+                purpose=arguments.get("purpose", ""),
+                risk_note=arguments.get("risk_note", ""),
+            )
+        if name == "propose_active_shell":
+            return await self.tools.propose_active_shell(
+                command=arguments.get("command", ""),
+                purpose=arguments.get("purpose", ""),
+                risk_note=arguments.get("risk_note", ""),
+            )
         if name == "finish_assessment":
             self._finish(arguments.get("findings", "{}"))
             return "Assessment finished."
@@ -452,6 +623,7 @@ class HostSubAgent:
         self.finding.services_researched = data.get("services_researched", []) or []
         self.finding.cves_found = data.get("cves_found", []) or []
         self.finding.service_versions = data.get("service_versions", []) or []
+        self.finding.active_checks = data.get("active_checks", []) or []
 
 
 def get_field(obj: Any, name: str, default: Any = None) -> Any:
@@ -472,6 +644,7 @@ async def spawn_sub_agents(
     concurrency: int,
     max_sub_agent_rounds: int,
     activity_log: Any | None = None,
+    active_policy: ActiveCheckPolicy | None = None,
 ) -> list[StructuredFinding]:
     """Spawn sub-agent tasks for each suspicious host, respecting budgets."""
     semaphore = asyncio.Semaphore(concurrency)
@@ -493,6 +666,7 @@ async def spawn_sub_agents(
                 budget=budget,
                 nvd=nvd,
                 activity_log=activity_log,
+                active_policy=active_policy,
             )
             agent = HostSubAgent(
                 ip=ip,

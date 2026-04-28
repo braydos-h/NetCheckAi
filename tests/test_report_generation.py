@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,50 @@ def test_concrete_cves_only_appear_when_sub_agent_returns_cve(tmp_path: Path):
 
     summary = (tmp_path / "network_summary.md").read_text(encoding="utf-8")
     assert "CVE-2024-6387" in summary
+
+
+def test_active_checks_are_reported(tmp_path: Path):
+    policy = sample_policy()
+    write_sample_xml(tmp_path)
+    (tmp_path / "active_checks.jsonl").write_text(
+        json.dumps(
+            {
+                "host": "192.168.1.1",
+                "attempt_id": "attempt_1",
+                "kind": "python",
+                "approved": True,
+                "status": "completed",
+                "exit_code": 0,
+                "command": "python check.py --target 192.168.1.1",
+                "purpose": "Validate service behavior.",
+                "risk_note": "Single target only.",
+                "workspace": str(tmp_path / "active_checks" / "192.168.1.1" / "attempt_1"),
+                "log_path": str(tmp_path / "active_checks" / "192.168.1.1" / "attempt_1" / "active_check.log"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    main.write_reports(
+        client=object(),
+        model="unused",
+        reports_dir=tmp_path,
+        policy=policy,
+        transcript=[],
+        max_report_input_chars=1000,
+        run_id="run_001",
+        subnets=["192.168.1.0/24"],
+        output_formats={"markdown"},
+        sub_findings=[],
+    )
+
+    summary = (tmp_path / "network_summary.md").read_text(encoding="utf-8")
+    host_report = (tmp_path / "host_192.168.1.1.md").read_text(encoding="utf-8")
+    assert "## Active Checks" in summary
+    assert "Validate service behavior." in summary
+    assert "### Active Checks" in host_report
+    assert "Active" in host_report
 
 
 @pytest.mark.asyncio
