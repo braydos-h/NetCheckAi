@@ -45,6 +45,7 @@ from tools.report_generator import (
     write_reports as write_structured_reports,
 )
 from tools.search_tools import SearchSettings, VulnerabilitySearch
+from tools.cve_lookup import CVESearchSettings, NVDClient
 from tools.sub_agents import (
     AgentBudget,
     StructuredFinding,
@@ -65,7 +66,7 @@ Rules:
 - After each ping sweep, use run_nmap_triage_scan on the approved subnet to get a compact service view.
 - Do not scan every live IP one by one. Rank hosts from triage evidence and only scan hosts that look risky or unusual.
 - Vulnerability script scans are allowed only for in-scope hosts that already had basic and deeper service scans.
-- You may use search_vulnerability_intel for service/version evidence before deeper scans or report writing.
+- You may use search_vulnerability_intel for general vulnerability intelligence and search_cve_intel for known product/version CVE lookups. Only use search_cve_intel when a specific known product and version were discovered (e.g. 'Apache HTTPD 2.4.41'). Do not use it for unknown services or generic queries.
 - Do not search for private IPs, hostnames, exploit code, payloads, brute-force methods, or offensive instructions.
 - If web search is disabled or returns an API/key error, continue from Nmap evidence instead of retrying repeatedly.
 - Prefer the dedicated Nmap tools over run_limited_terminal.
@@ -629,6 +630,7 @@ async def run_agent_loop(
                 ranked_hosts=unique_ranked,
                 runner=runner,
                 search=search,
+                nvd=nvd,
                 client=client,
                 model=model,
                 budget=budget,
@@ -1136,6 +1138,17 @@ async def async_main(args: argparse.Namespace) -> int:
         max_results=int((config.get("search", {}) or {}).get("max_results", 5)),
     )
     search = VulnerabilitySearch(search_settings)
+
+    cve_settings = CVESearchSettings(
+        enabled=bool((config.get("cve_lookup", {}) or {}).get("enabled", True)),
+        timeout_seconds=int((config.get("cve_lookup", {}) or {}).get("timeout_seconds", 30)),
+        max_results=int((config.get("cve_lookup", {}) or {}).get("max_results", 5)),
+        cache_ttl_seconds=int((config.get("cve_lookup", {}) or {}).get("cache_ttl_seconds", 3600)),
+        cache_max_entries=int((config.get("cve_lookup", {}) or {}).get("cache_max_entries", 100)),
+        rate_limit_seconds=float((config.get("cve_lookup", {}) or {}).get("rate_limit_seconds", 6.0)),
+        api_key_env=str((config.get("cve_lookup", {}) or {}).get("api_key_env", "NVD_API_KEY")),
+    )
+    nvd = NVDClient(cve_settings)
 
     async with open_mcp_session(
         transport=args.mcp_transport,

@@ -80,3 +80,12 @@ safety:
     - "cmd"
     - "bash"
     - "sh"
+
+cve_lookup:
+  enabled: true
+  max_results: 5
+  rate_limit_seconds: 6.0
+  timeout_seconds: 30
+  cache_ttl_seconds: 3600
+  cache_max_entries: 100
+  api_key_env: "NVD_API_KEY"

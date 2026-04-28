@@ -21,6 +21,7 @@ from tools.nmap_tools import (
     validate_subnet,
 )
 from tools.search_tools import SearchSettings, VulnerabilitySearch
+from tools.cve_lookup import CVESearchSettings, NVDClient, format_cve_results
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -104,7 +105,22 @@ def build_search(config: dict[str, Any]) -> VulnerabilitySearch:
     return VulnerabilitySearch(settings)
 
 
-def create_mcp_server(runner: SafeNmapRunner, search: VulnerabilitySearch):
+def build_cve_search(config: dict[str, Any]) -> NVDClient:
+    cve_config = config.get("cve_lookup", {}) or {}
+    enabled = bool(cve_config.get("enabled", True))
+    settings = CVESearchSettings(
+        enabled=enabled,
+        timeout_seconds=int(cve_config.get("timeout_seconds", 30)),
+        max_results=int(cve_config.get("max_results", 5)),
+        cache_ttl_seconds=int(cve_config.get("cache_ttl_seconds", 3600)),
+        cache_max_entries=int(cve_config.get("cache_max_entries", 100)),
+        rate_limit_seconds=float(cve_config.get("rate_limit_seconds", 6.0)),
+        api_key_env=str(cve_config.get("api_key_env", "NVD_API_KEY")),
+    )
+    return NVDClient(settings)
+
+
+def create_mcp_server(runner: SafeNmapRunner, search: VulnerabilitySearch, nvd: NVDClient):
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError as exc:
@@ -117,7 +133,7 @@ def create_mcp_server(runner: SafeNmapRunner, search: VulnerabilitySearch):
         instructions=(
             "Restricted Nmap tools for defensive local-network assessment only. "
             "All scan targets must be runtime-approved RFC1918 IPv4 ranges. "
-            "The search tool is for defensive vulnerability advisories and remediation only."
+            "The search tools are for defensive vulnerability advisories and remediation only."
         ),
         json_response=True,
     )
@@ -156,6 +172,12 @@ def create_mcp_server(runner: SafeNmapRunner, search: VulnerabilitySearch):
     def search_vulnerability_intel(query: str) -> str:
         """Search public vulnerability advisories and remediation notes for service/version evidence."""
         return search.search_vulnerability_intel(query)
+
+    @mcp.tool()
+    def search_cve_intel(query: str) -> str:
+        """Look up CVEs in the NVD database for a known product/version string. Do not use for unknown services."""
+        entries = nvd.search_sync(query)
+        return format_cve_results(entries, query)
 
     return mcp
 
@@ -200,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     runner = build_runner(args)
     search = build_search(config)
-    mcp = create_mcp_server(runner, search)
+    nvd = build_cve_search(config)
+    mcp = create_mcp_server(runner, search, nvd)
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:

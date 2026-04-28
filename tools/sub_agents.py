@@ -18,6 +18,8 @@ from tools.nmap_tools import (
     parse_nmap_xml,
 )
 from tools.search_tools import VulnerabilitySearch, sanitize_query
+from tools.cve_lookup import CVESearchSettings, NVDClient, format_cve_results
+
 
 if TYPE_CHECKING:
     from tools.activity_log import ActivityLog
@@ -68,6 +70,20 @@ SUB_AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Service and version to search."}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_cve_intel",
+            "description": "Look up CVEs in the NVD database for a known product/version string (e.g. 'Apache HTTPD 2.4.41'). Do not use for unknown services.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Known product and version to search."}
                 },
                 "required": ["query"],
             },
@@ -167,11 +183,13 @@ class SubAgentTools:
         runner: SafeNmapRunner,
         search: VulnerabilitySearch,
         budget: AgentBudget,
+        nvd: NVDClient,
         activity_log: Any | None = None,
     ):
         self.ip = ip
         self.runner = runner
         self.search = search
+        self.nvd = nvd
         self.budget = budget
         self.activity_log = activity_log
         self.transcript: list[dict[str, Any]] = []
@@ -228,6 +246,30 @@ class SubAgentTools:
         self.transcript.append({"tool": "search_vulnerability_intel", "query": query, "result": result})
         return result
 
+    async def search_cve_intel(self, query: str) -> str:
+        """Look up CVEs via NVD for a known product/version string."""
+        try:
+            sanitize_query(query)
+        except ValueError as exc:
+            return f"BLOCKED: {exc}"
+        ok, cached = await self.budget.try_search(query)
+        if not ok:
+            if self.activity_log:
+                self.activity_log.budget_warning(0, "searches")
+            return "BLOCKED: global search budget exhausted; continue from Nmap evidence."
+        if cached is not None:
+            return f"CACHED:\n{cached}"
+        if self.activity_log:
+            self.activity_log.agent_search(self.ip, query)
+        try:
+            entries = await self.nvd.search(query)
+            result = format_cve_results(entries, query)
+        except Exception as exc:
+            result = f"ERROR: CVE lookup failed: {exc}"
+        self.budget.cache_search(query, result)
+        self.transcript.append({"tool": "search_cve_intel", "query": query, "result": result})
+        return result
+
 
 class HostSubAgent:
     """Per-host focused LLM assessment worker."""
@@ -263,6 +305,7 @@ class HostSubAgent:
                     "- run_nmap_service_scan (after basic scan)\n"
                     "- run_nmap_vuln_scan (only if evidence suggests risk)\n"
                     "- search_vulnerability_intel (use for service/version strings, not IPs)\n"
+                    "- search_cve_intel (use only when a known product/version is found; not for unknown services)\n"
                     "- finish_assessment (submit your structured JSON findings)\n\n"
                     "Run the scans in order, researching services as you go. "
                     "Then call finish_assessment with a JSON string like:\n"
@@ -351,6 +394,8 @@ class HostSubAgent:
             return await self.tools.run_nmap_vuln_scan()
         if name == "search_vulnerability_intel":
             return await self.tools.search_vulnerability_intel(arguments.get("query", ""))
+        if name == "search_cve_intel":
+            return await self.tools.search_cve_intel(arguments.get("query", ""))
         if name == "finish_assessment":
             self._finish(arguments.get("findings", "{}"))
             return "Assessment finished."
@@ -396,6 +441,7 @@ async def spawn_sub_agents(
     ranked_hosts: list[Any],
     runner: SafeNmapRunner,
     search: VulnerabilitySearch,
+    nvd: NVDClient,
     client: Any,
     model: str,
     budget: AgentBudget,
@@ -416,7 +462,7 @@ async def spawn_sub_agents(
                 return StructuredFinding(host=ip, title=f"Skipped {ip}: host budget exhausted", risk_level="low")
             if activity_log:
                 activity_log.agent_spawn(ip, triage_context[:120])
-            tools = SubAgentTools(ip, runner, search, budget, activity_log=activity_log)
+            tools = SubAgentTools(ip, runner, search, nvd, budget, activity_log=activity_log)
             agent = HostSubAgent(
                 ip=ip,
                 triage_context=triage_context,

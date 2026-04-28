@@ -36,6 +36,8 @@ class Finding:
     remediation: str = ""
     next_scan: str = ""
     cve_refs: list[str] = field(default_factory=list)
+    cvss_score: float | None = None
+    cwe: str = ""
 
     @property
     def sort_key(self):
