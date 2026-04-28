@@ -16,12 +16,12 @@ It now uses a triage-first workflow so the AI does not waste time deep-scanning 
 
 - `main.py`: Ollama controller, MCP client, scan-order policy, streaming loop, report generation.
 - `mcp_server.py`: FastMCP server exposing restricted Nmap tools.
-- `tools/nmap_tools.py`: Safe Nmap wrappers, validation, command allowlist, triage ranking, raw output writing.
+- `tools/nmap_tools.py`: Safe Nmap wrappers, validation, command allowlist, triage ranking, raw output writing, XML parsing, scan profiles.
 - `tools/search_tools.py`: Restricted SerpAPI DuckDuckGo search for defensive vulnerability intelligence.
-- `config.yaml`: Defaults for model, MCP, Nmap, reports, and safety caps.
-- `reports/network_summary.md`: Final summary report.
-- `reports/host_<ip>.md`: Per-host report.
-- `reports/raw_nmap/<ip>_scan.txt`: Raw Nmap evidence.
+- `tools/report_generator.py`: Structured report generation (Markdown, HTML, CSV) with severity, evidence, remediation, and comparison logic.
+- `config.yaml`: Defaults for model, MCP, Nmap, reports, approval, history, and safety caps.
+- `reports/<timestamp>/`: Timestamped assessment runs.
+- `reports/latest`: Symlink or junction to the most recent run.
 
 ## Install
 
@@ -78,57 +78,109 @@ Override the model:
 python main.py --subnet 192.168.1.0/24 --model kimi-k2.6:cloud
 ```
 
-Disable web search for a run:
+### Scan Profiles
+
+Choose a predefined safe scan profile with `--profile`:
+
+| Profile | Description |
+|---------|-------------|
+| `quick` | Ping sweep + traceroute only; no port scanning. |
+| `standard` | Current workflow: ping sweep, triage with top ports, selective deeper scans. |
+| `deep` | Selected safe service scripts: `-sV -sC -O` on hosts. |
+| `web` | HTTP title, headers, TLS cert/cipher checks via safe NSE scripts. |
+| `windows` | SMB security mode and protocol checks via safe NSE scripts. |
+| `udp-light` | Limited top UDP ports with strict timeout. |
 
 ```powershell
-python main.py --subnet 192.168.1.0/24 --no-search
+python main.py --subnet 192.168.1.0/24 --profile web
 ```
 
-Plain terminal output without Rich formatting:
+### Approval Modes
+
+Control how scan actions are approved:
+
+- `--approval-mode auto`: AI proposes each next scan; you approve (default).
+- `--approval-mode review`: You pick scan actions from a menu.
+- `--approval-mode manual`: You must explicitly approve every action.
 
 ```powershell
-python main.py --subnet 192.168.1.0/24 --plain
+python main.py --subnet 192.168.1.0/24 --approval-mode review
 ```
 
-## Scan Flow
+### Output Formats
 
-The controller and server both enforce this order:
-
-1. Discovery: `nmap -sn <subnet>`
-2. Triage service/version scan: `nmap -sV --top-ports 100 --open <subnet>`
-3. Basic service/version scan for selected hosts only: `nmap -sV --top-ports 1000 <ip>`
-4. Deeper service/default-script/OS scan for selected hosts: `nmap -sV -sC -O <ip>`
-5. Optional vulnerability enumeration: `nmap --script vuln -sV <ip>`
-
-The triage tool appends ranked hints based on risky services, many open ports, old-looking versions, unknown services, and admin surfaces. The AI is instructed to use those hints and advisory searches to pick only suspicious hosts for deeper scans.
-
-## Validation Examples
-
-These should be rejected before any Nmap execution:
+Generate richer reports in multiple formats:
 
 ```powershell
-python main.py --subnet 8.8.8.0/24
-python main.py --subnet 127.0.0.0/8
+# Markdown only (default)
+python main.py --subnet 192.168.1.0/24 --output markdown
+
+# HTML report
+python main.py --subnet 192.168.1.0/24 --output html
+
+# CSV findings
+python main.py --subnet 192.168.1.0/24 --output csv
+
+# All formats
+python main.py --subnet 192.168.1.0/24 --output all
 ```
 
-Terminal tool examples that are blocked:
+Reports are written under `reports/<timestamp>/` and include:
+- `network_summary.md` — Improved Markdown with severity, evidence, affected host/port, confidence, remediation, and "next scan recommended".
+- `network_summary.html` — Styled HTML report with comparison cards.
+- `findings.csv` — Structured findings for spreadsheets or SIEM ingestion.
+- `host_<ip>.md` — Legacy per-host Markdown reports.
+- `raw_nmap/` — Raw Nmap text evidence.
+- `xml_nmap/` — Parsed XML Nmap output for structured processing.
 
-```text
-curl http://example.com
-nmap -A 192.168.1.10
-nmap -sV 192.168.1.10; whoami
+### Run History & Comparisons
+
+Each run is stored in a timestamped folder. The tool automatically compares findings with the previous run and classifies them as **new**, **open**, or **resolved** when both runs exist.
+
+```powershell
+# Previous run comparison happens automatically when multiple runs exist
+reports/
+  latest -> 20260428_123000/ (junction)
+  20260428_123000/
+    findings.csv
+    network_summary.md
+    network_summary.html
+  20260427_090000/
+    findings.csv
+    ...
 ```
 
-Allowed terminal Nmap examples:
+### Faster AI Workflow
 
-```text
-nmap -sn 192.168.1.0/24
-nmap -sV --top-ports 100 --open 192.168.1.0/24
-nmap -sV --top-ports 1000 192.168.1.10
-nmap -sV -sC -O 192.168.1.10
-nmap --script vuln -sV 192.168.1.10
+The controller now gives the AI compact structured host summaries instead of huge raw Nmap text. Search results are cached per service/version, and the controller can stop early when enough evidence is collected.
+
+### Running Tests
+
+```powershell
+python -m pytest tests/ -v
 ```
 
-## Notes
+## Config Sections
 
-Use this only on networks and devices you own or are authorized to assess. The reports are defensive and remediation-focused; they intentionally avoid exploit instructions.
+Key sections in `config.yaml`:
+
+```yaml
+nmap:
+  default_profile: "standard"   # quick | standard | deep | web | windows | udp-light
+
+approval:
+  default_mode: "auto"          # auto | review | manual
+
+reports:
+  default_formats:
+    - "markdown"
+  base_dir: "reports"
+
+search:
+  cache_ttl_seconds: 3600
+  cache_max_entries: 100
+
+history:
+  retention_runs: 10
+  compare_with_previous: true
+```

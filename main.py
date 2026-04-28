@@ -1,18 +1,21 @@
-"""Ollama-driven defensive local-network assessment controller."""
+"""Ollama-driven defensive local-network assessment controller with parallel sub-agents."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import contextlib
+import csv
 import ipaddress
 import json
 import os
+import platform
 import socket
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -20,12 +23,35 @@ import yaml
 
 from tools.nmap_tools import (
     RFC1918_NETWORKS,
+    ParsedHost,
+    SCAN_PROFILES,
+    SafeNmapRunner,
+    SafeNmapSettings,
+    ScanProfileName,
     classify_safe_nmap_command,
+    extract_triage_ranked,
     parse_ipv4_networks,
+    parse_nmap_xml,
     safe_name,
     validate_subnet,
 )
-from tools.search_tools import sanitize_query
+from tools.report_generator import (
+    Finding,
+    compare_findings,
+    findings_from_parsed_hosts,
+    generate_csv,
+    generate_html,
+    generate_markdown as generate_structured_markdown,
+    write_reports as write_structured_reports,
+)
+from tools.search_tools import SearchSettings, VulnerabilitySearch
+from tools.sub_agents import (
+    AgentBudget,
+    StructuredFinding,
+    spawn_sub_agents,
+)
+from tools.activity_log import ActivityLog
+from tools.interactive_ui import interactive_menu
 
 
 SYSTEM_PROMPT = """You are a defensive local-network vulnerability assessor.
@@ -55,14 +81,14 @@ Focus on risk, evidence, likely severity, and remediation.
 
 
 class Ui:
-    """Small terminal UI with a Rich upgrade path and plain-print fallback."""
+    """Terminal UI backed by Rich with a live ActivityLog dashboard."""
 
-    def __init__(self, *, plain: bool = False) -> None:
-        self.console = None
-        if not plain:
+    def __init__(self, *, plain: bool = False, console: Any = None, activity: ActivityLog | None = None) -> None:
+        self.console = console
+        self.activity = activity
+        if console is None and not plain:
             try:
                 from rich.console import Console
-
                 self.console = Console()
             except ImportError:
                 self.console = None
@@ -76,7 +102,6 @@ class Ui:
         ]
         if self.console:
             from rich.panel import Panel
-
             self.console.print(Panel("\n".join(lines[1:]), title=lines[0], border_style="cyan"))
         else:
             print("\n" + "=" * 72)
@@ -87,23 +112,29 @@ class Ui:
             print()
 
     def status(self, message: str) -> None:
-        if self.console:
+        if self.activity:
+            self.activity.log("info", message)
+        elif self.console:
             self.console.print(f"[cyan]status[/cyan] {message}")
         else:
             print(f"[status] {message}", flush=True)
 
     def tool(self, name: str, arguments: dict[str, Any]) -> None:
         payload = json.dumps(arguments, sort_keys=True)
-        if self.console:
+        if self.activity:
+            self.activity.tool_call(name, arguments)
+        elif self.console:
             self.console.print(f"\n[bold blue]tool[/bold blue] {name} [dim]{payload}[/dim]\n")
         else:
             print(f"\n[tool] {name} {payload}\n", flush=True)
 
     def blocked(self, reason: str) -> None:
-        if self.console:
+        if self.activity:
+            self.activity.blocked(reason)
+        elif self.console:
             self.console.print(f"\n[bold yellow]blocked[/bold yellow] {reason}\n")
         else:
-            print(f"\n[blocked] {reason}\n", flush=True)
+            print(f"[blocked] {reason}\n", flush=True)
 
     def stream(self, text: str) -> None:
         if self.console:
@@ -112,10 +143,29 @@ class Ui:
             print(text, end="", flush=True)
 
     def report(self, path: Path) -> None:
-        if self.console:
+        if self.activity:
+            self.activity.report_written(path)
+        elif self.console:
             self.console.print(f"[green]report[/green] {path}")
         else:
             print(f"[report] {path}", flush=True)
+
+    def menu(self, options: list[str], title: str = "Choose an action") -> int | None:
+        """Display a menu and return the selected index, or None if cancelled."""
+        print(f"\n{title}")
+        for i, opt in enumerate(options, 1):
+            print(f"  {i}. {opt}")
+        try:
+            choice = input("Enter number (or Enter to skip): ").strip()
+            if not choice:
+                return None
+            idx = int(choice) - 1
+            if 0 <= idx < len(options):
+                return idx
+        except ValueError:
+            pass
+        print("Invalid choice; skipping.")
+        return None
 
 
 @dataclass
@@ -127,6 +177,7 @@ class ControllerPolicy:
     max_tool_calls: int
     max_searches: int
     require_triage_before_host_scans: bool = True
+    approval_mode: str = "auto"
     completed_ping_sweeps: set[str] = field(default_factory=set)
     triaged_subnets: set[str] = field(default_factory=set)
     basic_scanned_hosts: set[str] = field(default_factory=set)
@@ -134,6 +185,8 @@ class ControllerPolicy:
     vuln_scanned_hosts: set[str] = field(default_factory=set)
     tool_calls_used: int = 0
     search_calls_used: int = 0
+    search_cache: dict[str, str] = field(default_factory=dict)
+    evidence_sufficient: bool = False
 
     @property
     def assessed_hosts(self) -> set[str]:
@@ -229,9 +282,12 @@ class ControllerPolicy:
         if self.search_calls_used >= self.max_searches:
             return False, f"BLOCKED: max_searches={self.max_searches} reached.", None, None
         try:
-            sanitize_query(query)
+            from tools.search_tools import sanitize_query as _sanitize
+            _sanitize(query)
         except ValueError as exc:
             return False, f"BLOCKED: {exc}", None, None
+        if query in self.search_cache:
+            return True, f"CACHED: {query}", "search", None
         self.search_calls_used += 1
         return True, "", "search", None
 
@@ -465,7 +521,12 @@ async def run_agent_loop(
     policy: ControllerPolicy,
     approved_subnets: tuple[ipaddress.IPv4Network, ...],
     ui: Ui,
-) -> list[dict[str, Any]]:
+    runner: SafeNmapRunner,
+    search: VulnerabilitySearch,
+    use_sub_agents: bool,
+    sub_agent_concurrency: int,
+    max_sub_agent_rounds: int,
+) -> tuple[list[dict[str, Any]], list[StructuredFinding]]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -476,15 +537,14 @@ async def run_agent_loop(
                 "Workflow: run ping sweep for each subnet, then run triage scan for each "
                 "subnet. Use the triage results to rank hosts. Do not basic-scan every "
                 "live host. Only choose hosts for deeper assessment when evidence suggests "
-                "risk: exposed admin panels, old service versions, SMB/RDP/SSH/Telnet/FTP, "
-                "unknown services, many open ports, or search results indicating known CVEs. "
-                "Use search_vulnerability_intel for service/version strings, not local IPs. "
-                "Explain why each host deserves deeper scanning before or alongside the tool call."
+                "risk."
             ),
         },
     ]
 
-    while policy.tool_calls_used < policy.max_tool_calls:
+    triage_outputs: dict[str, str] = {}
+
+    while policy.tool_calls_used < policy.max_tool_calls and not policy.evidence_sufficient:
         assistant_message = stream_ollama_chat(
             client,
             model,
@@ -500,6 +560,9 @@ async def run_agent_loop(
         if not tool_calls:
             break
 
+        subnet_triage_done = all(
+            str(s) in policy.triaged_subnets for s in approved_subnets
+        )
         for call in tool_calls:
             name, arguments = extract_tool_call(call)
             allowed, reason, kind, target = policy.approve(name, arguments)
@@ -508,11 +571,72 @@ async def run_agent_loop(
                 messages.append({"role": "tool", "tool_name": name, "content": reason})
                 continue
 
+            if policy.approval_mode in ("review", "manual"):
+                action_desc = f"{name}({json.dumps(arguments)})"
+                if policy.approval_mode == "manual":
+                    print(f"\n[APPROVAL REQUIRED] {action_desc}")
+                    confirm = input("Approve? [y/N]: ").strip().lower()
+                    if confirm not in ("y", "yes"):
+                        ui.blocked("User declined approval.")
+                        messages.append({"role": "tool", "tool_name": name, "content": "BLOCKED: user declined approval."})
+                        continue
+                else:
+                    print(f"\n[PENDING] {action_desc}")
+
             ui.tool(name, arguments)
             result = await session.call_tool(name, arguments=arguments)
             text = mcp_result_to_text(result)
             policy.mark_success(kind, target, text)
             messages.append({"role": "tool", "tool_name": name, "content": text})
+            if kind == "triage_scan" and target:
+                triage_outputs[target] = text
+                if ui.activity:
+                    ui.activity.triage(target, text)
+            elif kind == "ping_sweep" and target:
+                if ui.activity:
+                    ui.activity.ping(target, text)
+
+        if (
+            use_sub_agents
+            and subnet_triage_done
+            and all(str(s) in policy.triaged_subnets for s in approved_subnets)
+        ):
+            break
+
+    sub_findings: list[StructuredFinding] = []
+    if use_sub_agents and triage_outputs:
+        all_ranked: list[Any] = []
+        for text in triage_outputs.values():
+            ranked = extract_triage_ranked(text)
+            all_ranked.extend(ranked)
+        seen: set[str] = set()
+        unique_ranked: list[Any] = []
+        for h in all_ranked:
+            if h.ip in seen:
+                continue
+            seen.add(h.ip)
+            if len(unique_ranked) < policy.max_hosts:
+                unique_ranked.append(h)
+
+        if unique_ranked:
+            ui.status(f"spawning sub-agents for {len(unique_ranked)} suspicious host(s)")
+            budget = AgentBudget(
+                max_tool_calls=policy.max_tool_calls - policy.tool_calls_used,
+                max_searches=policy.max_searches - policy.search_calls_used,
+                max_hosts=policy.max_hosts,
+            )
+            sub_findings = await spawn_sub_agents(
+                ranked_hosts=unique_ranked,
+                runner=runner,
+                search=search,
+                client=client,
+                model=model,
+                budget=budget,
+                concurrency=sub_agent_concurrency,
+                max_sub_agent_rounds=max_sub_agent_rounds,
+                activity_log=ui.activity,
+            )
+            ui.status(f"sub-agents completed for {len(sub_findings)} host(s)")
 
     if policy.tool_calls_used >= policy.max_tool_calls:
         messages.append(
@@ -535,7 +659,7 @@ async def run_agent_loop(
         if final_message["content"]:
             messages.append(final_message)
 
-    return messages
+    return messages, sub_findings
 
 
 def stream_ollama_chat(
@@ -628,6 +752,51 @@ def mcp_result_to_text(result: Any) -> str:
     return f"ERROR: {text}" if is_error else text
 
 
+def collect_structured_hosts(reports_dir: Path) -> list[ParsedHost]:
+    """Parse all XML Nmap results in the run directory."""
+    xml_dir = reports_dir / "xml_nmap"
+    hosts: list[ParsedHost] = []
+    if not xml_dir.exists():
+        return hosts
+    for xml_file in xml_dir.glob("*.xml"):
+        try:
+            hosts.extend(parse_nmap_xml(xml_file.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return hosts
+
+
+def load_previous_findings(reports_dir: Path) -> list[Finding]:
+    """Load findings from the previous run for comparison."""
+    latest = reports_dir / "latest"
+    if not latest.exists():
+        return []
+    prev_csv = latest / "findings.csv"
+    if not prev_csv.exists():
+        return []
+    findings: list[Finding] = []
+    try:
+        with prev_csv.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                findings.append(
+                    Finding(
+                        title=row.get("title", ""),
+                        severity=row.get("severity", "info"),
+                        host=row.get("host", ""),
+                        port=row.get("port", ""),
+                        service=row.get("service", ""),
+                        evidence=row.get("evidence", ""),
+                        confidence=row.get("confidence", "likely"),
+                        remediation=row.get("remediation", ""),
+                        next_scan=row.get("next_scan", ""),
+                    )
+                )
+    except Exception:
+        pass
+    return findings
+
+
 def write_reports(
     *,
     client: Any,
@@ -636,11 +805,48 @@ def write_reports(
     policy: ControllerPolicy,
     transcript: list[dict[str, Any]],
     max_report_input_chars: int,
-) -> None:
+    run_id: str,
+    subnets: list[str],
+    output_formats: set[str],
+    sub_findings: list[StructuredFinding],
+) -> list[Path]:
+    """Generate structured reports, legacy per-host markdown, and sub-agent outputs."""
     reports_dir.mkdir(parents=True, exist_ok=True)
     host_reports: dict[str, str] = {}
 
+    # Prefer sub-agent findings for host reports
+    for sf in sub_findings:
+        host = sf.host
+        if not host:
+            continue
+        report_lines: list[str] = [f"# Host {host}", ""]
+        report_lines.append(f"**Risk Level:** {sf.risk_level.upper()}\n")
+        report_lines.append(f"**Title:** {sf.title}\n")
+        if sf.open_ports:
+            report_lines.append("## Open Ports\n")
+            for port in sf.open_ports:
+                report_lines.append(
+                    f"- {port.get('port', '')}: {port.get('service', '')} {port.get('version', '')}"
+                )
+            report_lines.append("")
+        if sf.evidence:
+            report_lines.append(f"## Evidence\n{sf.evidence}\n")
+        if sf.severity_reason:
+            report_lines.append(f"## Severity Reason\n{sf.severity_reason}\n")
+        if sf.remediation:
+            report_lines.append(f"## Remediation\n{sf.remediation}\n")
+        if sf.services_researched:
+            report_lines.append(f"## Services Researched\n- {'\n- '.join(sf.services_researched)}\n")
+        if sf.cves_found:
+            report_lines.append(f"## CVE References\n- {'\n- '.join(sf.cves_found)}\n")
+        markdown = "\n".join(report_lines)
+        (reports_dir / f"host_{safe_name(host)}.md").write_text(markdown.strip() + "\n", encoding="utf-8")
+        host_reports[host] = markdown
+
+    # Legacy generation for hosts scanned directly by main agent (not sub-agent)
     for host in sorted(policy.assessed_hosts, key=ipaddress.ip_address):
+        if host in host_reports:
+            continue
         raw_path = reports_dir / "raw_nmap" / f"{safe_name(host)}_scan.txt"
         raw_text = read_text_limited(raw_path, max_report_input_chars)
         prompt = f"""Create a defensive host report for {host}.
@@ -657,16 +863,57 @@ Required sections:
 Raw Nmap evidence:
 {raw_text}
 """
-        markdown = generate_markdown(client, model, prompt)
+        markdown = generate_legacy_markdown(client, model, prompt)
         if not markdown.lstrip().startswith("#"):
             markdown = f"# Host {host}\n\n{markdown.strip()}\n"
         (reports_dir / f"host_{safe_name(host)}.md").write_text(markdown.strip() + "\n", encoding="utf-8")
         host_reports[host] = markdown
 
+    # Structured findings from XML
+    parsed_hosts = collect_structured_hosts(reports_dir)
+    findings = findings_from_parsed_hosts(parsed_hosts)
+    previous = load_previous_findings(reports_dir.parent)
+    comparison = compare_findings(findings, previous) if previous else None
+
+    # Also inject sub-agent findings into the structured CSV if possible
+    for sf in sub_findings:
+        for port in sf.open_ports:
+            findings.append(
+                Finding(
+                    title=sf.title or f"Sub-agent finding on {sf.host}",
+                    severity=sf.risk_level,
+                    host=sf.host,
+                    port=port.get("port", ""),
+                    service=port.get("service", ""),
+                    evidence=sf.evidence,
+                    confidence="likely",
+                    remediation=sf.remediation,
+                    next_scan="",
+                )
+            )
+
+    # Write structured reports
+    written = write_structured_reports(
+        reports_dir=reports_dir,
+        run_id=run_id,
+        subnets=subnets,
+        findings=findings,
+        comparison=comparison,
+        formats=output_formats,
+    )
+
+    # Legacy network summary
     transcript_summary = summarize_transcript_for_report(transcript, max_report_input_chars)
     host_report_text = "\n\n".join(
         f"## {host}\n{report[:max_report_input_chars]}" for host, report in host_reports.items()
     )
+    sub_agent_summary = ""
+    if sub_findings:
+        sub_agent_summary = "\n\n## Sub-Agent Findings\n"
+        for sf in sub_findings:
+            sub_agent_summary += f"- **{sf.host}** ({sf.risk_level.upper()}): {sf.title}\n"
+            if sf.cves_found:
+                sub_agent_summary += f"  - CVEs: {', '.join(sf.cves_found)}\n"
     summary_prompt = f"""Create reports/network_summary.md for this defensive local-network assessment.
 
 Include:
@@ -679,21 +926,27 @@ Include:
 Do not include exploit instructions.
 
 Approved subnets:
-{', '.join(str(network) for network in policy.approved_subnets)}
+{', '.join(subnets)}
 
 Assessment transcript summary:
 {transcript_summary}
 
+Sub-agent summary:
+{sub_agent_summary or "No sub-agent assessments were run."}
+
 Host reports:
 {host_report_text or "No host-level reports were generated."}
 """
-    network_summary = generate_markdown(client, model, summary_prompt)
+    network_summary = generate_legacy_markdown(client, model, summary_prompt)
     if not network_summary.lstrip().startswith("#"):
         network_summary = f"# Network Summary\n\n{network_summary.strip()}\n"
-    (reports_dir / "network_summary.md").write_text(network_summary.strip() + "\n", encoding="utf-8")
+    legacy_path = reports_dir / "network_summary.md"
+    legacy_path.write_text(network_summary.strip() + "\n", encoding="utf-8")
+    written.append(legacy_path)
+    return written
 
 
-def generate_markdown(client: Any, model: str, prompt: str) -> str:
+def generate_legacy_markdown(client: Any, model: str, prompt: str) -> str:
     messages = [
         {"role": "system", "content": REPORT_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
@@ -765,6 +1018,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--http-port", type=int, default=None)
     parser.add_argument("--plain", action="store_true", help="Disable Rich formatting even if rich is installed")
     parser.add_argument("--no-search", action="store_true", help="Disable vulnerability-intelligence web search for this run")
+    parser.add_argument("--profile", choices=tuple(SCAN_PROFILES.keys()), default=None, help="Scan profile to use")
+    parser.add_argument("--approval-mode", choices=("auto", "review", "manual"), default=None, help="Approval mode: auto (default), review (menu), manual (confirm each)")
+    parser.add_argument("--output", choices=("markdown", "html", "csv", "all"), default=None, help="Report output format(s)")
+    parser.add_argument("--no-sub-agents", action="store_true", help="Disable parallel sub-agents and use single-agent sequential scans")
+    parser.add_argument("--sub-agent-concurrency", type=int, default=None, help="Max concurrent sub-agent scans (default from config)")
+    parser.add_argument("--max-sub-agent-rounds", type=int, default=None, help="Max rounds per sub-agent (default from config)")
     return parser.parse_args(argv)
 
 
@@ -777,8 +1036,25 @@ async def async_main(args: argparse.Namespace) -> int:
     )
 
     model = args.model or config.get("ollama", {}).get("model", "kimi-k2.6:cloud")
-    reports_dir = args.reports_dir or Path(config.get("reports", {}).get("base_dir", "reports"))
+    reports_base = args.reports_dir or Path(config.get("reports", {}).get("base_dir", "reports"))
+    reports_base.mkdir(parents=True, exist_ok=True)
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    reports_dir = reports_base / run_id
     reports_dir.mkdir(parents=True, exist_ok=True)
+
+    latest_link = reports_base / "latest"
+    if latest_link.exists() or latest_link.is_symlink():
+        try:
+            latest_link.unlink()
+        except OSError:
+            pass
+    try:
+        latest_link.symlink_to(reports_dir, target_is_directory=True)
+    except OSError:
+        if platform.system() == "Windows":
+            import subprocess as sp
+            sp.run(["cmd", "/c", "mklink", "/J", str(latest_link), str(reports_dir)], check=False, capture_output=True)
 
     safety = config.get("safety", {}) or {}
     max_hosts = int(args.max_hosts or safety.get("max_hosts", 32))
@@ -787,8 +1063,30 @@ async def async_main(args: argparse.Namespace) -> int:
     require_triage = bool(safety.get("require_triage_before_host_scans", True))
     max_report_input_chars = int(safety.get("max_report_input_chars", 80_000))
     http_port = int(args.http_port or config.get("mcp", {}).get("http_port", 8000))
-    ui = Ui(plain=args.plain)
+
+    approval_mode = args.approval_mode or config.get("approval", {}).get("default_mode", "auto")
+    profile = args.profile or config.get("nmap", {}).get("default_profile", "standard")
+    output_cfg = config.get("reports", {}).get("default_formats", ["markdown"])
+    output_formats = set()
+    if args.output:
+        if args.output == "all":
+            output_formats = {"markdown", "html", "csv"}
+        else:
+            output_formats = {args.output}
+    else:
+        output_formats = set(output_cfg)
+
+    use_sub_agents = not args.no_sub_agents
+    sub_agent_concurrency = int(
+        args.sub_agent_concurrency or config.get("sub_agents", {}).get("concurrency", 4)
+    )
+    max_sub_agent_rounds = int(
+        args.max_sub_agent_rounds or config.get("sub_agents", {}).get("max_rounds", 8)
+    )
+
+    ui = Ui(plain=args.plain, activity=ActivityLog(reports_dir))
     ui.header(model, approved_subnets, args.mcp_transport)
+    ui.status(f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | Sub-agents: {'on' if use_sub_agents else 'off'}")
 
     if args.no_search:
         os.environ["DISABLE_VULN_SEARCH"] = "1"
@@ -809,7 +1107,35 @@ async def async_main(args: argparse.Namespace) -> int:
         max_tool_calls=max_tool_calls,
         max_searches=max_searches,
         require_triage_before_host_scans=require_triage,
+        approval_mode=approval_mode,
     )
+
+    # Build local runner + search so sub-agents can use them directly (no MCP round-trip)
+    nmap_config = config.get("nmap", {}) or {}
+    runner_settings = SafeNmapSettings(
+        approved_subnets=approved_subnets,
+        allowed_private_cidrs=allowed_private,
+        reports_dir=reports_dir,
+        nmap_path=str(nmap_config.get("path", "nmap")),
+        nmap_timeout_seconds=int(nmap_config.get("timeout_seconds", 180)),
+        vuln_timeout_seconds=int(nmap_config.get("vuln_timeout_seconds", 300)),
+        triage_top_ports=int(nmap_config.get("triage_top_ports", 100)),
+        max_output_chars=int(nmap_config.get("max_output_chars", 60_000)),
+        max_subnet_addresses=max_subnet_addresses,
+        scan_profile=profile,
+    )
+    runner = SafeNmapRunner(runner_settings)
+
+    search_settings = SearchSettings(
+        enabled=bool((config.get("search", {}) or {}).get("enabled", True)) and not args.no_search,
+        endpoint=str((config.get("search", {}) or {}).get("endpoint", "https://serpapi.com/search.json")),
+        engine=str((config.get("search", {}) or {}).get("engine", "duckduckgo")),
+        region=str((config.get("search", {}) or {}).get("region", "us-en")),
+        api_key_env=str((config.get("search", {}) or {}).get("api_key_env", "SERPAPI_API_KEY")),
+        timeout_seconds=int((config.get("search", {}) or {}).get("timeout_seconds", 20)),
+        max_results=int((config.get("search", {}) or {}).get("max_results", 5)),
+    )
+    search = VulnerabilitySearch(search_settings)
 
     async with open_mcp_session(
         transport=args.mcp_transport,
@@ -818,35 +1144,61 @@ async def async_main(args: argparse.Namespace) -> int:
         reports_dir=reports_dir,
         http_port=http_port,
     ) as session:
+        ui.activity.set_progress(subnets_total=len(approved_subnets))
         ui.status("MCP session initialized; loading tool schemas")
         tools_response = await session.list_tools()
         ollama_tools = mcp_tools_to_ollama(tools_response)
         ui.status(f"{len(ollama_tools)} tools available to the model")
-        transcript = await run_agent_loop(
-            client=client,
-            model=model,
-            session=session,
-            ollama_tools=ollama_tools,
-            policy=policy,
-            approved_subnets=approved_subnets,
-            ui=ui,
-        )
+        with ui.activity:
+            transcript, sub_findings = await run_agent_loop(
+                client=client,
+                model=model,
+                session=session,
+                ollama_tools=ollama_tools,
+                policy=policy,
+                approved_subnets=approved_subnets,
+                ui=ui,
+                runner=runner,
+                search=search,
+                use_sub_agents=use_sub_agents,
+                sub_agent_concurrency=sub_agent_concurrency,
+                max_sub_agent_rounds=max_sub_agent_rounds,
+            )
 
-    ui.status("generating markdown reports")
-    write_reports(
+    ui.status("generating reports")
+
+    ui.status("generating reports")
+    written = write_reports(
         client=client,
         model=model,
         reports_dir=reports_dir,
         policy=policy,
         transcript=transcript,
         max_report_input_chars=max_report_input_chars,
+        run_id=run_id,
+        subnets=[str(s) for s in approved_subnets],
+        output_formats=output_formats,
+        sub_findings=sub_findings,
     )
-    ui.report(reports_dir / "network_summary.md")
+    for path in written:
+        ui.report(path)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    argv = argv or sys.argv[1:]
+    # If no CLI args provided and stdin is a tty, launch interactive menu
+    if not argv and sys.stdin.isatty():
+        from tools.interactive_ui import interactive_menu
+        config = load_config(Path("config.yaml"))
+        try:
+            settings = interactive_menu(config)
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 0
+        # Convert dict to argparse.Namespace
+        args = argparse.Namespace(**settings)
+    else:
+        args = parse_args(argv)
     try:
         return asyncio.run(async_main(args))
     except Exception as exc:

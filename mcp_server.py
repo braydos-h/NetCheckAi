@@ -13,8 +13,10 @@ import yaml
 
 from tools.nmap_tools import (
     RFC1918_NETWORKS,
+    SCAN_PROFILES,
     SafeNmapRunner,
     SafeNmapSettings,
+    ScanProfileName,
     parse_ipv4_networks,
     validate_subnet,
 )
@@ -66,6 +68,10 @@ def build_runner(args: argparse.Namespace) -> SafeNmapRunner:
         or reports_config.get("base_dir", "reports")
     )
 
+    profile_name: ScanProfileName = args.profile or str(nmap_config.get("default_profile", "standard"))
+    if profile_name not in SCAN_PROFILES:
+        profile_name = "standard"
+
     settings = SafeNmapSettings(
         approved_subnets=tuple(approved_subnets),
         allowed_private_cidrs=tuple(allowed_private),
@@ -76,6 +82,7 @@ def build_runner(args: argparse.Namespace) -> SafeNmapRunner:
         triage_top_ports=int(nmap_config.get("triage_top_ports", 100)),
         max_output_chars=int(nmap_config.get("max_output_chars", 60_000)),
         max_subnet_addresses=max_subnet_addresses,
+        scan_profile=profile_name,
     )
     return SafeNmapRunner(settings)
 
@@ -184,6 +191,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--profile", choices=tuple(SCAN_PROFILES.keys()), default=None, help="Scan profile")
     return parser.parse_args(argv)
 
 

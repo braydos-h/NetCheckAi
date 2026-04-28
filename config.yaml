@@ -1,4 +1,4 @@
-ollama:
+﻿ollama:
   model: "kimi-k2.6:cloud"
 
 mcp:
@@ -12,6 +12,7 @@ nmap:
   vuln_timeout_seconds: 300
   triage_top_ports: 100
   max_output_chars: 60000
+  default_profile: "standard"
 
 search:
   enabled: true
@@ -21,12 +22,33 @@ search:
   api_key_env: "SERPAPI_API_KEY"
   timeout_seconds: 20
   max_results: 5
+  cache_ttl_seconds: 3600
+  cache_max_entries: 100
 
 reports:
   base_dir: "reports"
   raw_nmap_dir: "reports/raw_nmap"
+  xml_nmap_dir: "reports/xml_nmap"
   network_summary: "reports/network_summary.md"
   host_report_pattern: "reports/host_<ip>.md"
+  default_formats:
+    - "markdown"
+
+approval:
+  default_mode: "auto"
+  # auto: AI proposes each next scan, user approves
+  # review: user picks scan actions from a menu
+  # manual: user must explicitly approve every action
+
+history:
+  retention_runs: 10
+  compare_with_previous: true
+
+sub_agents:
+  concurrency: 4
+  max_rounds: 8
+  min_triage_score: 3
+  mode: "auto"
 
 safety:
   allowed_private_cidrs:
