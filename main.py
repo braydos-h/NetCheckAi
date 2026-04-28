@@ -82,74 +82,69 @@ Focus on risk, evidence, likely severity, and remediation.
 
 
 class Ui:
-    """Terminal UI backed by Rich with a live ActivityLog dashboard."""
+    """Plain terminal UI with clean, single-line output."""
 
-    def __init__(self, *, plain: bool = False, console: Any = None, activity: ActivityLog | None = None) -> None:
-        self.console = console
+    def __init__(self, *, plain: bool = False, activity: ActivityLog | None = None) -> None:
         self.activity = activity
-        if console is None and not plain:
-            try:
-                from rich.console import Console
-                self.console = Console()
-            except ImportError:
-                self.console = None
+        self.plain = plain
 
     def header(self, model: str, subnets: tuple[ipaddress.IPv4Network, ...], transport: str) -> None:
-        lines = [
-            "Defensive Local Network Assessment",
-            f"Model: {model}",
-            f"Scope: {', '.join(str(network) for network in subnets)}",
-            f"MCP transport: {transport}",
-        ]
-        if self.console:
-            from rich.panel import Panel
-            self.console.print(Panel("\n".join(lines[1:]), title=lines[0], border_style="cyan"))
-        else:
-            print("\n" + "=" * 72)
-            print(lines[0])
-            print("=" * 72)
-            for line in lines[1:]:
-                print(line)
-            print()
+        scope = ", ".join(str(network) for network in subnets)
+        print()
+        print("=" * 60)
+        print("  Defensive Local Network Assessment")
+        print("=" * 60)
+        print(f"  Model:     {model}")
+        print(f"  Scope:     {scope}")
+        print(f"  Transport: {transport}")
+        print("=" * 60)
+        print()
 
     def status(self, message: str) -> None:
         if self.activity:
             self.activity.log("info", message)
-        elif self.console:
-            self.console.print(f"[cyan]status[/cyan] {message}")
         else:
-            print(f"[status] {message}", flush=True)
+            print(f"[STATUS] {message}", flush=True)
 
     def tool(self, name: str, arguments: dict[str, Any]) -> None:
         payload = json.dumps(arguments, sort_keys=True)
         if self.activity:
             self.activity.tool_call(name, arguments)
-        elif self.console:
-            self.console.print(f"\n[bold blue]tool[/bold blue] {name} [dim]{payload}[/dim]\n")
         else:
-            print(f"\n[tool] {name} {payload}\n", flush=True)
+            print(f"[TOOL] {name} {payload}")
 
     def blocked(self, reason: str) -> None:
         if self.activity:
             self.activity.blocked(reason)
-        elif self.console:
-            self.console.print(f"\n[bold yellow]blocked[/bold yellow] {reason}\n")
         else:
-            print(f"[blocked] {reason}\n", flush=True)
+            print(f"[BLOCKED] {reason}")
 
     def stream(self, text: str) -> None:
-        if self.console:
-            self.console.print(text, end="", highlight=False, markup=False)
-        else:
-            print(text, end="", flush=True)
+        print(text, end="", flush=True)
+
+    def ai_message(self, text: str) -> None:
+        print("[AI response]")
+        for line in text.splitlines():
+            print(f"    {line}")
+        print()
+
+    def thinking(self, text: str) -> None:
+        print("[AI thinking]")
+        for line in text.splitlines():
+            print(f"    {line}")
+        print()
 
     def report(self, path: Path) -> None:
         if self.activity:
             self.activity.report_written(path)
-        elif self.console:
-            self.console.print(f"[green]report[/green] {path}")
         else:
-            print(f"[report] {path}", flush=True)
+            print(f"[REPORT] {path}")
+
+    def approval(self, action_desc: str) -> None:
+        print(f"[APPROVAL REQUIRED] {action_desc}")
+
+    def pending(self, action_desc: str) -> None:
+        print(f"[PENDING] {action_desc}")
 
     def menu(self, options: list[str], title: str = "Choose an action") -> int | None:
         """Display a menu and return the selected index, or None if cancelled."""
@@ -551,11 +546,16 @@ async def run_agent_loop(
             model,
             messages,
             tools=ollama_tools,
-            stream_to_console=True,
+            stream_to_console=False,
             ui=ui,
         )
         if assistant_message["content"] or assistant_message.get("tool_calls"):
             messages.append(assistant_message)
+
+        if assistant_message.get("content"):
+            ui.ai_message(assistant_message["content"])
+        if assistant_message.get("thinking"):
+            ui.thinking(assistant_message["thinking"])
 
         tool_calls = assistant_message.get("tool_calls", [])
         if not tool_calls:
@@ -575,14 +575,14 @@ async def run_agent_loop(
             if policy.approval_mode in ("review", "manual"):
                 action_desc = f"{name}({json.dumps(arguments)})"
                 if policy.approval_mode == "manual":
-                    print(f"\n[APPROVAL REQUIRED] {action_desc}")
+                    ui.approval(action_desc)
                     confirm = input("Approve? [y/N]: ").strip().lower()
                     if confirm not in ("y", "yes"):
                         ui.blocked("User declined approval.")
                         messages.append({"role": "tool", "tool_name": name, "content": "BLOCKED: user declined approval."})
                         continue
                 else:
-                    print(f"\n[PENDING] {action_desc}")
+                    ui.pending(action_desc)
 
             ui.tool(name, arguments)
             result = await session.call_tool(name, arguments=arguments)
@@ -655,10 +655,11 @@ async def run_agent_loop(
             model,
             messages,
             tools=None,
-            stream_to_console=True,
+            stream_to_console=False,
             ui=ui,
         )
-        if final_message["content"]:
+        if final_message.get("content"):
+            ui.ai_message(final_message["content"])
             messages.append(final_message)
 
     return messages, sub_findings
@@ -1018,7 +1019,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-hosts", type=int, default=None)
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument("--http-port", type=int, default=None)
-    parser.add_argument("--plain", action="store_true", help="Disable Rich formatting even if rich is installed")
+    parser.add_argument("--plain", action="store_true", help="Disable any remaining fancy formatting")
     parser.add_argument("--no-search", action="store_true", help="Disable vulnerability-intelligence web search for this run")
     parser.add_argument("--profile", choices=tuple(SCAN_PROFILES.keys()), default=None, help="Scan profile to use")
     parser.add_argument("--approval-mode", choices=("auto", "review", "manual"), default=None, help="Approval mode: auto (default), review (menu), manual (confirm each)")
@@ -1177,8 +1178,6 @@ async def async_main(args: argparse.Namespace) -> int:
                 sub_agent_concurrency=sub_agent_concurrency,
                 max_sub_agent_rounds=max_sub_agent_rounds,
             )
-
-    ui.status("generating reports")
 
     ui.status("generating reports")
     written = write_reports(

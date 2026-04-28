@@ -1,0 +1,31 @@
+INFO:     Started server process [19064]
+INFO:     Waiting for application startup.
+[04/28/26 16:34:03] INFO     StreamableHTTP      streamable_http_manager.py:128
+                             session manager                                   
+                             started                                           
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[04/28/26 16:34:04] INFO     Created new         streamable_http_manager.py:255
+                             transport with                                    
+                             session ID:                                       
+                             30213ce1c68e46a8b26                               
+                             bc4d683273ad4                                     
+INFO:     127.0.0.1:26114 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:26114 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:26115 - "GET /mcp HTTP/1.1" 200 OK
+                    INFO     Processing request of type           server.py:727
+                             ListToolsRequest                                  
+INFO:     127.0.0.1:26116 - "POST /mcp HTTP/1.1" 200 OK
+[04/28/26 16:34:10] INFO     Processing request of type           server.py:727
+                             CallToolRequest                                   
+INFO:     127.0.0.1:26119 - "POST /mcp HTTP/1.1" 200 OK
+[04/28/26 16:34:21] INFO     Processing request of type           server.py:727
+                             CallToolRequest                                   
+INFO:     127.0.0.1:26120 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+ERROR:    ASGI callable returned without completing response.
+INFO:     Finished server process [19064]
+[04/28/26 16:34:31] INFO     StreamableHTTP      streamable_http_manager.py:132
+                             session manager                                   
+                             shutting down                                     

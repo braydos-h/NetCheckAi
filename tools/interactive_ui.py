@@ -67,7 +67,7 @@ def ask_subnets(history: dict[str, Any]) -> list[str]:
             validate_subnet(s, RFC1918_NETWORKS, 1024)
             validated.append(s)
         except ValueError as exc:
-            print(f"  ⚠️  Skipping invalid subnet {s!r}: {exc}")
+            print(f"  (!) Skipping invalid subnet {s!r}: {exc}")
     return validated
 
 
@@ -78,7 +78,7 @@ def ask_profile(history: dict[str, Any]) -> str:
         default = "standard"
     choices = [
         Choice(
-            title=f"{p:10} — {SCAN_PROFILES[p].description}",
+            title=f"{p:10} - {SCAN_PROFILES[p].description}",
             value=p,
             checked=(p == default),
         )
@@ -103,9 +103,9 @@ def ask_sub_agents(history: dict[str, Any]) -> bool:
 
 def ask_approval_mode(history: dict[str, Any]) -> str:
     choices = [
-        Choice("auto   — AI proposes, no interruptions", value="auto"),
-        Choice("review — Pick next action from a menu", value="review"),
-        Choice("manual — Must approve every scan", value="manual"),
+        Choice("auto   - AI proposes, no interruptions", value="auto"),
+        Choice("review - Pick next action from a menu", value="review"),
+        Choice("manual - Must approve every scan", value="manual"),
     ]
     default = history.get("approval_mode", "auto")
     ans = select(
@@ -170,13 +170,11 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
     history = load_history()
 
     print()
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-    console = Console()
-    title = Text("AI-Powered Nmap Assessment", style="bold cyan")
-    subtitle = Text("Defensive Local Network Scanner", style="italic dim")
-    console.print(Panel.fit(f"{title}\n{subtitle}", border_style="cyan"))
+    print("=" * 40)
+    print("  AI-Powered Nmap Assessment")
+    print("  Defensive Local Network Scanner")
+    print("=" * 40)
+    print()
 
     # Quick mode or full menu
     quick = confirm(
@@ -193,7 +191,7 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         subnets = ask_subnets(history)
 
     if not subnets:
-        print("❌ No valid subnets provided. Exiting.")
+        print("(!) No valid subnets provided. Exiting.")
         raise SystemExit(1)
 
     if quick and history:
@@ -248,13 +246,14 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def approval_prompt(action_desc: str, ai_reason: str | None = None) -> bool:
-    """Rich approval prompt for manual/review mode."""
-    from rich.console import Console
-    from rich.panel import Panel
-    console = Console()
-    lines = [f"[bold yellow]Action:[/bold yellow] {action_desc}"]
+    """Plain approval prompt for manual/review mode."""
+    lines = [f"Action: {action_desc}"]
     if ai_reason:
-        lines.append(f"[dim]AI Reason:[/dim] {ai_reason}")
-    console.print(Panel("\n".join(lines), title="[bold red]Approval Required[/bold red]", border_style="yellow"))
+        lines.append(f"AI Reason: {ai_reason}")
+    print("-" * 40)
+    print("  Approval Required")
+    print("-" * 40)
+    for line in lines:
+        print(f"  {line}")
     ans = confirm("Approve this action?", default=False, style=CUSTOM_STYLE).unsafe_ask()
     return ans
