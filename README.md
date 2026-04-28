@@ -1,117 +1,178 @@
-# Defensive Local Network Assessment Tool
+# NetCheckAi
 
-Python controller plus MCP server for defensive Nmap-only assessment of explicitly approved local RFC1918 networks.
-It now uses a triage-first workflow so the AI does not waste time deep-scanning every live IP.
+> **Turn noisy network scans into executive-ready risk insights in minutes.**
 
-## Safety Boundaries
+NetSentry Scout is a **defensive-first**, **Nmap-only** local network assessment platform that combines:
+- a policy-locked MCP server,
+- an AI analyst controller,
+- and a triage workflow that focuses effort where risk is highest.
 
-- Scans only user-provided private IPv4 CIDRs such as `192.168.1.0/24`.
-- Rejects public, loopback, multicast, unspecified, out-of-config, and overly broad ranges.
-- Uses Nmap only. No exploitation, brute force, login bypass, payload upload, reverse shells, or system modification.
-- `run_limited_terminal` accepts only the approved Nmap command shapes and blocks shell metacharacters plus unsafe tools like `curl`, `wget`, `nc`, `ssh`, `hydra`, `metasploit`, `sudo`, `powershell`, `bash`, and similar commands.
-- `search_vulnerability_intel` can search public vulnerability/advisory information, but blocks private IPs, local host details, exploit/payload terms, and offensive query patterns.
-- Nmap banner text is treated as untrusted input by the controller prompt.
+If you need a fast way to answer: **“What’s exposed, what’s risky, and what should we fix first?”** — this is built for you.
 
-## Files
+---
 
-- `main.py`: Ollama controller, MCP client, scan-order policy, streaming loop, report generation.
-- `mcp_server.py`: FastMCP server exposing restricted Nmap tools.
-- `tools/nmap_tools.py`: Safe Nmap wrappers, validation, command allowlist, triage ranking, raw output writing.
-- `tools/search_tools.py`: Restricted SerpAPI DuckDuckGo search for defensive vulnerability intelligence.
-- `config.yaml`: Defaults for model, MCP, Nmap, reports, and safety caps.
-- `reports/network_summary.md`: Final summary report.
-- `reports/host_<ip>.md`: Per-host report.
-- `reports/raw_nmap/<ip>_scan.txt`: Raw Nmap evidence.
+## Why Teams Choose NetSentry Scout
 
-## Install
+### 🚀 Ship a credible network risk report fast
+Run one command and generate:
+- a network-level security summary,
+- per-host findings,
+- raw Nmap evidence files for audit trails.
+
+### 🎯 Prioritize risk, not just open ports
+Instead of deep-scanning every host, the platform performs **triage-first analysis** and ranks suspicious hosts using:
+- risky services,
+- unusually high port exposure,
+- old-looking versions,
+- unknown services,
+- admin-facing surfaces.
+
+### 🛡️ Built-in safety guardrails by design
+This project is intentionally constrained for defensive use:
+- only approved private RFC1918 ranges,
+- strict command allowlist,
+- blocked offensive tools/patterns,
+- no exploitation workflows.
+
+### 🤖 AI + deterministic controls
+Get the speed and context of AI with hard technical boundaries enforced at multiple layers.
+
+---
+
+## What You Get
+
+- **Controller** that orchestrates scan flow, ranking, reporting, and stream output.
+- **Restricted MCP tools** that only allow safe Nmap command shapes.
+- **Structured reports** for both technical and non-technical stakeholders.
+- **Optional vulnerability-intel enrichment** for remediation context.
+
+### Output Artifacts
+- `reports/network_summary.md` — high-level posture and prioritized actions.
+- `reports/host_<ip>.md` — host-by-host findings and remediation notes.
+- `reports/raw_nmap/<ip>_scan.txt` — evidence-grade raw scan output.
+
+---
+
+## Quick Start (2 Minutes)
+
+### 1) Install dependencies
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Install Nmap if needed and make sure `nmap` is on PATH, or set `nmap.path` in `config.yaml`.
+Install Nmap and ensure `nmap` is on PATH (or set `nmap.path` in `config.yaml`).
 
-Ollama must be installed and signed in for cloud models:
+### 2) Ensure model availability (Ollama)
 
 ```powershell
 ollama signin
 ollama show kimi-k2.6:cloud
 ```
 
-Optional vulnerability-intelligence search uses SerpAPI DuckDuckGo. If your account requires a key:
-
-```powershell
-$env:SERPAPI_API_KEY = "your_key_here"
-```
-
-## Usage
-
-Default stdio MCP transport:
+### 3) Run your first assessment
 
 ```powershell
 python main.py --subnet 192.168.1.0/24
 ```
 
-Or run the IDE-friendly launcher:
+That’s it. The tool discovers hosts, triages exposure, drills deeper where needed, and writes reports automatically.
+
+---
+
+## Core Workflow (Risk-First)
+
+The platform enforces this sequence:
+
+1. `nmap -sn <subnet>`
+2. `nmap -sV --top-ports 100 --open <subnet>`
+3. `nmap -sV --top-ports 1000 <ip>` (selected hosts)
+4. `nmap -sV -sC -O <ip>` (selected hosts)
+5. `nmap --script vuln -sV <ip>` (optional selected hosts)
+
+This keeps scans efficient and focused on likely high-impact issues.
+
+---
+
+## Safety Boundaries (Non-Negotiable)
+
+- Scans only user-provided private IPv4 CIDRs (e.g. `192.168.1.0/24`).
+- Rejects public, loopback, multicast, unspecified, out-of-config, and overly broad ranges.
+- Uses Nmap only (no exploitation, brute force, privilege abuse, payload delivery, or host modification).
+- `run_limited_terminal` blocks metacharacters and unsafe/offensive tools.
+- Banner output is treated as untrusted input.
+- Search enrichment blocks private host details and offensive exploit-query patterns.
+
+If you are building a security process that must remain clearly defensive and auditable, these guardrails are a feature—not a limitation.
+
+---
+
+## Common Usage
+
+Default run:
+
+```powershell
+python main.py --subnet 192.168.1.0/24
+```
+
+IDE-friendly launcher:
 
 ```powershell
 python app.py --subnet 192.168.1.0/24
 ```
 
-If you omit `--subnet` in an interactive terminal, the app prompts for approved subnets.
-
-Multiple approved subnets:
+Multiple approved ranges:
 
 ```powershell
 python main.py --subnet 192.168.1.0/24 --subnet 10.0.0.0/24
 ```
 
-Local HTTP MCP transport on `127.0.0.1`:
+HTTP MCP transport:
 
 ```powershell
 python main.py --subnet 192.168.1.0/24 --mcp-transport http --http-port 8000
 ```
 
-Override the model:
+Model override:
 
 ```powershell
 python main.py --subnet 192.168.1.0/24 --model kimi-k2.6:cloud
 ```
 
-Disable web search for a run:
+Disable web search:
 
 ```powershell
 python main.py --subnet 192.168.1.0/24 --no-search
 ```
 
-Plain terminal output without Rich formatting:
+Plain terminal output:
 
 ```powershell
 python main.py --subnet 192.168.1.0/24 --plain
 ```
 
-## Scan Flow
+---
 
-The controller and server both enforce this order:
+## Repository Structure
 
-1. Discovery: `nmap -sn <subnet>`
-2. Triage service/version scan: `nmap -sV --top-ports 100 --open <subnet>`
-3. Basic service/version scan for selected hosts only: `nmap -sV --top-ports 1000 <ip>`
-4. Deeper service/default-script/OS scan for selected hosts: `nmap -sV -sC -O <ip>`
-5. Optional vulnerability enumeration: `nmap --script vuln -sV <ip>`
+- `main.py` — AI controller, MCP client, scan policy, reporting loop.
+- `mcp_server.py` — FastMCP server exposing restricted Nmap tools.
+- `tools/nmap_tools.py` — Nmap validation, allowlist enforcement, triage ranking, raw evidence writing.
+- `tools/search_tools.py` — restricted vulnerability-intelligence search.
+- `config.yaml` — defaults for model, transport, Nmap, reporting, and safety caps.
 
-The triage tool appends ranked hints based on risky services, many open ports, old-looking versions, unknown services, and admin surfaces. The AI is instructed to use those hints and advisory searches to pick only suspicious hosts for deeper scans.
+---
 
-## Validation Examples
+## Validation & Guardrail Examples
 
-These should be rejected before any Nmap execution:
+Rejected before scan execution:
 
 ```powershell
 python main.py --subnet 8.8.8.0/24
 python main.py --subnet 127.0.0.0/8
 ```
 
-Terminal tool examples that are blocked:
+Blocked terminal input examples:
 
 ```text
 curl http://example.com
@@ -129,6 +190,17 @@ nmap -sV -sC -O 192.168.1.10
 nmap --script vuln -sV 192.168.1.10
 ```
 
-## Notes
+---
 
-Use this only on networks and devices you own or are authorized to assess. The reports are defensive and remediation-focused; they intentionally avoid exploit instructions.
+## Ideal For
+
+- Internal security baselining
+- MSP/MSSP recurring hygiene checks
+- IT teams needing fix-first prioritization
+- Leadership updates backed by technical evidence
+
+---
+
+## Responsible Use
+
+Use only on networks and devices you own or are explicitly authorized to assess. This project is designed for defensive analysis and remediation planning.
