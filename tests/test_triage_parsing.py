@@ -1,6 +1,6 @@
 """Tests for triage parsing and scoring."""
 
-from tools.nmap_tools import build_triage_hints, parse_nmap_hosts
+from tools.nmap_tools import build_triage_hints, extract_triage_ranked, parse_nmap_hosts
 
 
 SAMPLE_TRIAGE_OUTPUT = """
@@ -40,3 +40,24 @@ def test_triage_hints_rank_ssh_lower():
     ssh_line = [l for l in lines if "192.168.1.10" in l]
     assert ssh_line
     assert "low triage score" in ssh_line[0] or "medium triage score" in ssh_line[0]
+
+
+def test_triage_scores_remote_admin_surfaces_consistently():
+    output = """
+Nmap scan report for 192.168.1.30
+Host is up.
+PORT     STATE SERVICE VERSION
+7070/tcp open  realserver AnyDesk Client TLS
+
+Nmap scan report for 192.168.1.1
+Host is up.
+PORT     STATE SERVICE VERSION
+9000/tcp open  grpc    router management gRPC
+22/tcp   open  ssh     OpenSSH 8.4
+"""
+
+    ranked = extract_triage_ranked(output)
+
+    assert ranked[0].score >= 4
+    assert any("remote access tooling" in reason or "management or gRPC" in reason for reason in ranked[0].reasons)
+    assert {host.ip for host in ranked} == {"192.168.1.30", "192.168.1.1"}

@@ -347,33 +347,19 @@ def write_reports(
     """Write all requested report formats and return written paths."""
     if formats is None:
         formats = {"markdown"}
-    run_dir = reports_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    latest_link = reports_dir / "latest"
-    if latest_link.exists() or latest_link.is_symlink():
-        latest_link.unlink()
-    try:
-        latest_link.symlink_to(run_dir, target_is_directory=True)
-    except OSError:
-        # Windows may need admin for symlinks; fallback to junction or skip
-        import platform
-        if platform.system() == "Windows":
-            import subprocess as sp
-            sp.run(["cmd", "/c", "mklink", "/J", str(latest_link), str(run_dir)], check=False, capture_output=True)
-        else:
-            raise
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     if "markdown" in formats or "all" in formats:
-        md_path = run_dir / "network_summary.md"
+        md_path = reports_dir / "network_summary.md"
         md_path.write_text(generate_markdown(findings, run_id, subnets, comparison), encoding="utf-8")
         written.append(md_path)
     if "csv" in formats or "all" in formats:
-        csv_path = run_dir / "findings.csv"
+        csv_path = reports_dir / "findings.csv"
         csv_path.write_text(generate_csv(findings), encoding="utf-8")
         written.append(csv_path)
     if "html" in formats or "all" in formats:
-        html_path = run_dir / "network_summary.html"
+        html_path = reports_dir / "network_summary.html"
         html_path.write_text(generate_html(findings, run_id, subnets, comparison), encoding="utf-8")
         written.append(html_path)
     return written

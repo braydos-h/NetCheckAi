@@ -226,6 +226,8 @@ class SafeNmapRunner:
             self.completed_ping_sweeps.add(str(network))
             live_hosts = self._extract_live_hosts(network, result, xml_path)
             self.live_hosts_by_subnet[str(network)] = live_hosts
+            reg = get_scan_registry()
+            reg.put(f"{safe_name(str(network))}_ping_sweep", [ParsedHost(ip=str(h)) for h in live_hosts])
         return format_tool_result(argv, str(network), result) + "\n\nLIVE_HOSTS:\n" + build_live_hosts_summary(network, live_hosts)
 
     def run_nmap_triage_scan(self, subnet: str) -> str:
@@ -252,7 +254,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(network))}_triage_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -277,7 +279,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(target))}_basic_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -314,7 +316,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(target))}_vuln_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -467,7 +469,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(target))}_basic_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -502,7 +504,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(target))}_vuln_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -533,7 +535,7 @@ class SafeNmapRunner:
         compact = ""
         if xml_path.exists():
             try:
-                hosts = parse_nmap_xml(xml_path.read_text(encoding="utf-8"))
+                hosts = _parse_and_register(xml_path, f"{safe_name(str(network))}_triage_scan")
                 compact = "\n\nCOMPACT_SUMMARY:\n" + build_compact_summary(hosts)
             except Exception:
                 pass
@@ -806,6 +808,38 @@ def skipped_triage_output(network: ipaddress.IPv4Network) -> str:
     )
 
 
+def score_triage_service(port: str, name: str, version: str, label: str) -> tuple[int, str]:
+    """Score a single open service for host-selection triage."""
+    name = name.lower()
+    version = version.lower()
+    text = f"{name} {version} {label}".lower()
+    portid = port.split("/", 1)[0]
+
+    if name in {"telnet", "ftp", "tftp"} or portid in {"21", "23", "69"}:
+        return 4, f"insecure cleartext service: {label}"
+    if name in {"microsoft-ds", "netbios-ssn", "smb"} or portid in {"139", "445"}:
+        return 4, f"SMB/NetBIOS exposure: {label}"
+    if name in {"ms-wbt-server", "rdp"} or portid == "3389":
+        return 4, f"RDP exposure: {label}"
+    if "anydesk" in text or portid == "7070":
+        return 4, f"remote access tooling exposed: {label}"
+    if name in {"vnc", "snmp", "redis", "mongodb", "elasticsearch", "mysql", "postgresql"}:
+        return 3, f"sensitive service exposed: {label}"
+    if "grpc" in text or portid in {"9000", "9001", "9002", "9003"}:
+        return 3, f"management or gRPC surface possible: {label}"
+    if name in {"ssh"} or portid == "22":
+        return 2, f"remote login surface: {label}"
+    if portid == "5357" or "httpapi" in text or "ws-discovery" in text:
+        return 1, f"network discovery service exposed: {label}"
+    if name in {"http", "https", "http-proxy"}:
+        if any(term in text for term in ("admin", "router", "gateway", "starlink", "management")):
+            return 3, f"web management surface possible: {label}"
+        return 2, f"web/admin surface possible: {label}"
+    if name in {"unknown"} or "unknown" in version:
+        return 2, f"unknown service: {label}"
+    return 0, ""
+
+
 def build_triage_hints(output: str) -> str:
     hosts = parse_nmap_hosts(output)
     if not hosts:
@@ -829,27 +863,10 @@ def build_triage_hints(output: str) -> str:
             version = service["version"].lower()
             label = f"{port} {service['service']} {service['version']}".strip()
 
-            if name in {"telnet", "ftp", "tftp"}:
-                score += 4
-                reasons.append(f"insecure cleartext service: {label}")
-            elif name in {"microsoft-ds", "netbios-ssn", "smb"} or port.startswith(("139/", "445/")):
-                score += 4
-                reasons.append(f"SMB/NetBIOS exposure: {label}")
-            elif name in {"ms-wbt-server", "rdp"} or port.startswith("3389/"):
-                score += 4
-                reasons.append(f"RDP exposure: {label}")
-            elif name in {"vnc", "snmp", "redis", "mongodb", "elasticsearch", "mysql", "postgresql"}:
-                score += 3
-                reasons.append(f"sensitive service exposed: {label}")
-            elif name in {"http", "https", "http-proxy"}:
-                score += 2
-                reasons.append(f"web/admin surface possible: {label}")
-            elif name in {"ssh"}:
-                score += 1
-                reasons.append(f"remote login surface: {label}")
-            elif name in {"unknown"} or "unknown" in version:
-                score += 2
-                reasons.append(f"unknown service: {label}")
+            service_score, service_reason = score_triage_service(port, name, version, label)
+            if service_score:
+                score += service_score
+                reasons.append(service_reason)
 
             if has_old_version_hint(version):
                 score += 3
@@ -900,22 +917,110 @@ def extract_host_identifier(raw: str) -> str:
     first = raw.split()[0]
     return first
 
+_NMAP_SCAN_REPORT_RE = re.compile(r"Nmap scan report for (.+)$")
+_SERVICE_LINE_RE = re.compile(r"^(\d+/(?:tcp|udp))\s+open\s+(\S+)\s*(.*)$")
+_HOST_IDENTIFIER_RE = re.compile(r"\((\d+\.\d+\.\d+\.\d+)\)")
+_OLD_VERSION_PATTERNS = tuple(re.compile(p) for p in (
+    r"openssh[_\s-]?[1-6]\.",
+    r"apache httpd 2\.[0-2]\.",
+    r"nginx 0\.",
+    r"nginx 1\.(?:0|1|2|3|4|5|6|7|8|9|10|11|12)\.",
+    r"samba 3\.",
+    r"samba 4\.(?:0|1|2|3|4|5|6|7|8)\.",
+    r"proftpd 1\.3\.[0-5]",
+    r"vsftpd 2\.",
+    r"microsoft-iis/[1-7]\.",
+    r"mysql 5\.",
+    r"postgresql 9\.",
+))
+
 
 def has_old_version_hint(version: str) -> bool:
-    checks = (
-        r"openssh[_\s-]?[1-6]\.",
-        r"apache httpd 2\.[0-2]\.",
-        r"nginx 0\.",
-        r"nginx 1\.(?:0|1|2|3|4|5|6|7|8|9|10|11|12)\.",
-        r"samba 3\.",
-        r"samba 4\.(?:0|1|2|3|4|5|6|7|8)\.",
-        r"proftpd 1\.3\.[0-5]",
-        r"vsftpd 2\.",
-        r"microsoft-iis/[1-7]\.",
-        r"mysql 5\.",
-        r"postgresql 9\.",
-    )
-    return any(re.search(pattern, version) for pattern in checks)
+    lowered = version.lower()
+    return any(pattern.search(lowered) for pattern in _OLD_VERSION_PATTERNS)
+
+
+def _score_host(services: list[dict[str, str]]) -> tuple[int, list[str]]:
+    """Shared scoring logic for build_triage_hints and extract_triage_ranked."""
+    score = 0
+    reasons: list[str] = []
+    open_count = len(services)
+    if open_count >= 8:
+        score += 3
+        reasons.append(f"many open ports ({open_count})")
+    elif open_count >= 4:
+        score += 2
+        reasons.append(f"several open ports ({open_count})")
+
+    for service in services:
+        port = service["port"]
+        name = service["service"].lower()
+        version = service["version"].lower()
+        label = f"{port} {service['service']} {service['version']}".strip()
+
+        service_score, service_reason = score_triage_service(port, name, version, label)
+        if service_score:
+            score += service_score
+            reasons.append(service_reason)
+
+        if has_old_version_hint(version):
+            score += 3
+            reasons.append(f"old-looking version string: {label}")
+
+    if not reasons:
+        reasons.append("open services found but no obvious high-risk indicator")
+    return score, dedupe_preserve_order(reasons)
+
+
+def build_triage_hints(output: str) -> str:
+    hosts = parse_nmap_hosts(output)
+    if not hosts:
+        return "No open services were parsed from the triage output."
+
+    scored: list[tuple[int, str, list[str]]] = []
+    for host, services in hosts.items():
+        score, reasons = _score_host(services)
+        scored.append((score, host, reasons))
+
+    scored.sort(key=lambda item: (-item[0], ip_sort_key(item[1])))
+    rows = [
+        "Use this ranked list to choose only suspicious hosts for deeper scans.",
+        "Run search_vulnerability_intel on service/version strings before vuln scans when useful.",
+    ]
+    for score, host, reasons in scored:
+        severity = "high" if score >= 6 else "medium" if score >= 3 else "low"
+        rows.append(f"- {host}: {severity} triage score {score}; " + "; ".join(reasons[:5]))
+    return "\n".join(rows)
+
+
+def parse_nmap_hosts(output: str) -> dict[str, list[dict[str, str]]]:
+    hosts: dict[str, list[dict[str, str]]] = {}
+    current_host = ""
+    for line in output.splitlines():
+        report_match = _NMAP_SCAN_REPORT_RE.match(line.strip())
+        if report_match:
+            current_host = extract_host_identifier(report_match.group(1))
+            hosts.setdefault(current_host, [])
+            continue
+        if not current_host:
+            continue
+        service_match = _SERVICE_LINE_RE.match(line.strip())
+        if service_match:
+            hosts[current_host].append(
+                {
+                    "port": service_match.group(1),
+                    "service": service_match.group(2),
+                    "version": service_match.group(3).strip(),
+                }
+            )
+    return {host: services for host, services in hosts.items() if services}
+
+
+def extract_host_identifier(raw: str) -> str:
+    match = _HOST_IDENTIFIER_RE.search(raw)
+    if match:
+        return match.group(1)
+    return raw.split()[0]
 
 
 def dedupe_preserve_order(values: Iterable[str]) -> list[str]:
@@ -1056,47 +1161,8 @@ def extract_triage_ranked(output: str) -> list[TriageHost]:
         return []
     scored: list[tuple[int, str, list[str], list[dict[str, str]]]] = []
     for host, services in hosts.items():
-        score = 0
-        reasons: list[str] = []
-        open_count = len(services)
-        if open_count >= 8:
-            score += 3
-            reasons.append(f"many open ports ({open_count})")
-        elif open_count >= 4:
-            score += 2
-            reasons.append(f"several open ports ({open_count})")
-        for service in services:
-            port = service["port"]
-            name = service["service"].lower()
-            version = service["version"].lower()
-            label = f"{port} {service['service']} {service['version']}".strip()
-            if name in {"telnet", "ftp", "tftp"}:
-                score += 4
-                reasons.append(f"insecure cleartext service: {label}")
-            elif name in {"microsoft-ds", "netbios-ssn", "smb"} or port.startswith(("139/", "445/")):
-                score += 4
-                reasons.append(f"SMB/NetBIOS exposure: {label}")
-            elif name in {"ms-wbt-server", "rdp"} or port.startswith("3389/"):
-                score += 4
-                reasons.append(f"RDP exposure: {label}")
-            elif name in {"vnc", "snmp", "redis", "mongodb", "elasticsearch", "mysql", "postgresql"}:
-                score += 3
-                reasons.append(f"sensitive service exposed: {label}")
-            elif name in {"http", "https", "http-proxy"}:
-                score += 2
-                reasons.append(f"web/admin surface possible: {label}")
-            elif name in {"ssh"}:
-                score += 1
-                reasons.append(f"remote login surface: {label}")
-            elif name in {"unknown"} or "unknown" in version:
-                score += 2
-                reasons.append(f"unknown service: {label}")
-            if has_old_version_hint(version):
-                score += 3
-                reasons.append(f"old-looking version string: {label}")
-        if not reasons:
-            reasons.append("open services found but no obvious high-risk indicator")
-        scored.append((score, host, dedupe_preserve_order(reasons), services))
+        score, reasons = _score_host(services)
+        scored.append((score, host, reasons, services))
     scored.sort(key=lambda item: (-item[0], ip_sort_key(item[1])))
     return [
         TriageHost(
@@ -1108,6 +1174,48 @@ def extract_triage_ranked(output: str) -> list[TriageHost]:
         )
         for score, host, reasons, services in scored
     ]
+
+
+@dataclass
+class ScanResultRegistry:
+    """In-memory registry to avoid re-parsing XML files during a single run."""
+    _store: dict[str, list[ParsedHost]] = field(default_factory=dict)
+
+    def put(self, scan_name: str, hosts: list[ParsedHost]) -> None:
+        self._store[scan_name] = hosts
+
+    def get(self, scan_name: str) -> list[ParsedHost] | None:
+        return self._store.get(scan_name)
+
+    def all_hosts(self) -> list[ParsedHost]:
+        hosts: list[ParsedHost] = []
+        seen_ips: set[str] = set()
+        for hlist in self._store.values():
+            for host in hlist:
+                if host.ip not in seen_ips:
+                    seen_ips.add(host.ip)
+                    hosts.append(host)
+        return hosts
+
+
+# Global registry used for the current run
+_SCAN_REGISTRY = ScanResultRegistry()
+
+
+def get_scan_registry() -> ScanResultRegistry:
+    return _SCAN_REGISTRY
+
+
+def clear_scan_registry() -> None:
+    _SCAN_REGISTRY._store.clear()
+
+
+def _parse_and_register(xml_path: Path, scan_name: str) -> list[ParsedHost]:
+    """Parse XML once and store in the global registry."""
+    text = xml_path.read_text(encoding="utf-8")
+    hosts = parse_nmap_xml(text)
+    _SCAN_REGISTRY.put(scan_name, hosts)
+    return hosts
 
 
 def build_compact_summary(hosts: list[ParsedHost]) -> str:

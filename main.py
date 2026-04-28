@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import csv
 import ipaddress
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -24,12 +24,14 @@ import yaml
 from tools.nmap_tools import (
     RFC1918_NETWORKS,
     ParsedHost,
+    ParsedPort,
     SCAN_PROFILES,
     SafeNmapRunner,
     SafeNmapSettings,
     ScanProfileName,
     classify_safe_nmap_command,
     extract_triage_ranked,
+    get_scan_registry,
     parse_ipv4_networks,
     parse_live_hosts,
     parse_nmap_xml,
@@ -38,12 +40,9 @@ from tools.nmap_tools import (
 )
 from tools.report_generator import (
     Finding,
-    compare_findings,
     findings_from_parsed_hosts,
     generate_csv,
     generate_html,
-    generate_markdown as generate_structured_markdown,
-    write_reports as write_structured_reports,
 )
 from tools.search_tools import SearchSettings, VulnerabilitySearch
 from tools.cve_lookup import CVESearchSettings, NVDClient
@@ -74,12 +73,6 @@ Rules:
 - Prefer the dedicated Nmap tools over run_limited_terminal.
 - Explain why any host is selected for deeper scanning.
 - Keep all advice remediation-focused.
-"""
-
-
-REPORT_SYSTEM_PROMPT = """You are writing defensive vulnerability assessment reports.
-Do not include exploit steps, payloads, brute-force instructions, or weaponized commands.
-Focus on risk, evidence, likely severity, and remediation.
 """
 
 
@@ -581,6 +574,14 @@ async def run_agent_loop(
                 "LIVE_HOSTS. Use the triage results to rank hosts; do not basic-scan "
                 "every live host. Only choose hosts for deeper assessment when evidence "
                 "suggests risk."
+                + (
+                    " Sub-agents are enabled for this run; after subnet ping sweep "
+                    "and triage are complete, do not request basic, service, or "
+                    "vulnerability scans from the main loop. Sub-agents will own "
+                    "host-level scans for selected hosts."
+                    if use_sub_agents
+                    else ""
+                )
             ),
         },
     ]
@@ -588,6 +589,9 @@ async def run_agent_loop(
     triage_outputs: dict[str, str] = {}
 
     while policy.tool_calls_used < policy.max_tool_calls and not policy.evidence_sufficient:
+        if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
+            break
+
         assistant_message = stream_ollama_chat(
             client,
             model,
@@ -608,17 +612,37 @@ async def run_agent_loop(
         if not tool_calls:
             break
 
-        subnet_triage_done = all(
-            str(s) in policy.triaged_subnets for s in approved_subnets
-        )
+        # Batch independent discovery scans to reduce wall-clock time.
+        # Host-level scans remain sequential because they depend on prior state.
+        approved_calls: list[tuple[str, dict[str, Any], str | None, str | None]] = []
         for call in tool_calls:
+            if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
+                break
             name, arguments = extract_tool_call(call)
             allowed, reason, kind, target = policy.approve(name, arguments)
             if not allowed:
                 ui.blocked(reason)
                 messages.append({"role": "tool", "tool_name": name, "content": reason})
                 continue
+            approved_calls.append((name, arguments, kind, target))
 
+        if not approved_calls:
+            continue
+
+        # Run approved calls concurrently where safe (discovery only).
+        # Host scans (basic/service/vuln) are still sequential to preserve ordering.
+        discovery_calls = [
+            (name, arguments, kind, target)
+            for name, arguments, kind, target in approved_calls
+            if kind in ("ping_sweep", "triage_scan")
+        ]
+        host_calls = [
+            (name, arguments, kind, target)
+            for name, arguments, kind, target in approved_calls
+            if kind not in ("ping_sweep", "triage_scan")
+        ]
+
+        async def _exec_call(name: str, arguments: dict[str, Any], kind: str | None, target: str | None) -> tuple[str, str | None, str | None, str]:
             if policy.approval_mode in ("review", "manual"):
                 action_desc = f"{name}({json.dumps(arguments)})"
                 if policy.approval_mode == "manual":
@@ -626,29 +650,51 @@ async def run_agent_loop(
                     confirm = input("Approve? [y/N]: ").strip().lower()
                     if confirm not in ("y", "yes"):
                         ui.blocked("User declined approval.")
-                        messages.append({"role": "tool", "tool_name": name, "content": "BLOCKED: user declined approval."})
-                        continue
+                        return name, kind, target, "BLOCKED: user declined approval."
                 else:
                     ui.pending(action_desc)
-
             ui.tool(name, arguments)
             result = await session.call_tool(name, arguments=arguments)
             text = mcp_result_to_text(result)
             policy.mark_success(kind, target, text)
+            return name, kind, target, text
+
+        async with asyncio.Semaphore(3):
+            if discovery_calls:
+                gathered = await asyncio.gather(
+                    *(_exec_call(n, a, k, t) for n, a, k, t in discovery_calls),
+                    return_exceptions=True,
+                )
+                for item in gathered:
+                    if isinstance(item, Exception):
+                        messages.append({"role": "tool", "tool_name": "unknown", "content": f"ERROR: {item}"})
+                        continue
+                    name, kind, target, text = item
+                    messages.append({"role": "tool", "tool_name": name, "content": text})
+                    if kind == "triage_scan" and target:
+                        triage_outputs[target] = text
+                        if ui.activity:
+                            ui.activity.triage(target, text)
+                    elif kind == "ping_sweep" and target:
+                        if ui.activity:
+                            ui.activity.ping(target, text)
+
+        for name, arguments, kind, target in host_calls:
+            if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
+                break
+            _, _, _, text = await _exec_call(name, arguments, kind, target)
             messages.append({"role": "tool", "tool_name": name, "content": text})
             if kind == "triage_scan" and target:
                 triage_outputs[target] = text
                 if ui.activity:
                     ui.activity.triage(target, text)
+                if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
+                    break
             elif kind == "ping_sweep" and target:
                 if ui.activity:
                     ui.activity.ping(target, text)
 
-        if (
-            use_sub_agents
-            and subnet_triage_done
-            and all(str(s) in policy.triaged_subnets for s in approved_subnets)
-        ):
+        if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
             break
 
     sub_findings: list[StructuredFinding] = []
@@ -711,6 +757,17 @@ async def run_agent_loop(
             messages.append(final_message)
 
     return messages, sub_findings
+
+
+def sub_agent_mode_ready(
+    policy: ControllerPolicy,
+    approved_subnets: tuple[ipaddress.IPv4Network, ...],
+    use_sub_agents: bool,
+) -> bool:
+    """Return true once main-agent scanning should hand off to sub-agents."""
+    return use_sub_agents and all(
+        str(subnet) in policy.triaged_subnets for subnet in approved_subnets
+    )
 
 
 def sync_runner_discovery_state(runner: SafeNmapRunner, policy: ControllerPolicy) -> None:
@@ -813,6 +870,10 @@ def mcp_result_to_text(result: Any) -> str:
 def collect_structured_hosts(reports_dir: Path) -> list[ParsedHost]:
     """Parse all XML Nmap results in the run directory."""
     xml_dir = reports_dir / "xml_nmap"
+    registry = get_scan_registry()
+    if registry._store:
+        # Prefer in-memory registry to avoid re-parsing XML on disk
+        return registry.all_hosts()
     hosts: list[ParsedHost] = []
     if not xml_dir.exists():
         return hosts
@@ -824,35 +885,551 @@ def collect_structured_hosts(reports_dir: Path) -> list[ParsedHost]:
     return hosts
 
 
-def load_previous_findings(reports_dir: Path) -> list[Finding]:
-    """Load findings from the previous run for comparison."""
-    latest = reports_dir / "latest"
-    if not latest.exists():
-        return []
-    prev_csv = latest / "findings.csv"
-    if not prev_csv.exists():
-        return []
-    findings: list[Finding] = []
+@dataclass
+class HostEvidence:
+    """Merged per-host evidence used by network and host reports."""
+
+    ip: str
+    hostname: str = ""
+    os_name: str = ""
+    ports: dict[str, ParsedPort] = field(default_factory=dict)
+    scan_types: set[str] = field(default_factory=set)
+
+
+SCAN_DEPTH_ORDER = {
+    "Discovery": 0,
+    "Triage": 1,
+    "Basic": 2,
+    "Service": 3,
+    "Vuln": 4,
+    "Sub-agent": 5,
+}
+
+
+def collect_host_evidence(
+    reports_dir: Path,
+    policy: ControllerPolicy,
+    sub_findings: list[StructuredFinding],
+) -> dict[str, HostEvidence]:
+    """Merge XML artifacts, policy state, and sub-agent outputs into host evidence."""
+    evidence: dict[str, HostEvidence] = {}
+
+    def host_record(ip: str) -> HostEvidence:
+        evidence.setdefault(ip, HostEvidence(ip=ip))
+        return evidence[ip]
+
+    for hosts in policy.live_hosts_by_subnet.values():
+        for ip in hosts:
+            host_record(ip).scan_types.add("Discovery")
+
+    xml_dir = reports_dir / "xml_nmap"
+    if xml_dir.exists():
+        for xml_file in sorted(xml_dir.glob("*.xml")):
+            scan_type = scan_type_from_xml_name(xml_file.name)
+            try:
+                parsed_hosts = parse_nmap_xml(xml_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for parsed in parsed_hosts:
+                record = host_record(parsed.ip)
+                record.scan_types.add(scan_type)
+                if parsed.hostname and not record.hostname:
+                    record.hostname = parsed.hostname
+                if parsed.os_name and not record.os_name:
+                    record.os_name = parsed.os_name
+                for port in parsed.ports:
+                    if port.state != "open":
+                        continue
+                    key = port_key(port)
+                    existing = record.ports.get(key)
+                    record.ports[key] = richer_port(existing, port)
+
+    for subnet in policy.triaged_subnets:
+        network = ipaddress.ip_network(subnet)
+        for ip in policy.live_hosts_by_subnet.get(subnet, set()):
+            if ipaddress.ip_address(ip) in network:
+                host_record(ip).scan_types.add("Triage")
+
+    for ip in policy.basic_scanned_hosts:
+        host_record(ip).scan_types.add("Basic")
+    for ip in policy.service_scanned_hosts:
+        host_record(ip).scan_types.add("Service")
+    for ip in policy.vuln_scanned_hosts:
+        host_record(ip).scan_types.add("Vuln")
+
+    for finding in sub_findings:
+        if not finding.host:
+            continue
+        record = host_record(finding.host)
+        record.scan_types.add("Sub-agent")
+        for item in finding.open_ports:
+            port = port_from_subfinding(item)
+            if port is None:
+                continue
+            key = port_key(port)
+            existing = record.ports.get(key)
+            record.ports[key] = richer_port(existing, port)
+
+    return evidence
+
+
+def scan_type_from_xml_name(name: str) -> str:
+    if name.endswith("_ping_sweep.xml"):
+        return "Discovery"
+    if name.endswith("_triage_scan.xml"):
+        return "Triage"
+    if name.endswith("_basic_scan.xml"):
+        return "Basic"
+    if name.endswith("_service_scan.xml"):
+        return "Service"
+    if name.endswith("_vuln_scan.xml"):
+        return "Vuln"
+    return "Nmap XML"
+
+
+def port_key(port: ParsedPort) -> str:
+    protocol = port.protocol or "tcp"
+    return f"{port.portid}/{protocol}"
+
+
+def richer_port(existing: ParsedPort | None, candidate: ParsedPort) -> ParsedPort:
+    if existing is None:
+        return candidate
+    existing_score = sum(bool(v) for v in (existing.service_name, existing.product, existing.service_version, existing.extrainfo))
+    candidate_score = sum(bool(v) for v in (candidate.service_name, candidate.product, candidate.service_version, candidate.extrainfo))
+    return candidate if candidate_score >= existing_score else existing
+
+
+def port_from_subfinding(item: dict[str, str]) -> ParsedPort | None:
+    raw_port = str(item.get("port", "")).strip()
+    if not raw_port:
+        return None
+    if "/" in raw_port:
+        portid, protocol = raw_port.split("/", 1)
+    else:
+        portid, protocol = raw_port, "tcp"
+    if not portid:
+        return None
+    return ParsedPort(
+        protocol=protocol or "tcp",
+        portid=portid,
+        state="open",
+        service_name=str(item.get("service", "")).strip(),
+        service_version=str(item.get("version", "")).strip(),
+        product=str(item.get("product", "")).strip(),
+    )
+
+
+def open_port_labels(record: HostEvidence) -> list[str]:
+    labels: list[str] = []
+    for key in sorted(record.ports, key=lambda item: (int(item.split("/", 1)[0]) if item.split("/", 1)[0].isdigit() else 999999, item)):
+        port = record.ports[key]
+        label = key
+        if port.service_name:
+            label += f" {port.service_name}"
+        product_version = " ".join(part for part in (port.product, port.service_version) if part)
+        if product_version:
+            label += f" ({product_version})"
+        labels.append(label)
+    return labels
+
+
+def scan_depth(record: HostEvidence) -> str:
+    if not record.scan_types:
+        return "Not scanned"
+    return ", ".join(
+        sorted(record.scan_types, key=lambda value: SCAN_DEPTH_ORDER.get(value, 99))
+    )
+
+
+def deeply_scanned(record: HostEvidence) -> bool:
+    return bool(record.scan_types & {"Basic", "Service", "Vuln", "Sub-agent"})
+
+
+def skipped_reason(record: HostEvidence) -> str:
+    if deeply_scanned(record):
+        return "Selected for deeper assessment"
+    if not record.ports:
+        return "Skipped: no open TCP ports observed during triage"
+    return "Skipped: triage risk did not exceed selection threshold"
+
+
+def host_role_inference(record: HostEvidence) -> str:
+    joined = " ".join(
+        [record.os_name, record.hostname]
+        + [
+            " ".join(
+                part
+                for part in (p.service_name, p.product, p.service_version, p.extrainfo)
+                if part
+            )
+            for p in record.ports.values()
+        ]
+    ).lower()
+    if "microsoft" in joined or "windows" in joined or any(k in record.ports for k in ("135/tcp", "445/tcp", "3389/tcp", "5357/tcp")):
+        return "Inferred: likely Windows host"
+    if "starlink" in joined or any(k in record.ports for k in ("9000/tcp", "9001/tcp", "9002/tcp", "9003/tcp")):
+        return "Inferred: likely gateway or network appliance"
+    if any(k in record.ports for k in ("22/tcp", "80/tcp", "443/tcp")):
+        return "Inferred: possible managed device or server"
+    return "Inferred: role not determined from unauthenticated evidence"
+
+
+def cves_for_finding(finding: Finding) -> list[str]:
+    return [
+        ref
+        for ref in finding.cve_refs
+        if re.match(r"(?i)^CVE-\d{4}-\d{4,}$", ref.strip())
+    ]
+
+
+def finding_priority(finding: Finding) -> tuple[str, str]:
+    severity = finding.severity.lower()
+    if severity in {"critical", "high"}:
+        return "High", "Technical severity is high or critical."
+    if severity == "medium" and is_admin_or_remote_surface(finding):
+        return (
+            "High",
+            "Medium technical severity, but remote or administrative exposure should be reviewed early.",
+        )
+    if severity == "medium":
+        return "Medium", "Technical severity is medium."
+    if severity == "low" and is_admin_or_remote_surface(finding):
+        return (
+            "Medium",
+            "Low technical severity, but remote or administrative exposure merits owner review.",
+        )
+    if severity == "info":
+        return "Low", "Informational evidence for inventory and follow-up."
+    return "Low", "Routine hardening item."
+
+
+def is_admin_or_remote_surface(finding: Finding) -> bool:
+    text = " ".join(
+        [finding.title, finding.port, finding.service, finding.evidence]
+    ).lower()
+    indicators = (
+        "ssh",
+        "anydesk",
+        "remote",
+        "rdp",
+        "ms-wbt-server",
+        "microsoft-ds",
+        "smb",
+        "netbios",
+        "admin",
+        "grpc",
+        "unknown service",
+    )
+    admin_ports = {"22/tcp", "3389/tcp", "445/tcp", "139/tcp", "7070/tcp", "9000/tcp", "9001/tcp", "9002/tcp", "9003/tcp"}
+    return any(indicator in text for indicator in indicators) or finding.port.lower() in admin_ports
+
+
+def markdown_cell(value: Any) -> str:
+    text = str(value or "").replace("\n", " ").replace("|", "\\|").strip()
+    return text or "-"
+
+
+def report_scan_status_rows(reports_dir: Path, policy: ControllerPolicy) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    raw_dir = reports_dir / "raw_nmap"
+    if raw_dir.exists():
+        for raw_file in sorted(raw_dir.glob("*.txt")):
+            text = read_text_limited(raw_file, 20_000)
+            rows.append((scan_label_from_raw_name(raw_file.name), raw_file.stem, scan_status(text), raw_file.name))
+
+    known = {(row[0], row[1]) for row in rows}
+    for subnet in sorted((str(s) for s in policy.approved_subnets), key=ip_sort_for_report):
+        safe = safe_name(subnet)
+        if ("Ping sweep", f"{safe}_ping_sweep") not in known:
+            status = "Completed" if subnet in policy.completed_ping_sweeps else "Not completed"
+            rows.append(("Ping sweep", f"{safe}_ping_sweep", status, "policy state"))
+        if ("Triage", f"{safe}_triage_scan") not in known:
+            if subnet in policy.triaged_subnets:
+                status = "Completed"
+            elif subnet in policy.completed_ping_sweeps and not policy.live_hosts_by_subnet.get(subnet):
+                status = "Skipped"
+            else:
+                status = "Not completed"
+            rows.append(("Triage", f"{safe}_triage_scan", status, "policy state"))
+    return rows
+
+
+def scan_label_from_raw_name(name: str) -> str:
+    if name.endswith("_ping_sweep.txt"):
+        return "Ping sweep"
+    if name.endswith("_triage_scan.txt"):
+        return "Triage"
+    if name.endswith("_scan.txt"):
+        return "Host scans"
+    return "Scan"
+
+
+def scan_status(text: str) -> str:
+    lowered = text.lower()
+    if "timed out" in lowered:
+        return "Timed out"
+    if "no triage port scan was run" in lowered or text.startswith("SKIPPED"):
+        return "Skipped"
+    if "error:" in lowered and "exit_code: 0" not in lowered:
+        return "Failed"
+    if "exit_code: 0" in lowered or "nmap done:" in lowered:
+        return "Completed"
+    return "Attempted"
+
+
+def ip_sort_for_report(value: str) -> tuple[int, str]:
     try:
-        with prev_csv.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                findings.append(
-                    Finding(
-                        title=row.get("title", ""),
-                        severity=row.get("severity", "info"),
-                        host=row.get("host", ""),
-                        port=row.get("port", ""),
-                        service=row.get("service", ""),
-                        evidence=row.get("evidence", ""),
-                        confidence=row.get("confidence", "likely"),
-                        remediation=row.get("remediation", ""),
-                        next_scan=row.get("next_scan", ""),
-                    )
-                )
-    except Exception:
-        pass
-    return findings
+        return (0, f"{int(ipaddress.ip_address(value)):012d}")
+    except ValueError:
+        return (1, value)
+
+
+def build_host_report(
+    record: HostEvidence,
+    findings: list[Finding],
+    sub_findings: list[StructuredFinding],
+) -> str:
+    lines = [
+        f"# Host {record.ip}",
+        "",
+        "## Evidence Model",
+        "",
+        "### Observed",
+        "",
+        f"- Scan depth: {scan_depth(record)}",
+    ]
+    if record.hostname:
+        lines.append(f"- Hostname: {record.hostname}")
+    if record.os_name:
+        lines.append(f"- OS fingerprint: {record.os_name}")
+
+    ports = open_port_labels(record)
+    if ports:
+        lines.extend(["", "| Port | Service Evidence |", "|---|---|"])
+        for label in ports:
+            port_name, _, detail = label.partition(" ")
+            lines.append(f"| {markdown_cell(port_name)} | {markdown_cell(detail or 'open')} |")
+    else:
+        lines.append("- Open TCP ports: none observed")
+
+    host_sub_findings = [sf for sf in sub_findings if sf.host == record.ip]
+    for sf in host_sub_findings:
+        if sf.evidence:
+            lines.append(f"- Sub-agent evidence: {markdown_cell(sf.evidence)}")
+        concrete_cves = [
+            ref for ref in sf.cves_found if re.match(r"(?i)^CVE-\d{4}-\d{4,}$", ref.strip())
+        ]
+        if concrete_cves:
+            lines.append(f"- Concrete CVE references returned: {', '.join(concrete_cves)}")
+
+    lines.extend(["", "### Inferred", "", f"- Role: {host_role_inference(record)}"])
+    for finding in findings:
+        if finding.host != record.ip:
+            continue
+        priority, rationale = finding_priority(finding)
+        lines.append(
+            f"- {finding.title}: severity {finding.severity.upper()}, remediation priority {priority}. {rationale}"
+        )
+
+    lines.extend(["", "### Recommended Follow-Up", ""])
+    host_findings = [finding for finding in findings if finding.host == record.ip]
+    if host_findings:
+        for finding in host_findings[:8]:
+            if finding.remediation:
+                lines.append(f"- {finding.remediation}")
+            if finding.next_scan:
+                lines.append(f"- {finding.next_scan}")
+    else:
+        lines.append("- Keep host inventory and patch status current.")
+    if not deeply_scanned(record):
+        lines.append("- Consider deeper scanning during a maintenance window if this host is business-critical.")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_network_summary(
+    *,
+    run_id: str,
+    subnets: list[str],
+    evidence: dict[str, HostEvidence],
+    findings: list[Finding],
+    reports_dir: Path,
+    policy: ControllerPolicy,
+) -> str:
+    live_hosts = sorted(evidence, key=ip_sort_for_report)
+    hosts_with_ports = [ip for ip in live_hosts if evidence[ip].ports]
+    selected_hosts = [ip for ip in live_hosts if deeply_scanned(evidence[ip])]
+    severity_counts: dict[str, int] = {}
+    for finding in findings:
+        severity_counts[finding.severity.lower()] = severity_counts.get(finding.severity.lower(), 0) + 1
+
+    lines = [
+        "# Network Assessment Report",
+        "",
+        f"**Run ID:** {run_id}",
+        f"**Generated:** {datetime.now(timezone.utc).isoformat().replace('+00:00', '')}Z",
+        "",
+        "## Executive Summary",
+        "",
+        f"- Approved subnets: {', '.join(subnets)}",
+        f"- Live hosts discovered: {len(live_hosts)}",
+        f"- Hosts with open TCP ports: {len(hosts_with_ports)}",
+        f"- Hosts selected for deeper scans: {len(selected_hosts)}",
+        f"- Findings by severity: {format_severity_counts(severity_counts)}",
+        "",
+        "Top actions:",
+    ]
+    top_findings = sorted(findings, key=finding_sort_key)[:3]
+    if not top_findings:
+        lines.append("- No high-priority actions were produced from the current scan evidence.")
+    for finding in top_findings:
+        priority, _ = finding_priority(finding)
+        action = finding.remediation or "Review exposure and confirm whether the service is required."
+        lines.append(f"- {priority}: {finding.host} {finding.port or '-'} - {action}")
+
+    lines.extend(
+        [
+            "",
+            "## Scope And Coverage",
+            "",
+            "| Subnet | Live Hosts | Triage Status |",
+            "|---|---:|---|",
+        ]
+    )
+    for subnet in subnets:
+        live_count = len(policy.live_hosts_by_subnet.get(subnet, set()))
+        triage_status = "Completed" if subnet in policy.triaged_subnets else "Not completed"
+        lines.append(f"| {markdown_cell(subnet)} | {live_count} | {triage_status} |")
+
+    lines.extend(
+        [
+            "",
+            "| Host | Open Ports | Scan Depth | Selection / Skip Reason |",
+            "|---|---|---|---|",
+        ]
+    )
+    for ip in live_hosts:
+        record = evidence[ip]
+        lines.append(
+            f"| {ip} | {markdown_cell(', '.join(open_port_labels(record)) or 'None observed')} | "
+            f"{markdown_cell(scan_depth(record))} | {markdown_cell(skipped_reason(record))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "| Scan Type | Target | Status | Evidence Source |",
+            "|---|---|---|---|",
+        ]
+    )
+    for scan_type, target, status, source in report_scan_status_rows(reports_dir, policy):
+        lines.append(
+            f"| {markdown_cell(scan_type)} | {markdown_cell(target)} | {markdown_cell(status)} | {markdown_cell(source)} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Findings By Priority",
+            "",
+            "| Priority | Severity | Host | Port | Evidence Type | Confidence | Evidence | Remediation |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+    )
+    if not findings:
+        lines.append("| - | - | - | - | Observed | - | No findings generated from current evidence. | - |")
+    for finding in sorted(findings, key=finding_sort_key):
+        priority, rationale = finding_priority(finding)
+        evidence_type = "Observed"
+        evidence_text = finding.evidence
+        concrete_cves = cves_for_finding(finding)
+        if concrete_cves:
+            evidence_text = f"{evidence_text}; Concrete CVEs returned: {', '.join(concrete_cves)}"
+        if finding.confidence.lower() in {"likely", "possible"} and (
+            "risk indicator" in finding.evidence.lower() or "sub-agent" in finding.title.lower()
+        ):
+            evidence_type = "Observed + Inferred"
+        remediation = finding.remediation
+        if priority == "High" and finding.severity.lower() == "medium":
+            remediation = f"{remediation} Priority rationale: {rationale}"
+        lines.append(
+            f"| {priority} | {finding.severity.upper()} | {markdown_cell(finding.host)} | "
+            f"{markdown_cell(finding.port)} | {evidence_type} | {markdown_cell(finding.confidence)} | "
+            f"{markdown_cell(evidence_text)} | {markdown_cell(remediation)} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Host Inventory",
+            "",
+            "| Host | Hostname | Role | Open Ports | Scan Depth |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for ip in live_hosts:
+        record = evidence[ip]
+        lines.append(
+            f"| {ip} | {markdown_cell(record.hostname)} | {markdown_cell(host_role_inference(record))} | "
+            f"{markdown_cell(', '.join(open_port_labels(record)) or 'None observed')} | {markdown_cell(scan_depth(record))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Limitations And Follow-Up",
+            "",
+            "- Observed: this was an unauthenticated network assessment using Nmap output and local activity logs.",
+            "- Observed: triage scans are limited to the configured top TCP ports and only target hosts discovered alive by the ping sweep.",
+            "- Recommended follow-up: run full-port TCP scans (`-p-`) during an approved maintenance window for hosts that matter operationally.",
+            "- Recommended follow-up: run UDP checks only where needed; UDP was not covered by the default triage path.",
+            "- Recommended follow-up: perform authenticated OS and configuration audits for endpoints where ownership and credentials are available.",
+        ]
+    )
+    if any(status == "Timed out" for _, _, status, _ in report_scan_status_rows(reports_dir, policy)):
+        lines.append("- Observed: one or more scan steps timed out; rerun those steps with a longer maintenance window before closing findings.")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def finding_sort_key(finding: Finding) -> tuple[int, int, str, str]:
+    priority, _ = finding_priority(finding)
+    priority_order = {"High": 0, "Medium": 1, "Low": 2}
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    return (
+        priority_order.get(priority, 9),
+        severity_order.get(finding.severity.lower(), 9),
+        finding.host,
+        finding.port,
+    )
+
+
+def format_severity_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    order = ["critical", "high", "medium", "low", "info"]
+    return ", ".join(f"{level}={counts[level]}" for level in order if counts.get(level))
+
+
+def dedupe_findings(findings: list[Finding]) -> list[Finding]:
+    deduped: dict[tuple[str, str, str, str], Finding] = {}
+    for finding in findings:
+        key = (
+            finding.host,
+            finding.port,
+            finding.service.lower(),
+            finding.title.lower(),
+        )
+        current = deduped.get(key)
+        if current is None:
+            deduped[key] = finding
+            continue
+        current_score = len(current.evidence) + (10 if current.confidence == "confirmed" else 0)
+        candidate_score = len(finding.evidence) + (10 if finding.confidence == "confirmed" else 0)
+        if candidate_score > current_score:
+            deduped[key] = finding
+    return list(deduped.values())
 
 
 def write_reports(
@@ -868,74 +1445,18 @@ def write_reports(
     output_formats: set[str],
     sub_findings: list[StructuredFinding],
 ) -> list[Path]:
-    """Generate structured reports, legacy per-host markdown, and sub-agent outputs."""
+    """Generate deterministic evidence-backed network and host reports."""
     reports_dir.mkdir(parents=True, exist_ok=True)
-    host_reports: dict[str, str] = {}
 
-    # Prefer sub-agent findings for host reports
-    for sf in sub_findings:
-        host = sf.host
-        if not host:
-            continue
-        report_lines: list[str] = [f"# Host {host}", ""]
-        report_lines.append(f"**Risk Level:** {sf.risk_level.upper()}\n")
-        report_lines.append(f"**Title:** {sf.title}\n")
-        if sf.open_ports:
-            report_lines.append("## Open Ports\n")
-            for port in sf.open_ports:
-                report_lines.append(
-                    f"- {port.get('port', '')}: {port.get('service', '')} {port.get('version', '')}"
-                )
-            report_lines.append("")
-        if sf.evidence:
-            report_lines.append(f"## Evidence\n{sf.evidence}\n")
-        if sf.severity_reason:
-            report_lines.append(f"## Severity Reason\n{sf.severity_reason}\n")
-        if sf.remediation:
-            report_lines.append(f"## Remediation\n{sf.remediation}\n")
-        if sf.services_researched:
-            report_lines.append(f"## Services Researched\n- {'\n- '.join(sf.services_researched)}\n")
-        if sf.cves_found:
-            report_lines.append(f"## CVE References\n- {'\n- '.join(sf.cves_found)}\n")
-        markdown = "\n".join(report_lines)
-        (reports_dir / f"host_{safe_name(host)}.md").write_text(markdown.strip() + "\n", encoding="utf-8")
-        host_reports[host] = markdown
-
-    # Legacy generation for hosts scanned directly by main agent (not sub-agent)
-    for host in sorted(policy.assessed_hosts, key=ipaddress.ip_address):
-        if host in host_reports:
-            continue
-        raw_path = reports_dir / "raw_nmap" / f"{safe_name(host)}_scan.txt"
-        raw_text = read_text_limited(raw_path, max_report_input_chars)
-        prompt = f"""Create a defensive host report for {host}.
-
-Required sections:
-- IP address and hostname if found
-- Open ports
-- Detected services and versions
-- Possible vulnerabilities
-- Likely severity: Low / Medium / High / Critical
-- Why the severity was chosen
-- Recommended fixes
-
-Raw Nmap evidence:
-{raw_text}
-"""
-        markdown = generate_legacy_markdown(client, model, prompt)
-        if not markdown.lstrip().startswith("#"):
-            markdown = f"# Host {host}\n\n{markdown.strip()}\n"
-        (reports_dir / f"host_{safe_name(host)}.md").write_text(markdown.strip() + "\n", encoding="utf-8")
-        host_reports[host] = markdown
-
-    # Structured findings from XML
     parsed_hosts = collect_structured_hosts(reports_dir)
     findings = findings_from_parsed_hosts(parsed_hosts)
-    previous = load_previous_findings(reports_dir.parent)
-    comparison = compare_findings(findings, previous) if previous else None
 
-    # Also inject sub-agent findings into the structured CSV if possible
     for sf in sub_findings:
-        for port in sf.open_ports:
+        ports = sf.open_ports or [{"port": "", "service": "", "version": ""}]
+        concrete_cves = [
+            ref for ref in sf.cves_found if re.match(r"(?i)^CVE-\d{4}-\d{4,}$", ref.strip())
+        ]
+        for port in ports:
             findings.append(
                 Finding(
                     title=sf.title or f"Sub-agent finding on {sf.host}",
@@ -947,70 +1468,44 @@ Raw Nmap evidence:
                     confidence="likely",
                     remediation=sf.remediation,
                     next_scan="",
+                    cve_refs=concrete_cves,
                 )
             )
+    findings = dedupe_findings(findings)
+    findings.sort(key=finding_sort_key)
 
-    # Write structured reports
-    written = write_structured_reports(
-        reports_dir=reports_dir,
+    evidence = collect_host_evidence(reports_dir, policy, sub_findings)
+    for record in evidence.values():
+        host_findings = [finding for finding in findings if finding.host == record.ip]
+        markdown = build_host_report(record, host_findings, sub_findings)
+        (reports_dir / f"host_{safe_name(record.ip)}.md").write_text(markdown, encoding="utf-8")
+
+    written: list[Path] = []
+    formats = set(output_formats or {"markdown"})
+    if "all" in formats:
+        formats.update({"markdown", "html", "csv"})
+
+    if "csv" in formats:
+        csv_path = reports_dir / "findings.csv"
+        csv_path.write_text(generate_csv(findings), encoding="utf-8")
+        written.append(csv_path)
+    if "html" in formats:
+        html_path = reports_dir / "network_summary.html"
+        html_path.write_text(generate_html(findings, run_id, subnets), encoding="utf-8")
+        written.append(html_path)
+
+    network_summary = build_network_summary(
         run_id=run_id,
         subnets=subnets,
+        evidence=evidence,
         findings=findings,
-        comparison=comparison,
-        formats=output_formats,
+        reports_dir=reports_dir,
+        policy=policy,
     )
-
-    # Legacy network summary
-    transcript_summary = summarize_transcript_for_report(transcript, max_report_input_chars)
-    host_report_text = "\n\n".join(
-        f"## {host}\n{report[:max_report_input_chars]}" for host, report in host_reports.items()
-    )
-    sub_agent_summary = ""
-    if sub_findings:
-        sub_agent_summary = "\n\n## Sub-Agent Findings\n"
-        for sf in sub_findings:
-            sub_agent_summary += f"- **{sf.host}** ({sf.risk_level.upper()}): {sf.title}\n"
-            if sf.cves_found:
-                sub_agent_summary += f"  - CVEs: {', '.join(sf.cves_found)}\n"
-    summary_prompt = f"""Create reports/network_summary.md for this defensive local-network assessment.
-
-Include:
-- Approved subnets and scan scope
-- Hosts assessed
-- Key risks by severity
-- Final prioritized remediation list
-- Notes on limitations
-
-Do not include exploit instructions.
-
-Approved subnets:
-{', '.join(subnets)}
-
-Assessment transcript summary:
-{transcript_summary}
-
-Sub-agent summary:
-{sub_agent_summary or "No sub-agent assessments were run."}
-
-Host reports:
-{host_report_text or "No host-level reports were generated."}
-"""
-    network_summary = generate_legacy_markdown(client, model, summary_prompt)
-    if not network_summary.lstrip().startswith("#"):
-        network_summary = f"# Network Summary\n\n{network_summary.strip()}\n"
-    legacy_path = reports_dir / "network_summary.md"
-    legacy_path.write_text(network_summary.strip() + "\n", encoding="utf-8")
-    written.append(legacy_path)
+    markdown_path = reports_dir / "network_summary.md"
+    markdown_path.write_text(network_summary, encoding="utf-8")
+    written.append(markdown_path)
     return written
-
-
-def generate_legacy_markdown(client: Any, model: str, prompt: str) -> str:
-    messages = [
-        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
-    response = stream_ollama_chat(client, model, messages, tools=None, stream_to_console=False)
-    return response["content"].strip()
 
 
 def read_text_limited(path: Path, limit: int) -> str:
@@ -1019,22 +1514,6 @@ def read_text_limited(path: Path, limit: int) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")
     if len(text) > limit:
         return text[:limit] + "\n\n[Truncated for report generation.]"
-    return text
-
-
-def summarize_transcript_for_report(transcript: list[dict[str, Any]], limit: int) -> str:
-    relevant: list[str] = []
-    for message in transcript:
-        role = message.get("role", "")
-        if role not in {"assistant", "tool"}:
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        relevant.append(f"{role.upper()}:\n{content}")
-    text = "\n\n".join(relevant)
-    if len(text) > limit:
-        return text[-limit:] + "\n\n[Earlier transcript omitted for length.]"
     return text
 
 

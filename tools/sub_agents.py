@@ -241,7 +241,7 @@ class SubAgentTools:
             return f"CACHED:\n{cached}"
         if self.activity_log:
             self.activity_log.agent_search(self.ip, query)
-        result = self.search.search_vulnerability_intel(query)
+        result = await self.search.search_vulnerability_intel_async(query)
         self.budget.cache_search(query, result)
         self.transcript.append({"tool": "search_vulnerability_intel", "query": query, "result": result})
         return result
@@ -348,7 +348,8 @@ class HostSubAgent:
         )
 
     def _sync_chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"messages": messages, "stream": False, "tools": SUB_AGENT_TOOL_SCHEMAS}
+        compacted = self._compact_messages(messages)
+        kwargs: dict[str, Any] = {"messages": compacted, "stream": False, "tools": SUB_AGENT_TOOL_SCHEMAS}
         response = self.client.chat(self.model, **kwargs)
         message = get_field(response, "message", {}) or {}
         content = get_field(message, "content", "") or ""
@@ -364,6 +365,28 @@ class HostSubAgent:
         if tool_calls:
             out["tool_calls"] = tool_calls
         return out
+
+    @staticmethod
+    def _compact_messages(messages: list[dict[str, Any]], keep_full_tool_results: int = 3) -> list[dict[str, Any]]:
+        """Trim older tool results to reduce LLM token usage while keeping full context for recent rounds."""
+        if len(messages) <= keep_full_tool_results + 2:
+            return messages
+        compacted: list[dict[str, Any]] = []
+        tool_result_count = 0
+        for msg in reversed(messages):
+            if msg.get("role") == "tool":
+                tool_result_count += 1
+                if tool_result_count > keep_full_tool_results:
+                    # Replace bulky result with a summary placeholder
+                    name = msg.get("tool_name", "tool")
+                    compacted.append({
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": f"[{name} result omitted to save context; see later full results.]",
+                    })
+                    continue
+            compacted.append(msg)
+        return list(reversed(compacted))
 
     def _normalize_call(self, call: Any) -> dict[str, Any]:
         function = get_field(call, "function", {}) or {}

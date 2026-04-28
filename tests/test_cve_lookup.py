@@ -86,7 +86,7 @@ def test_format_empty_results():
 @pytest.mark.asyncio
 async def test_search_rate_limit_and_cache():
     client = NVDClient(CVESearchSettings(rate_limit_seconds=0.1))
-    with patch.object(client, "_fetch", return_value=[]) as mock_fetch:
+    with patch.object(client, "_fetch_sync", return_value=[]) as mock_fetch:
         await client.search("test")
         await client.search("test")  # should be cached
         mock_fetch.assert_called_once()

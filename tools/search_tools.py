@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,12 +51,20 @@ class SearchSettings:
 
 
 class VulnerabilitySearch:
-    """Small, defensive wrapper around the SerpAPI DuckDuckGo endpoint."""
+    """Small, defensive wrapper around the SerpAPI DuckDuckGo endpoint.
+
+    Includes a lightweight in-memory TTL cache and an async-safe entry point
+    so the event loop is never blocked by synchronous urllib calls.
+    """
 
     def __init__(self, settings: SearchSettings) -> None:
         self.settings = settings
+        self._cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+        self._cache_ttl = 3600.0
+        self._cache_max = 20
 
     def search_vulnerability_intel(self, query: str) -> str:
+        """Synchronous search (for MCP tool handlers)."""
         if not self.settings.enabled:
             return "BLOCKED: vulnerability-intelligence search is disabled in config.yaml."
 
@@ -62,6 +73,48 @@ class VulnerabilitySearch:
         except ValueError as exc:
             return f"BLOCKED: {exc}"
 
+        cached = self._get_cached(clean_query)
+        if cached is not None:
+            return cached
+
+        result = self._do_search(clean_query)
+        self._store_cache(clean_query, result)
+        return result
+
+    async def search_vulnerability_intel_async(self, query: str) -> str:
+        """Async-safe search that runs the blocking IO in a threadpool."""
+        if not self.settings.enabled:
+            return "BLOCKED: vulnerability-intelligence search is disabled in config.yaml."
+
+        try:
+            clean_query = sanitize_query(query)
+        except ValueError as exc:
+            return f"BLOCKED: {exc}"
+
+        cached = self._get_cached(clean_query)
+        if cached is not None:
+            return cached
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, self._do_search, clean_query)
+        self._store_cache(clean_query, result)
+        return result
+
+    def _get_cached(self, query: str) -> str | None:
+        if query in self._cache:
+            cached_at, result = self._cache[query]
+            if time.monotonic() - cached_at < self._cache_ttl:
+                self._cache.move_to_end(query)
+                return result
+            del self._cache[query]
+        return None
+
+    def _store_cache(self, query: str, result: str) -> None:
+        self._cache[query] = (time.monotonic(), result)
+        if len(self._cache) > self._cache_max:
+            self._cache.popitem(last=False)
+
+    def _do_search(self, clean_query: str) -> str:
         defensive_query = f"{clean_query} vulnerability CVE advisory remediation"
         params = {
             "engine": self.settings.engine,
