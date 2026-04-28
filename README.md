@@ -1,4 +1,4 @@
-# AI-Powered Nmap Copilot
+# NetCheckAI
 
 **Turn Nmap into a guided, repeatable defensive assessment workflow — without losing control.**
 
