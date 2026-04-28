@@ -1,0 +1,6 @@
+ollama>=0.6.1
+mcp>=1.27.0
+PyYAML>=6.0.2
+uvicorn>=0.30.0
+starlette>=0.37.0
+rich>=13.7.0

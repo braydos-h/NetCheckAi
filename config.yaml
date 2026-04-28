@@ -1,0 +1,60 @@
+ollama:
+  model: "kimi-k2.6:cloud"
+
+mcp:
+  default_transport: "stdio"
+  http_host: "127.0.0.1"
+  http_port: 8000
+
+nmap:
+  path: "nmap"
+  timeout_seconds: 180
+  vuln_timeout_seconds: 300
+  triage_top_ports: 100
+  max_output_chars: 60000
+
+search:
+  enabled: true
+  endpoint: "https://serpapi.com/search.json"
+  engine: "duckduckgo"
+  region: "us-en"
+  api_key_env: "SERPAPI_API_KEY"
+  timeout_seconds: 20
+  max_results: 5
+
+reports:
+  base_dir: "reports"
+  raw_nmap_dir: "reports/raw_nmap"
+  network_summary: "reports/network_summary.md"
+  host_report_pattern: "reports/host_<ip>.md"
+
+safety:
+  allowed_private_cidrs:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+  max_subnet_addresses: 1024
+  max_hosts: 32
+  max_tool_calls: 40
+  max_searches: 10
+  require_triage_before_host_scans: true
+  max_report_input_chars: 80000
+  vuln_policy: "ai_decides"
+  blocked_commands:
+    - "rm"
+    - "curl"
+    - "wget"
+    - "nc"
+    - "netcat"
+    - "ssh"
+    - "hydra"
+    - "metasploit"
+    - "msfconsole"
+    - "python"
+    - "chmod"
+    - "sudo"
+    - "powershell"
+    - "pwsh"
+    - "cmd"
+    - "bash"
+    - "sh"
