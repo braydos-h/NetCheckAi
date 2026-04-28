@@ -1,175 +1,192 @@
-# Defensive Local Network Assessment Tool
+# AI-Powered Nmap Copilot
 
-Python controller plus MCP server for defensive Nmap-only assessment of explicitly approved local RFC1918 networks.
-It now uses a triage-first workflow so the AI does not waste time deep-scanning every live IP.
+**Turn Nmap into a guided, repeatable defensive assessment workflow — without losing control.**
 
-## Safety Boundaries
+This project combines a Python controller, an MCP tool server, and tightly restricted scan/search tooling to help defenders assess **approved private networks** faster and more consistently.
 
-- Scans only user-provided private IPv4 CIDRs such as `192.168.1.0/24`.
-- Rejects public, loopback, multicast, unspecified, out-of-config, and overly broad ranges.
-- Uses Nmap only. No exploitation, brute force, login bypass, payload upload, reverse shells, or system modification.
-- `run_limited_terminal` accepts only the approved Nmap command shapes and blocks shell metacharacters plus unsafe tools like `curl`, `wget`, `nc`, `ssh`, `hydra`, `metasploit`, `sudo`, `powershell`, `bash`, and similar commands.
-- `search_vulnerability_intel` can search public vulnerability/advisory information, but blocks private IPs, local host details, exploit/payload terms, and offensive query patterns.
-- Nmap banner text is treated as untrusted input by the controller prompt.
+Instead of dumping raw output and hoping for the best, it uses a **triage-first pipeline** with structured findings, remediation guidance, and run-to-run comparison.
 
-## Files
+---
 
-- `main.py`: Ollama controller, MCP client, scan-order policy, streaming loop, report generation.
-- `mcp_server.py`: FastMCP server exposing restricted Nmap tools.
-- `tools/nmap_tools.py`: Safe Nmap wrappers, validation, command allowlist, triage ranking, raw output writing, XML parsing, scan profiles.
-- `tools/search_tools.py`: Restricted SerpAPI DuckDuckGo search for defensive vulnerability intelligence.
-- `tools/report_generator.py`: Structured report generation (Markdown, HTML, CSV) with severity, evidence, remediation, and comparison logic.
-- `config.yaml`: Defaults for model, MCP, Nmap, reports, approval, history, and safety caps.
-- `reports/<timestamp>/`: Timestamped assessment runs.
-- `reports/latest`: Symlink or junction to the most recent run.
+## Why this is useful
 
-## Install
+Most internal scans fail for one of two reasons:
+1. They’re too shallow and miss real risk.
+2. They’re too noisy and waste hours chasing low-value output.
 
-```powershell
+This tool is built to avoid both.
+
+### What you get
+
+- **Triage-first scanning** so deep scans focus on what matters.
+- **Defensive-only guardrails** across command execution and intel search.
+- **Repeatable reporting** in Markdown, HTML, and CSV.
+- **Run history + diffing** so you can track what’s new, still open, or resolved.
+- **Human-in-the-loop approvals** so the operator remains in control.
+
+---
+
+## Core safety model (designed-in, not bolted-on)
+
+This project is intentionally constrained for defensive local-network assessment.
+
+- Accepts only **explicitly approved private IPv4 CIDRs** (RFC1918 ranges).
+- Rejects public, loopback, multicast, unspecified, and overly broad scopes.
+- Uses **Nmap only** for scanning.
+- Blocks unsafe command shapes and shell metacharacters in terminal execution paths.
+- Blocks offensive or environment-leaking patterns in vulnerability-intel searches.
+- Treats Nmap banners and host data as untrusted input to the AI controller.
+
+If you need unrestricted offensive tooling, this is not that project. If you need a safer, auditable internal assessment workflow, this is exactly that.
+
+---
+
+## Architecture at a glance
+
+- `main.py` — AI controller, MCP client orchestration, policy workflow, output generation.
+- `mcp_server.py` — MCP server exposing restricted tool surfaces.
+- `tools/nmap_tools.py` — scan validation, allowlists, profiles, parsing, and evidence capture.
+- `tools/search_tools.py` — defensive vulnerability-intel search wrapper.
+- `tools/report_generator.py` — Markdown/HTML/CSV report generation + comparison logic.
+- `config.yaml` — defaults for profiles, approvals, reports, search cache, and history behavior.
+
+---
+
+## Quick start
+
+### 1) Install dependencies
+
+```bash
 python -m pip install -r requirements.txt
 ```
 
-Install Nmap if needed and make sure `nmap` is on PATH, or set `nmap.path` in `config.yaml`.
+Install Nmap and ensure `nmap` is on `PATH` (or set `nmap.path` in `config.yaml`).
 
-Ollama must be installed and signed in for cloud models:
+### 2) Set up your model runtime
 
-```powershell
+Ollama is expected for model execution:
+
+```bash
 ollama signin
 ollama show kimi-k2.6:cloud
 ```
 
-Optional vulnerability-intelligence search uses SerpAPI DuckDuckGo. If your account requires a key:
+### 3) Run a baseline scan
 
-```powershell
-$env:SERPAPI_API_KEY = "your_key_here"
-```
-
-## Usage
-
-Default stdio MCP transport:
-
-```powershell
+```bash
 python main.py --subnet 192.168.1.0/24
 ```
 
-Or run the IDE-friendly launcher:
+Alternative launcher:
 
-```powershell
+```bash
 python app.py --subnet 192.168.1.0/24
 ```
 
-If you omit `--subnet` in an interactive terminal, the app prompts for approved subnets.
+---
 
-Multiple approved subnets:
+## Profiles built for real workflows
 
-```powershell
-python main.py --subnet 192.168.1.0/24 --subnet 10.0.0.0/24
+Use `--profile` to match depth to your objective:
+
+| Profile | Purpose |
+|---|---|
+| `quick` | Fast reachability and path checks (no port-depth). |
+| `standard` | Best default: host discovery + triage + selective deep follow-up. |
+| `deep` | Broader safe service probing for high-confidence service understanding. |
+| `web` | HTTP/TLS-focused checks via safe NSE scripts. |
+| `windows` | SMB-focused security checks for Windows-heavy environments. |
+| `udp-light` | Limited UDP visibility under strict timing caps. |
+
+Example:
+
+```bash
+python main.py --subnet 10.0.0.0/24 --profile standard
 ```
 
-Local HTTP MCP transport on `127.0.0.1`:
+---
 
-```powershell
-python main.py --subnet 192.168.1.0/24 --mcp-transport http --http-port 8000
-```
+## Keep operators in control with approval modes
 
-Override the model:
+- `auto` (default): AI proposes next scans, you approve.
+- `review`: you choose actions from a menu.
+- `manual`: explicit approval required for every action.
 
-```powershell
-python main.py --subnet 192.168.1.0/24 --model kimi-k2.6:cloud
-```
-
-### Scan Profiles
-
-Choose a predefined safe scan profile with `--profile`:
-
-| Profile | Description |
-|---------|-------------|
-| `quick` | Ping sweep + traceroute only; no port scanning. |
-| `standard` | Current workflow: ping sweep, triage with top ports, selective deeper scans. |
-| `deep` | Selected safe service scripts: `-sV -sC -O` on hosts. |
-| `web` | HTTP title, headers, TLS cert/cipher checks via safe NSE scripts. |
-| `windows` | SMB security mode and protocol checks via safe NSE scripts. |
-| `udp-light` | Limited top UDP ports with strict timeout. |
-
-```powershell
-python main.py --subnet 192.168.1.0/24 --profile web
-```
-
-### Approval Modes
-
-Control how scan actions are approved:
-
-- `--approval-mode auto`: AI proposes each next scan; you approve (default).
-- `--approval-mode review`: You pick scan actions from a menu.
-- `--approval-mode manual`: You must explicitly approve every action.
-
-```powershell
+```bash
 python main.py --subnet 192.168.1.0/24 --approval-mode review
 ```
 
-### Output Formats
+---
 
-Generate richer reports in multiple formats:
+## Reports that teams can actually use
 
-```powershell
-# Markdown only (default)
+Generate output with `--output`:
+
+```bash
+# markdown (default)
 python main.py --subnet 192.168.1.0/24 --output markdown
 
-# HTML report
+# html
 python main.py --subnet 192.168.1.0/24 --output html
 
-# CSV findings
+# csv
 python main.py --subnet 192.168.1.0/24 --output csv
 
-# All formats
+# all formats
 python main.py --subnet 192.168.1.0/24 --output all
 ```
 
-Reports are written under `reports/<timestamp>/` and include:
-- `network_summary.md` — Improved Markdown with severity, evidence, affected host/port, confidence, remediation, and "next scan recommended".
-- `network_summary.html` — Styled HTML report with comparison cards.
-- `findings.csv` — Structured findings for spreadsheets or SIEM ingestion.
-- `host_<ip>.md` — Legacy per-host Markdown reports.
-- `raw_nmap/` — Raw Nmap text evidence.
-- `xml_nmap/` — Parsed XML Nmap output for structured processing.
+Per run, the tool stores artifacts in `reports/<timestamp>/`:
 
-### Run History & Comparisons
+- `network_summary.md` — prioritized findings, evidence, remediation, and confidence.
+- `network_summary.html` — stakeholder-ready visual summary.
+- `findings.csv` — structured records for spreadsheets, tickets, or SIEM workflows.
+- `raw_nmap/` + `xml_nmap/` — preserved evidence for auditability and re-processing.
 
-Each run is stored in a timestamped folder. The tool automatically compares findings with the previous run and classifies them as **new**, **open**, or **resolved** when both runs exist.
+---
 
-```powershell
-# Previous run comparison happens automatically when multiple runs exist
-reports/
-  latest -> 20260428_123000/ (junction)
-  20260428_123000/
-    findings.csv
-    network_summary.md
-    network_summary.html
-  20260427_090000/
-    findings.csv
-    ...
+## Trend your security posture over time
+
+The system stores timestamped runs and compares with prior results to classify findings as:
+
+- **new**
+- **open**
+- **resolved**
+
+This makes it practical to answer: *“Are we getting better?”* — not just *“What is open right now?”*
+
+---
+
+## Optional vulnerability-intel enrichment
+
+If configured, the tool can pull defensive public intel to enrich findings.
+
+If your SerpAPI plan requires a key:
+
+```bash
+export SERPAPI_API_KEY="your_key_here"
 ```
 
-### Faster AI Workflow
+---
 
-The controller now gives the AI compact structured host summaries instead of huge raw Nmap text. Search results are cached per service/version, and the controller can stop early when enough evidence is collected.
+## Test
 
-### Running Tests
-
-```powershell
+```bash
 python -m pytest tests/ -v
 ```
 
-## Config Sections
+---
 
-Key sections in `config.yaml`:
+## Configuration highlights
+
+`config.yaml` includes settings for scan behavior, approvals, output formats, cache, and run history.
 
 ```yaml
 nmap:
-  default_profile: "standard"   # quick | standard | deep | web | windows | udp-light
+  default_profile: "standard"
 
 approval:
-  default_mode: "auto"          # auto | review | manual
+  default_mode: "auto"
 
 reports:
   default_formats:
@@ -184,3 +201,18 @@ history:
   retention_runs: 10
   compare_with_previous: true
 ```
+
+---
+
+## Who this is for
+
+- Security engineers who want faster internal visibility.
+- Blue teams that need evidence-backed remediation output.
+- Consultants who need repeatable and auditable scan/report cycles.
+- DevSecOps teams who want safe automation without giving up governance.
+
+---
+
+## Bottom line
+
+If you want a safer, AI-assisted way to run **defensive internal network assessments** that produce decision-ready outputs, this project gives you a strong operating model out of the box.
