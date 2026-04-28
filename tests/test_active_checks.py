@@ -53,6 +53,7 @@ def make_policy(
     tmp_path: Path,
     *,
     enabled: bool = True,
+    consent_mode: str = "per_command",
     prompt: str | list[str] = "ALLOW 192.168.1.10",
     runner: RecordingTerminalRunner | None = None,
 ) -> ActiveCheckPolicy:
@@ -63,7 +64,11 @@ def make_policy(
     else:
         prompt_func = lambda _: prompt
     return ActiveCheckPolicy(
-        settings=ActiveCheckSettings(enabled=enabled, command_timeout_seconds=5),
+        settings=ActiveCheckSettings(
+            enabled=enabled,
+            consent_mode=consent_mode,
+            command_timeout_seconds=5,
+        ),
         reports_dir=tmp_path,
         approved_subnets=(subnet,),
         completed_ping_sweeps={str(subnet)},
@@ -174,3 +179,39 @@ async def test_shell_command_blocks_inline_python_bypass(tmp_path: Path) -> None
 
     assert "ACTIVE_CHECK_RESULT: blocked" in result
     assert "not allowed" in result
+
+
+@pytest.mark.asyncio
+async def test_preapproved_mode_runs_without_prompt(tmp_path: Path) -> None:
+    runner = RecordingTerminalRunner()
+
+    def fail_prompt(_: str) -> str:
+        raise AssertionError("prompt should not be called in preapproved mode")
+
+    subnet = ipaddress.ip_network("192.168.1.0/24")
+    policy = ActiveCheckPolicy(
+        settings=ActiveCheckSettings(
+            enabled=True,
+            consent_mode="preapproved",
+            command_timeout_seconds=5,
+        ),
+        reports_dir=tmp_path,
+        approved_subnets=(subnet,),
+        completed_ping_sweeps={str(subnet)},
+        live_hosts_by_subnet={str(subnet): {"192.168.1.10"}},
+        triaged_subnets={str(subnet)},
+        runner=runner,
+        prompt_func=fail_prompt,
+    )
+
+    result = await policy.propose_active_shell(
+        ip="192.168.1.10",
+        command="ping 192.168.1.10",
+        purpose="Confirm host responsiveness.",
+        risk_note="Preapproved mode skips prompts but remains scoped to one target.",
+    )
+
+    assert "ACTIVE_CHECK_RESULT: completed" in result
+    assert len(runner.calls) == 1
+    records = read_active_check_records(tmp_path)
+    assert records[0]["approved"] is True

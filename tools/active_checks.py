@@ -128,11 +128,16 @@ class ActiveCheckSettings:
     enabled: bool = False
     terminal: str = "visible"
     review: str = "summary_command"
+    consent_mode: str = "per_command"
     workspace_dir: Path = Path("active_checks")
     command_timeout_seconds: int = 90
     max_commands_per_host: int = 3
     max_code_chars: int = 20_000
     max_command_chars: int = 500
+
+    @property
+    def preapproved(self) -> bool:
+        return self.consent_mode == "preapproved"
 
 
 @dataclass(frozen=True)
@@ -424,6 +429,15 @@ class ActiveCheckPolicy:
         host = str(ipaddress.ip_address(ip))
         if self._host_sessions.get(host):
             return f"ACTIVE_SESSION: {host} is already approved for active checks in this run."
+        if self.settings.preapproved:
+            self._host_sessions[host] = True
+            self._log(
+                "active_approval",
+                f"Active host preapproved: {host}",
+                detail="active_checks.consent_mode=preapproved",
+                host=host,
+            )
+            return f"ACTIVE_SESSION: preapproved for {host}."
 
         prompt = (
             "\n[ACTIVE HOST APPROVAL REQUIRED]\n"
@@ -622,7 +636,10 @@ class ActiveCheckPolicy:
             return False, message
         host = str(ipaddress.ip_address(ip))
         if not self._host_sessions.get(host):
-            return False, f"active host session has not been approved for {host}."
+            if self.settings.preapproved:
+                self._host_sessions[host] = True
+            else:
+                return False, f"active host session has not been approved for {host}."
         if self._commands_by_host.get(host, 0) >= self.settings.max_commands_per_host:
             return False, f"max active commands reached for {host}."
         return True, ""
@@ -641,6 +658,14 @@ class ActiveCheckPolicy:
         command: str,
         artifact_path: Path,
     ) -> bool:
+        if self.settings.preapproved:
+            self._log(
+                "active_approval",
+                f"Active command preapproved: {host}",
+                detail=command,
+                host=host,
+            )
+            return True
         prompt = (
             "\n[ACTIVE COMMAND APPROVAL REQUIRED]\n"
             f"Target: {host}\n"

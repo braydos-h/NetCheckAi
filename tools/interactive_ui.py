@@ -110,6 +110,76 @@ def ask_active_checks(history: dict[str, Any]) -> bool:
     ).unsafe_ask()
 
 
+def ask_active_consent_mode(history: dict[str, Any]) -> str:
+    default = history.get("active_consent_mode", "per-command")
+    choices = [
+        Choice("per-command - approve each generated command", value="per-command", checked=(default == "per-command")),
+        Choice("preapproved - no prompts after startup warning", value="preapproved", checked=(default == "preapproved")),
+    ]
+    return select(
+        "Select active-check consent mode:",
+        choices=choices,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
+def ask_exploit(history: dict[str, Any]) -> bool:
+    default = history.get("exploit", False)
+    return confirm(
+        "Enable AI-driven exploitation? WARNING: allows AI to run exploits and terminal commands.",
+        default=default,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
+def ask_exploit_mode(history: dict[str, Any]) -> str:
+    default = history.get("exploit_mode", "integrated")
+    choices = [
+        Choice("integrated - exploit targets found during scan", value="integrated", checked=(default == "integrated")),
+        Choice("standalone - exploit a specific target without scanning", value="standalone", checked=(default == "standalone")),
+    ]
+    return select(
+        "Select exploitation mode:",
+        choices=choices,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
+def ask_exploit_permission(history: dict[str, Any]) -> str:
+    default = history.get("exploit_permission", "approve_only")
+    choices = [
+        Choice("approve_only - user must approve each exploit action", value="approve_only", checked=(default == "approve_only")),
+        Choice("full_access - AI auto-executes all exploit actions", value="full_access", checked=(default == "full_access")),
+    ]
+    return select(
+        "Select exploit permission level:",
+        choices=choices,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
+def ask_exploit_standalone_target(history: dict[str, Any]) -> str:
+    default = history.get("exploit_target", "")
+    ans = text(
+        "Enter target IP for exploitation:",
+        default=default,
+        instruction="Example: 192.168.1.100",
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+    return ans.strip()
+
+
+def ask_exploit_cve(history: dict[str, Any]) -> str:
+    default = history.get("exploit_cve", "")
+    ans = text(
+        "Specific CVE to exploit (optional, press Enter to skip):",
+        default=default,
+        instruction="Example: CVE-2021-44228",
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+    return ans.strip()
+
+
 def ask_approval_mode(history: dict[str, Any]) -> str:
     choices = [
         Choice("auto   - AI proposes, no interruptions", value="auto"),
@@ -207,15 +277,22 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         profile = history.get("profile", "standard")
         use_sub_agents = history.get("sub_agents", True)
         active_checks = history.get("active_checks", False)
+        active_consent_mode = history.get("active_consent_mode", "per-command")
         approval_mode = history.get("approval_mode", "auto")
         search_enabled = history.get("search", True)
         output_formats = set(history.get("output_formats", ["markdown"]))
         mcp_transport = history.get("mcp_transport", "stdio")
         concurrency = history.get("sub_agent_concurrency", 4)
+        exploit_enabled = history.get("exploit", False)
+        exploit_mode = history.get("exploit_mode", "integrated")
+        exploit_permission = history.get("exploit_permission", "approve_only")
+        exploit_target = history.get("exploit_target", "")
+        exploit_cve = history.get("exploit_cve", "")
     else:
         profile = ask_profile(history)
         use_sub_agents = ask_sub_agents(history)
         active_checks = ask_active_checks(history) if use_sub_agents else False
+        active_consent_mode = ask_active_consent_mode(history) if active_checks else "per-command"
         approval_mode = ask_approval_mode(history)
         search_enabled = ask_search(history)
         output_formats = ask_output_formats(history)
@@ -223,6 +300,17 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         concurrency = ask_concurrency(history) if use_sub_agents else 4
         if not use_sub_agents:
             mcp_transport = "stdio"
+        exploit_enabled = ask_exploit(history)
+        exploit_mode = "integrated"
+        exploit_permission = "approve_only"
+        exploit_target = ""
+        exploit_cve = ""
+        if exploit_enabled:
+            exploit_mode = ask_exploit_mode(history)
+            exploit_permission = ask_exploit_permission(history)
+            if exploit_mode == "standalone":
+                exploit_target = ask_exploit_standalone_target(history)
+                exploit_cve = ask_exploit_cve(history)
 
     # Save for next time
     save_history({
@@ -230,11 +318,17 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         "profile": profile,
         "sub_agents": use_sub_agents,
         "active_checks": active_checks,
+        "active_consent_mode": active_consent_mode,
         "approval_mode": approval_mode,
         "search": search_enabled,
         "output_formats": list(output_formats),
         "mcp_transport": mcp_transport,
         "sub_agent_concurrency": concurrency,
+        "exploit": exploit_enabled,
+        "exploit_mode": exploit_mode,
+        "exploit_permission": exploit_permission,
+        "exploit_target": exploit_target,
+        "exploit_cve": exploit_cve,
     })
 
     # Build synthetic argparse Namespace
@@ -255,6 +349,12 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
         "sub_agent_concurrency": concurrency,
         "max_sub_agent_rounds": None,
         "active_checks": active_checks,
+        "active_consent_mode": active_consent_mode,
+        "exploit": exploit_enabled,
+        "exploit_mode": exploit_mode,
+        "exploit_permission": exploit_permission,
+        "exploit_target": exploit_target,
+        "exploit_cve": exploit_cve,
     }
 
 

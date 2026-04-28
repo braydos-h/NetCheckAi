@@ -1,6 +1,6 @@
 # NetCheckAI
 
-> AI-assisted defensive network assessment for approved private networks.
+> AI-assisted offensive and defensive network assessment for approved private networks.
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Nmap](https://img.shields.io/badge/Nmap-required-00457C)](https://nmap.org/)
@@ -9,9 +9,9 @@
 [![Tests](https://img.shields.io/badge/tests-pytest-0A7BBB)](https://docs.pytest.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-NetCheckAI turns Nmap into a governed, repeatable, AI-assisted assessment workflow for internal networks. It combines a Python orchestration layer, a restricted MCP tool server, safe Nmap wrappers, vulnerability-intelligence lookup, per-host AI sub-agents, and deterministic evidence-backed reports.
+NetCheckAI turns Nmap into a governed, repeatable, AI-assisted assessment workflow for internal networks. It combines a Python orchestration layer, restricted MCP tool servers, safe Nmap wrappers, vulnerability-intelligence lookup, per-host AI sub-agents, AI-driven exploitation, and deterministic evidence-backed reports.
 
-It is built for defenders who need speed without giving up control: every scan is constrained to approved RFC1918 IPv4 ranges, every host-level action is gated by discovery evidence, and every report preserves the raw artifacts needed for audit and follow-up.
+It is built for defenders and pentesters who need speed without giving up control: every scan is constrained to approved RFC1918 IPv4 ranges, every host-level action is gated by discovery evidence, and every report preserves the raw artifacts needed for audit and follow-up. When exploitation mode is enabled, the AI can research and execute exploits — but every action is permission-gated, audited, and target-scoped.
 
 ---
 
@@ -23,12 +23,12 @@ The project exists to solve a common operational problem: internal scans either 
 
 | Dimension | What NetCheckAI Does |
 |---|---|
-| Primary use case | Defensive local-network discovery, triage, service review, and remediation reporting |
-| Target users | Security engineers, consultants, blue teams, lab operators, DevSecOps teams |
-| Control model | Runtime-approved private CIDRs, strict command allowlists, tool-call budgets, optional manual approval |
-| AI role | Plans assessment flow, selects suspicious hosts, enriches findings, and summarizes remediation |
-| Evidence model | Nmap text output, Nmap XML, per-host report files, structured findings, JSONL activity logs |
-| Output | Markdown network summary, per-host Markdown reports, optional HTML and CSV reports |
+| Primary use case | Defensive local-network discovery, triage, service review, remediation reporting, and optional AI-driven exploitation of confirmed CVEs |
+| Target users | Security engineers, consultants, blue teams, pentesters, lab operators, DevSecOps teams |
+| Control model | Runtime-approved private CIDRs, strict command allowlists, tool-call budgets, optional manual approval, per-action exploit approvals |
+| AI role | Plans assessment flow, selects suspicious hosts, enriches findings, summarizes remediation, researches and executes exploits against authorized targets |
+| Evidence model | Nmap text output, Nmap XML, per-host report files, structured findings, exploit audit trails, JSONL activity logs |
+| Output | Markdown network summary, per-host Markdown reports, optional HTML and CSV reports, exploit workspace artifacts |
 
 ### Key Differentiators
 
@@ -109,7 +109,7 @@ This repository contains a CLI experience and generated report artifacts, not a 
 | Discovery prerequisite | Host-level scans require prior ping sweep evidence |
 | Triage prerequisite | Host-level scans can require triage before deeper scanning |
 | Command allowlist | `run_limited_terminal` accepts only known safe Nmap command shapes |
-| Active-check gate | Optional generated checks require discovered-live + triaged host evidence, host approval, and per-command approval |
+| Active-check gate | Optional generated checks require discovered-live + triaged host evidence; default mode also requires host and per-command approval |
 | Shell metacharacter rejection | Command and search inputs reject shell metacharacters |
 | Offensive term blocking | Search blocks terms such as exploit payloads, brute force tooling, and Metasploit references |
 | Private data protection | Private IP addresses and local hostnames are blocked from public web search |
@@ -152,15 +152,20 @@ flowchart LR
     Operator[Operator / CLI] --> Controller[main.py<br/>Assessment Controller]
     Controller --> Ollama[Ollama Model<br/>kimi-k2.6:cloud by default]
     Controller --> MCPClient[MCP Client Session]
-    MCPClient --> MCPServer[mcp_server.py<br/>Restricted Tool Server]
+    MCPClient --> MCPServer[mcp_server.py<br/>Defensive Tool Server]
+    MCPClient --> ExploitServer[mcp_exploit_server.py<br/>Exploit Tool Server]
     MCPServer --> Nmap[SafeNmapRunner<br/>Nmap Execution]
     MCPServer --> Search[VulnerabilitySearch<br/>SerpAPI DuckDuckGo]
     MCPServer --> NVD[NVDClient<br/>CVE API 2.0]
+    ExploitServer --> ExploitSearch[ExploitSearch<br/>searchsploit + Web]
+    ExploitServer --> ExploitTerminal[Terminal Execution<br/>subprocess + visible console]
+    ExploitServer --> ExploitNVD[NVDClient<br/>CVE API 2.0]
     Controller --> SubAgents[Parallel Host Sub-Agents]
     SubAgents --> Nmap
     SubAgents --> Search
     SubAgents --> NVD
     Nmap --> Artifacts[reports/&lt;run_id&gt;<br/>raw_nmap + xml_nmap]
+    ExploitSearch --> ExploitArtifacts[exploit_workspace/<br/>audit trails + scripts]
     Controller --> Reports[Markdown / HTML / CSV<br/>Host Reports + Network Summary]
     Reports --> Artifacts
 ```
@@ -183,7 +188,8 @@ There is no web frontend in the current repository. The user interface is a term
 |---|---|
 | Language | Python |
 | Controller | `main.py` |
-| Tool server | `mcp_server.py` using MCP `FastMCP` |
+| Defensive tool server | `mcp_server.py` using MCP `FastMCP` |
+| Exploit tool server | `mcp_exploit_server.py` using MCP `FastMCP` |
 | Scanner | Nmap via `subprocess.run` / `asyncio.create_subprocess_exec` with `shell=False` |
 | Config | YAML via `PyYAML` |
 | LLM runtime | Ollama Python client |
@@ -203,7 +209,26 @@ There is no web frontend in the current repository. The user interface is a term
 | `search_vulnerability_intel(query)` | Defensive public vulnerability/advisory search | Sanitized, no private IPs, no offensive terms |
 | `search_cve_intel(query)` | NVD CVE lookup for known product/version strings | Sanitized query, rate-limited and cached |
 
-Active custom checks are not exposed through the MCP server. They are local host sub-agent tools only, and are available only when `--active-checks` or `active_checks.enabled` is set.
+Active custom checks are not exposed through the MCP server. They are local host sub-agent tools only, and are available only when `--active-checks` or `active_checks.enabled` is set. `preapproved` consent mode is high risk: the model will not stop for host or command prompts, so a bad generated check could disrupt an in-scope device even though scope checks, blocked primitives, timeouts, and audit logs still apply.
+
+### Exploit MCP Tool Surface (mcp_exploit_server.py)
+
+The exploit server runs on a separate port (default 8001) and exposes permissive tools for authenticated exploitation. These tools are only available when `--exploit` is passed.
+
+| Tool | Purpose | Guardrails |
+|---|---|---|
+| `run_exploit_terminal(command)` | Execute any command in a dedicated visible terminal | Target-scoped, timeout-enforced, audit-logged |
+| `write_python_file(filename, code)` | Save generated Python exploit script | SHA256-hashed, workspace-contained |
+| `run_python_file(target_ip, filename)` | Execute saved Python exploit in visible terminal | Target IP mandatory, timeout-enforced |
+| `search_exploit_db(query)` | Search local exploit-db via searchsploit | No sanitization (offensive terms allowed) |
+| `search_web_exploit(query)` | Unsandboxed web search for PoC/exploit code | No sanitization (offensive terms allowed) |
+| `search_cve_intel(query)` | NVD CVE lookup by ID or product/version | Rate-limited, cached |
+| `run_msf_module(module, target_ip, options)` | Launch Metasploit module against target | Target IP mandatory, timeout-enforced |
+| `read_workspace_file(filename)` | Read files from exploit workspace | Path-traversal protected |
+| `list_workspace()` | List all files in exploit workspace | Read-only |
+| `check_os(target_ip)` | Detect target OS via TTL analysis and port probing | Read-only, non-intrusive |
+
+The permission mode (`--exploit-permission`) applies at the policy layer in `exploit_agent.py`, not in the MCP server. In `full_access` mode all tool calls are auto-approved; in `approve_only` mode the user must type `ALLOW <target>` for each action.
 
 ### Auth And Identity
 
@@ -269,6 +294,7 @@ NetCheckAi/
 +-- LICENSE
 +-- main.py
 +-- mcp_server.py
++-- mcp_exploit_server.py
 +-- README.md
 +-- requirements.txt
 +-- reports/
@@ -288,6 +314,7 @@ NetCheckAi/
 |       +-- xml_nmap/
 +-- tests/
 |   +-- __init__.py
+|   +-- test_active_checks.py
 |   +-- test_command_allowlist.py
 |   +-- test_cve_lookup.py
 |   +-- test_nmap_runner.py
@@ -298,8 +325,11 @@ NetCheckAi/
 |   +-- test_triage_parsing.py
 +-- tools/
     +-- __init__.py
+    +-- active_checks.py
     +-- activity_log.py
     +-- cve_lookup.py
+    +-- exploit_agent.py
+    +-- exploit_search.py
     +-- interactive_ui.py
     +-- nmap_tools.py
     +-- report_generator.py
@@ -500,7 +530,7 @@ python main.py [options]
 | `--reports-dir <path>` | Base directory for generated reports |
 | `--max-hosts <n>` | Override max host-level assessment count |
 | `--config <path>` | YAML config path |
-| `--http-port <port>` | Local HTTP MCP port |
+| `--http-port <port>` | Local HTTP MCP port for defensive server |
 | `--plain` | Disable any remaining fancy formatting |
 | `--no-search` | Disable public vulnerability-intelligence search |
 | `--profile <name>` | Scan profile: `quick`, `standard`, `deep`, `web`, `windows`, `udp-light` |
@@ -510,6 +540,12 @@ python main.py [options]
 | `--sub-agent-concurrency <n>` | Max concurrent host sub-agent scans |
 | `--max-sub-agent-rounds <n>` | Max model/tool rounds per sub-agent |
 | `--active-checks` | Enable user-approved active custom checks for scan-discovered, triaged hosts |
+| `--active-consent-mode <mode>` | `per-command` prompts for each active command; `preapproved` skips prompts after startup warning |
+| `--exploit` | Enable AI-driven exploitation |
+| `--exploit-mode <mode>` | `integrated` (exploit targets found during scan) or `standalone` (exploit specific target) |
+| `--exploit-permission <mode>` | `full_access` (AI auto-executes) or `approve_only` (user confirms each action) |
+| `--exploit-target <ip>` | Target IP for standalone exploit mode (required) |
+| `--exploit-cve <cve>` | Specific CVE to exploit in standalone mode (optional) |
 
 ---
 
@@ -660,6 +696,8 @@ There is no database schema in the current repository. The effective data model 
 | `CVEEntry` | `tools/cve_lookup.py` | `cve_id`, `description`, `cvss_score`, `severity`, `cwe`, `published`, `references` |
 | `StructuredFinding` | `tools/sub_agents.py` | `risk_level`, `title`, `open_ports`, `evidence`, `remediation`, `services_researched`, `cves_found` |
 | `ActivityEvent` | `tools/activity_log.py` | `timestamp`, `category`, `message`, `detail`, `host`, `severity` |
+| `ExploitRecord` | `tools/exploit_agent.py` | `timestamp`, `target_ip`, `action`, `approved`, `status`, `command`, `attempt_id`, `exit_code`, `code_sha256` |
+| `ExploitDBEntry` | `tools/exploit_search.py` | `id`, `title`, `path`, `date`, `author`, `verified`, `cve` |
 
 ```mermaid
 erDiagram
@@ -756,6 +794,67 @@ python main.py \
   --no-sub-agents
 ```
 
+### Integrated Exploitation (Scan + Exploit)
+
+Runs a normal assessment scan, then presents exploitable targets with confirmed CVEs. The user picks which targets to exploit.
+
+```bash
+python main.py \
+  --subnet 192.168.1.0/24 \
+  --exploit \
+  --exploit-permission approve_only
+```
+
+### Standalone Exploitation (Direct Attack)
+
+Skips scanning entirely. Targets a specific IP with an optional known CVE.
+
+```bash
+python main.py \
+  --exploit \
+  --exploit-mode standalone \
+  --exploit-target 192.168.1.100 \
+  --exploit-cve CVE-2021-44228 \
+  --exploit-permission full_access
+```
+
+### Full Access Exploitation (Auto-Execute)
+
+The AI researches CVEs, finds exploits, writes Python scripts, and executes them all automatically. The user just watches the terminals.
+
+```bash
+python main.py \
+  --exploit \
+  --exploit-mode standalone \
+  --exploit-target 10.0.0.50 \
+  --exploit-permission full_access
+```
+
+### Approve-Only Exploitation (Review Each Step)
+
+The AI proposes each action and the user must type `ALLOW <ip>` before execution. Full audit trail of all decisions.
+
+```bash
+python main.py \
+  --exploit \
+  --exploit-mode standalone \
+  --exploit-target 10.0.0.50 \
+  --exploit-permission approve_only
+```
+
+### Full Assessment Pipeline
+
+Discovery, triage, sub-agent deep scans, CVE lookup, report generation, and exploitation of all found targets with CVE confirmations.
+
+```bash
+python main.py \
+  --subnet 192.168.1.0/24 \
+  --profile standard \
+  --output all \
+  --exploit \
+  --exploit-permission approve_only
+```
+
 ---
 
 ## Reports
@@ -772,6 +871,15 @@ reports/<run_id>/
 +-- host_<ip>.md
 +-- raw_nmap/
 +-- xml_nmap/
++-- exploit_workspace/
+    +-- <target_ip>/
+    |   +-- exploit_audit.jsonl
+    |   +-- <attempt_id>/
+    |       +-- exploit_script.py
+    |       +-- terminal.log
+    |       +-- python_run.log
+    |       +-- msf_output.log
+    |       +-- ...
 ```
 
 ### Network Summary Sections
@@ -784,6 +892,181 @@ reports/<run_id>/
 | Findings By Priority | Prioritized remediation table with observed and inferred evidence |
 | Host Inventory | Lists host roles inferred from unauthenticated network evidence |
 | Limitations And Follow-Up | Documents unauthenticated scope, triage limits, UDP gaps, and recommended next steps |
+
+---
+
+## AI-Driven Exploitation
+
+When `--exploit` is enabled, NetCheckAI gains a second MCP tool server (`mcp_exploit_server.py`) with permissive exploitation tools. The exploit agent runs alongside or independently from the defensive scan loop.
+
+### How It Works
+
+```
+1. Scan finds CVE-2021-44228 on 192.168.1.100 (Log4j, Java, port 8080)
+2. User picks target: 192.168.1.100 CVE-2021-44228
+3. Exploit agent starts on exploit MCP port 8001
+4. AI researches: search_cve_intel("CVE-2021-44228") → CVSS 10.0, remote RCE
+5. AI searches: search_exploit_db("Log4j") → finds PoC scripts
+6. AI searches: search_web_exploit("CVE-2021-44228 PoC Python") → finds PoC code
+7. AI writes: write_python_file("exploit_log4j.py", code)
+8. AI executes: run_python_file("192.168.1.100", "exploit_log4j.py")
+9. Terminal opens, exploit runs, AI reads output
+10. AI reports: EXPLOIT_RESULT: [success] | ACCESS_TYPE: shell | DETAILS: port 4444
+```
+
+### OS Detection And Tool Availability
+
+The AI automatically assesses what tools are available based on the host OS. The `check_os(target_ip)` MCP tool probes the target to determine Windows vs Linux and adapts the approach.
+
+#### Attacker Host Is Windows
+
+Most Kali tools (`searchsploit -m`, `msfconsole`, `hydra`, `crackmapexec`, bash scripts) will **not** work from the terminal. The AI is instructed to:
+
+| Approach | Tools | How |
+|---|---|---|
+| Python exploits (primary) | `write_python_file` + `run_python_file` | Custom scripts using `socket`, `ssl`, `http.client`, `urllib`, `struct`, `json` |
+| Terminal tools (limited) | `run_exploit_terminal` | `nmap`, `ncat` (if installed), `ping`, basic Windows commands |
+| Manual workaround | N/A | AI explains what Kali tool is needed and asks user to run it manually |
+
+The system prompt explicitly tells the AI: "For exploitation you MUST write custom Python scripts. Do not attempt msfconsole, bash scripts, or searchsploit -m."
+
+#### Attacker Host Is Linux
+
+All Kali tools are available. The AI operates with full arsenal:
+
+| Tool | What It Does |
+|---|---|
+| `run_exploit_terminal` | Nmap NSE scripts, `searchsploit -m -p` (mirror exploits), hydra, netcat, curl/wget, crackmapexec, evil-winrm, smbclient, rpcclient, responder, impacket scripts |
+| `run_msf_module` | Metasploit modules launch in visible terminals |
+| `write_python_file` + `run_python_file` | Custom Python still works as a fallback |
+
+### Exploitation Modes
+
+#### Integrated Mode (Scan → Exploit)
+
+```bash
+python main.py --subnet 192.168.1.0/24 --exploit --exploit-permission approve_only
+```
+
+Workflow:
+1. Ping sweep → triage → sub-agents deep-scan suspicious hosts
+2. Sub-agents find CVEs (e.g. via `search_cve_intel`)
+3. Reports generated
+4. CLI prompts: `Found 3 exploit targets. Enter numbers to exploit (comma-separated):`
+5. User picks targets
+6. For each selected target, exploit agent runs with context (IP, CVE, service, port, severity, evidence)
+7. Results saved to `exploit_workspace/<ip>/`
+
+#### Standalone Mode (Direct Attack)
+
+```bash
+python main.py --exploit --exploit-mode standalone --exploit-target 192.168.1.100 --exploit-cve CVE-2021-44228 --exploit-permission full_access
+```
+
+Workflow:
+1. Skips all scanning — no ping sweep, no triage, no sub-agents
+2. Immediately starts exploit agent against the specified IP
+3. CVE is passed as context (optional)
+4. AI researches and executes
+5. Results saved to `exploit_workspace/`
+
+### Permission Modes
+
+#### `approve_only` (Recommended)
+
+Every tool call (terminal commands, Python execution, Metasploit modules, web searches) requires explicit approval:
+
+```
+======================================================================
+  EXPLOIT ACTION REQUIRES APPROVAL
+======================================================================
+  Target:   192.168.1.100
+  Action:   run_python_file
+  Detail:   filename 'exploit.py', target_ip '192.168.1.100'
+  Command:  run_python_file(target_ip='192.168.1.100', filename='exploit.py')
+----------------------------------------------------------------------
+Type ALLOW 192.168.1.100 to approve, anything else to deny: ALLOW 192.168.1.100
+```
+
+Denied actions (wrong response, empty, `no`, etc.) are recorded in the audit trail. The agent adapts by trying a different approach.
+
+#### `full_access` (High Risk)
+
+All tool calls are auto-approved. The AI researches, writes, and executes exploits without any prompts. The user just watches terminals spawn.
+
+```yaml
+exploit:
+  permission: "full_access"
+```
+
+**Safety in full_access mode:**
+- Target IP is **locked** — AI cannot pivot to other hosts
+- All commands run in **separate visible terminals** (Windows: new console windows, Linux: subprocess with output capture)
+- **Timeout enforced** per command (configurable, default 120s)
+- **Full audit trail** — every action logged with SHA256 of code, timestamps, exit codes
+- **Workspace isolation** — all files go to `exploit_workspace/<ip>/`, path traversal blocked
+
+### Exploit Workspace
+
+Each exploitation session creates timestamped attempt directories:
+
+```
+exploit_workspace/<target_ip>/
++-- exploit_audit.jsonl
++-- <attempt_id>/
+    +-- exploit_script.py       # AI-generated Python exploit
+    +-- terminal.log            # Terminal command output
+    +-- python_run.log          # Python script stdout/stderr
+    +-- msf_output.log          # Metasploit module output
+    +-- run_active_check.ps1    # Windows PowerShell wrapper
+```
+
+The `exploit_audit.jsonl` contains structured records of every action:
+
+```json
+{
+  "timestamp": "2026-04-28T12:00:00+00:00",
+  "target_ip": "192.168.1.100",
+  "action": "run_python_file",
+  "approved": true,
+  "status": "completed",
+  "exit_code": 0,
+  "command": "run_python_file(target_ip='192.168.1.100', filename='exploit.py')",
+  "code_sha256": "abc123..."
+}
+```
+
+### Exploit Configuration (config.yaml)
+
+```yaml
+exploit:
+  enabled: false           # Enable via --exploit CLI flag
+  mode: "integrated"       # integrated | standalone | disabled
+  permission: "approve_only" # full_access | approve_only
+  terminal: "visible"      # visible (separate console) always
+  command_timeout_seconds: 120
+  max_commands_per_session: 50  # Max tool calls per exploit session
+  max_rounds: 30                 # Max AI reasoning rounds
+  workspace_dir: "exploit_workspace"
+  searchsploit_path: "searchsploit"
+  web_search: true               # Unsandboxed exploit web search
+  max_query_chars: 200
+  cache_ttl_seconds: 3600
+  cache_max_entries: 50
+```
+
+### Exploit Agent System Prompt
+
+The AI receives a dynamically-built system prompt that includes:
+
+- Attacker OS detection (`Windows`/`Linux`/`Darwin`)
+- Tool availability guidance (different instructions for Windows vs Linux)
+- Target IP (locked, cannot scan other hosts)
+- Known CVEs from sub-agents
+- Service context (port, version, banner)
+- Target OS (if pre-detected)
+- Exploitation workflow checklist
+- Reporting format requirements (`EXPLOIT_RESULT: [success/partial/failed]`)
 
 ---
 
@@ -924,7 +1207,21 @@ NetCheckAI is intentionally defensive and constrained.
 | Audit log signing | Not implemented |
 | Central secret manager | Not implemented |
 | Rate-limited web API | No public web API exists |
-| Sandbox isolation | Tool restrictions are implemented in code; OS-level sandboxing is not included |
+| Sandbox isolation | Tool restrictions and exploit policies are implemented in code; OS-level sandboxing is not included |
+
+### Exploit-Specific Security
+
+| Control | Implementation |
+|---|---|
+| Target locking | Exploit agent receives a single target IP; cannot scan or attack other hosts |
+| OS-aware tooling | AI is told which tools work on the host OS (Python-only on Windows, full arsenal on Linux) |
+| Permission gating | `approve_only` requires user to type `ALLOW <target>` for each action; `full_access` auto-approves but still logs everything |
+| Audit trail | Every exploit action logged with SHA256, timestamps, exit codes in `exploit_audit.jsonl` |
+| Timeouts | All commands capped (default 120s terminal, 300s python, 600s msf) |
+| Workspace containment | All exploit artifacts stay inside `exploit_workspace/<ip>/`; path traversal blocked |
+| Visible execution | Commands run in separate terminal windows where the user can watch and kill |
+
+**WARNING:** `full_access` exploitation mode gives the AI unrestricted terminal access on your host machine, scoped to a single target IP. The AI can modify files, start services, open reverse shells, and interact with the network. Only use against networks and devices you own or have explicit authorization to attack.
 
 ---
 

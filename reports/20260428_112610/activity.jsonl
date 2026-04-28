@@ -13,3 +13,17 @@
 {"time": "11:28:00", "category": "basic_scan", "message": "Sub-agent 192.168.1.130: basic scan", "detail": "", "host": "192.168.1.130", "severity": "info"}
 {"time": "11:28:02", "category": "basic_scan", "message": "Sub-agent 192.168.1.208: basic scan", "detail": "", "host": "192.168.1.208", "severity": "info"}
 {"time": "11:28:18", "category": "service", "message": "Sub-agent 192.168.1.130: service scan", "detail": "", "host": "192.168.1.130", "severity": "info"}
+{"time": "11:28:36", "category": "service", "message": "Sub-agent 192.168.1.1: service scan", "detail": "", "host": "192.168.1.1", "severity": "info"}
+{"time": "11:28:41", "category": "service", "message": "Sub-agent 192.168.1.208: service scan", "detail": "", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:28:50", "category": "vuln", "message": "Sub-agent 192.168.1.130: vuln scan", "detail": "", "host": "192.168.1.130", "severity": "info"}
+{"time": "11:29:27", "category": "search", "message": "Sub-agent 192.168.1.130: search", "detail": "AnyDesk", "host": "192.168.1.130", "severity": "info"}
+{"time": "11:29:27", "category": "search", "message": "Sub-agent 192.168.1.130: search", "detail": "Microsoft Windows RPC", "host": "192.168.1.130", "severity": "info"}
+{"time": "11:29:45", "category": "search", "message": "Sub-agent 192.168.1.1: search", "detail": "OpenSSH 8.4", "host": "192.168.1.1", "severity": "info"}
+{"time": "11:29:46", "category": "search", "message": "Sub-agent 192.168.1.1: search", "detail": "Golang net/http server", "host": "192.168.1.1", "severity": "info"}
+{"time": "11:29:50", "category": "search", "message": "Sub-agent 192.168.1.208: search", "detail": "Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:30:01", "category": "search", "message": "Sub-agent 192.168.1.208: search", "detail": "Microsoft HTTPAPI 2.0", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:30:02", "category": "vuln", "message": "Sub-agent 192.168.1.1: vuln scan", "detail": "", "host": "192.168.1.1", "severity": "info"}
+{"time": "11:30:21", "category": "search", "message": "Sub-agent 192.168.1.208: search", "detail": "Microsoft UPnP Device Host", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:30:42", "category": "search", "message": "Sub-agent 192.168.1.208: search", "detail": "Microsoft HTTPAPI", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:31:09", "category": "vuln", "message": "Sub-agent 192.168.1.208: vuln scan", "detail": "", "host": "192.168.1.208", "severity": "info"}
+{"time": "11:33:52", "category": "blocked", "message": "Active host denied: 192.168.1.130", "detail": "To confirm the AnyDesk version and TLS certificate details on 7070/tcp via a safe banner/certificate grab, improving accuracy of the assessment without any disruptive or credential-based actions.", "host": "192.168.1.130", "severity": "warning"}

@@ -1,4 +1,4 @@
-"""Ollama-driven defensive local-network assessment controller with parallel sub-agents."""
+"""Ollama-driven defensive local-network assessment controller with parallel sub-agents and optional AI-driven exploitation."""
 
 from __future__ import annotations
 
@@ -58,6 +58,13 @@ from tools.active_checks import (
     ActiveCheckSettings,
     read_active_check_records,
 )
+from tools.exploit_agent import (
+    ExploitPermission,
+    ExploitPolicy,
+    ExploitSettings,
+    run_exploit_agent,
+)
+from tools.exploit_search import ExploitSearch, ExploitSearchSettings
 
 
 SYSTEM_PROMPT = """You are a defensive local-network vulnerability assessor.
@@ -492,6 +499,216 @@ async def wait_for_port(host: str, port: int, timeout_seconds: int) -> None:
         except OSError:
             await asyncio.sleep(0.2)
     raise TimeoutError(f"Timed out waiting for MCP HTTP server on {host}:{port}.")
+
+
+@contextlib.asynccontextmanager
+async def open_exploit_mcp_session(
+    *,
+    transport: str,
+    config_path: Path,
+    target_ip: str,
+    exploit_port: int,
+    workspace: Path,
+) -> AsyncIterator[Any]:
+    try:
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+    except ImportError as exc:
+        raise RuntimeError(
+            "The MCP Python SDK is not installed. Run: python -m pip install -r requirements.txt"
+        ) from exc
+
+    server_path = Path(__file__).with_name("mcp_exploit_server.py").resolve()
+    env = os.environ.copy()
+    env["EXPLOIT_TARGET"] = target_ip
+    env["EXPLOIT_WORKSPACE"] = str(workspace.resolve())
+
+    if transport == "stdio":
+        server_params = StdioServerParameters(
+            command=sys.executable,
+            args=[
+                str(server_path),
+                "--transport", "stdio",
+                "--config", str(config_path.resolve()),
+                "--workspace", str(workspace.resolve()),
+            ],
+            env=env,
+        )
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                yield session
+        return
+
+    process, log_handle = start_exploit_http_server(
+        server_path=server_path,
+        config_path=config_path,
+        port=exploit_port,
+        workspace=workspace,
+        env=env,
+    )
+    try:
+        await wait_for_port("127.0.0.1", exploit_port, timeout_seconds=15)
+        from mcp.client.streamable_http import streamable_http_client
+
+        async with streamable_http_client(f"http://127.0.0.1:{exploit_port}/mcp") as (
+            read_stream,
+            write_stream,
+            _,
+        ):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                yield session
+    finally:
+        stop_process(process)
+        log_handle.close()
+
+
+def start_exploit_http_server(
+    *,
+    server_path: Path,
+    config_path: Path,
+    port: int,
+    workspace: Path,
+    env: dict[str, str],
+) -> tuple[subprocess.Popen[str], Any]:
+    if port_is_open("127.0.0.1", port):
+        raise RuntimeError(
+            f"Exploit MCP HTTP port {port} is already in use. Stop the process using it."
+        )
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    log_path = workspace / "mcp_exploit_server.log"
+    log_handle = log_path.open("a", encoding="utf-8")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(server_path),
+            "--transport", "http",
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--config", str(config_path.resolve()),
+            "--workspace", str(workspace.resolve()),
+        ],
+        cwd=str(server_path.parent),
+        env=env,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return process, log_handle
+
+
+@dataclass
+class ExploitTarget:
+    ip: str
+    cve: str
+    severity: str
+    service: str
+    port: str
+    evidence: str
+
+
+def collect_exploit_targets(
+    policy: ControllerPolicy,
+    sub_findings: list[StructuredFinding],
+) -> list[ExploitTarget]:
+    targets: list[ExploitTarget] = []
+    seen: set[tuple[str, str]] = set()
+
+    for sf in sub_findings:
+        if not sf.host:
+            continue
+        for cve in sf.cves_found:
+            if not re.match(r"(?i)^CVE-\d{4}-\d{4,}$", cve.strip()):
+                continue
+            key = (sf.host, cve.strip().upper())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            port_str = ""
+            svc_str = ""
+            if sf.open_ports:
+                first = sf.open_ports[0]
+                port_str = first.get("port", "")
+                svc_str = first.get("service", "")
+
+            targets.append(ExploitTarget(
+                ip=sf.host,
+                cve=cve.strip().upper(),
+                severity=sf.risk_level,
+                service=svc_str,
+                port=port_str,
+                evidence=sf.evidence,
+            ))
+
+    targets.sort(key=lambda t: (
+        {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}.get(t.severity, 9),
+        t.ip,
+    ))
+    return targets
+
+
+async def run_exploit_session(
+    *,
+    client: Any,
+    model: str,
+    target: ExploitTarget,
+    exploit_settings: ExploitSettings,
+    config_path: Path,
+    mcp_transport: str,
+    exploit_port: int,
+    reports_dir: Path,
+    policy: ControllerPolicy,
+) -> dict[str, Any]:
+    workspace = exploit_settings.workspace_root
+    if not workspace.is_absolute():
+        workspace = reports_dir / workspace
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    target_ip = target.ip
+    target_cve = target.cve
+
+    exploit_policy = ExploitPolicy(settings=exploit_settings, workspace=workspace)
+
+    service_context = ""
+    if target.service and target.port:
+        service_context = f"Service: {target.service} on port {target.port}. "
+    if target.evidence:
+        service_context += f"Evidence: {target.evidence}. "
+
+    if target.severity in ("critical", "high"):
+        service_context += f"Severity: {target.severity}."
+
+    print(f"\n  Starting exploitation session for {target_ip}")
+    print(f"  CVE: {target_cve}")
+    print(f"  Permission: {exploit_settings.permission.value}")
+    print(f"  Workspace: {workspace}")
+
+    async with open_exploit_mcp_session(
+        transport=mcp_transport,
+        config_path=config_path,
+        target_ip=target_ip,
+        exploit_port=exploit_port,
+        workspace=workspace,
+    ) as session:
+        tools_response = await session.list_tools()
+        exploit_tools_schemas = mcp_tools_to_ollama(tools_response)
+
+        result = await run_exploit_agent(
+            client=client,
+            model=model,
+            session=session,
+            exploit_tools=exploit_tools_schemas,
+            policy=exploit_policy,
+            target_ip=target_ip,
+            target_cve=target_cve,
+            known_cves=[target_cve],
+            service_context=service_context,
+            reports_dir=reports_dir,
+        )
+    return result
 
 
 def stop_process(process: subprocess.Popen[str]) -> None:
@@ -1650,6 +1867,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--sub-agent-concurrency", type=int, default=None, help="Max concurrent sub-agent scans (default from config)")
     parser.add_argument("--max-sub-agent-rounds", type=int, default=None, help="Max rounds per sub-agent (default from config)")
     parser.add_argument("--active-checks", action="store_true", help="Enable user-approved active custom checks for scan-discovered hosts")
+    parser.add_argument("--active-consent-mode", choices=("per-command", "preapproved"), default=None, help="Active check consent mode")
+    parser.add_argument("--exploit", action="store_true", help="Enable AI-driven exploitation (requires sub-agents for integrated mode)")
+    parser.add_argument("--exploit-mode", choices=("integrated", "standalone"), default="integrated", help="Exploitation mode: integrated with scan or standalone")
+    parser.add_argument("--exploit-permission", choices=("full_access", "approve_only"), default="approve_only", help="Exploit permission: full_access (auto-approve) or approve_only (user confirms each action)")
+    parser.add_argument("--exploit-target", default="", help="Target IP for standalone exploit mode")
+    parser.add_argument("--exploit-cve", default="", help="Specific CVE to exploit (optional)")
     return parser.parse_args(argv)
 
 
@@ -1713,10 +1936,17 @@ async def async_main(args: argparse.Namespace) -> int:
     active_enabled = bool(getattr(args, "active_checks", False) or active_config.get("enabled", False))
     if active_enabled and not use_sub_agents:
         raise ValueError("--active-checks requires sub-agents; remove --no-sub-agents.")
+    active_consent_mode = str(
+        getattr(args, "active_consent_mode", None)
+        or active_config.get("consent_mode", "per_command")
+    ).replace("-", "_")
+    if active_consent_mode not in {"per_command", "preapproved"}:
+        raise ValueError("active_checks.consent_mode must be 'per_command' or 'preapproved'.")
     active_settings = ActiveCheckSettings(
         enabled=active_enabled,
         terminal=str(active_config.get("terminal", "visible")),
         review=str(active_config.get("review", "summary_command")),
+        consent_mode=active_consent_mode,
         workspace_dir=Path(active_config.get("workspace_dir", "active_checks")),
         command_timeout_seconds=int(active_config.get("command_timeout_seconds", 90)),
         max_commands_per_host=int(active_config.get("max_commands_per_host", 3)),
@@ -1724,12 +1954,49 @@ async def async_main(args: argparse.Namespace) -> int:
         max_command_chars=int(active_config.get("max_command_chars", 500)),
     )
 
+    exploit_enabled = bool(getattr(args, "exploit", False))
+    exploit_mode = str(getattr(args, "exploit_mode", "integrated"))
+    exploit_permission_raw = str(getattr(args, "exploit_permission", "approve_only"))
+    exploit_target_raw = str(getattr(args, "exploit_target", ""))
+    exploit_cve_raw = str(getattr(args, "exploit_cve", ""))
+
+    if exploit_enabled and exploit_mode == "standalone" and not exploit_target_raw:
+        raise ValueError("--exploit-target is required in standalone exploit mode.")
+
+    if exploit_permission_raw == "full_access":
+        exploit_permission = ExploitPermission.FULL_ACCESS
+    else:
+        exploit_permission = ExploitPermission.APPROVE_ONLY
+
+    exploit_cfg = config.get("exploit", {}) or {}
+    exploit_settings = ExploitSettings(
+        enabled=exploit_enabled,
+        mode=exploit_mode,
+        permission=exploit_permission,
+        terminal=str(exploit_cfg.get("terminal", "visible")),
+        command_timeout_seconds=int(exploit_cfg.get("command_timeout_seconds", 120)),
+        max_commands_per_session=int(exploit_cfg.get("max_commands_per_session", 50)),
+        max_rounds=int(exploit_cfg.get("max_rounds", 30)),
+        workspace_root=Path(exploit_cfg.get("workspace_dir", "exploit_workspace")),
+        target_ip=exploit_target_raw,
+        target_cve=exploit_cve_raw,
+    )
+
+    exploit_port = http_port + 1
+
     ui = Ui(plain=args.plain, activity=ActivityLog(reports_dir))
     ui.header(model, approved_subnets, args.mcp_transport)
     ui.status(
         f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | "
-        f"Sub-agents: {'on' if use_sub_agents else 'off'} | Active checks: {'on' if active_enabled else 'off'}"
+        f"Sub-agents: {'on' if use_sub_agents else 'off'} | "
+        f"Active checks: {'on' if active_enabled else 'off'} | "
+        f"Exploit: {exploit_mode if exploit_enabled else 'off'}"
     )
+    if exploit_settings.enabled and exploit_settings.preapproved:
+        ui.status(
+            "WARNING: exploit actions are preapproved (full_access). The AI will auto-execute "
+            "all commands. Target-scope enforcement, timeouts, and audit logs still apply."
+        )
 
     if args.no_search:
         os.environ["DISABLE_VULN_SEARCH"] = "1"
@@ -1742,6 +2009,49 @@ async def async_main(args: argparse.Namespace) -> int:
         ) from exc
 
     client = Client()
+
+    if exploit_enabled and exploit_mode == "standalone":
+        target = ExploitTarget(
+            ip=exploit_target_raw,
+            cve=exploit_cve_raw,
+            severity="unknown",
+            service="",
+            port="",
+            evidence=f"Standalone exploit session for {exploit_target_raw}"
+                + (f", CVE {exploit_cve_raw}" if exploit_cve_raw else ""),
+        )
+
+        # Minimal policy for context (needed only for workspace dir setup)
+        policy = ControllerPolicy(
+            approved_subnets=approved_subnets if approved_subnets else (ipaddress.ip_network("192.168.0.0/16"),),
+            allowed_private_cidrs=allowed_private,
+            max_subnet_addresses=max_subnet_addresses,
+            max_hosts=max_hosts,
+            max_tool_calls=max_tool_calls,
+            max_searches=max_searches,
+            require_triage_before_host_scans=require_triage,
+            approval_mode=approval_mode,
+        )
+
+        exploit_result = await run_exploit_session(
+            client=client,
+            model=model,
+            target=target,
+            exploit_settings=exploit_settings,
+            config_path=args.config,
+            mcp_transport=args.mcp_transport,
+            exploit_port=exploit_port,
+            reports_dir=reports_dir,
+            policy=policy,
+        )
+
+        ui.status("exploitation session complete")
+        print(f"\n  Results saved to: {exploit_result.get('workspace', 'unknown')}")
+        print(f"  Actions executed: {exploit_result.get('total_actions', 0)}")
+        print(f"  Audit trail: {exploit_result.get('audit_path', 'unknown')}")
+        return 0
+
+    # --- Normal scan flow ---
     policy = ControllerPolicy(
         approved_subnets=approved_subnets,
         allowed_private_cidrs=allowed_private,
@@ -1837,6 +2147,77 @@ async def async_main(args: argparse.Namespace) -> int:
     )
     for path in written:
         ui.report(path)
+
+    if exploit_enabled and exploit_mode == "integrated":
+        targets = collect_exploit_targets(policy, sub_findings)
+        if not targets:
+            ui.status("No exploitable targets with confirmed CVEs were found.")
+            return 0
+
+        print(f"\n  {len(targets)} exploit target(s) available:\n")
+        for i, t in enumerate(targets, 1):
+            print(f"  {i}. {t.ip} | {t.cve} | {t.severity} | {t.service}:{t.port}")
+
+        print("\n  Enter numbers to exploit (comma-separated), or press Enter to skip:")
+        try:
+            choice = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = ""
+
+        if not choice:
+            ui.status("Skipping exploitation.")
+            return 0
+
+        selected_indices: list[int] = []
+        for part in choice.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(targets):
+                    selected_indices.append(idx)
+
+        if not selected_indices:
+            ui.status("No valid selections; skipping exploitation.")
+            return 0
+
+        for idx in selected_indices:
+            target = targets[idx]
+            exploit_settings_target = ExploitSettings(
+                enabled=True,
+                mode="integrated",
+                permission=exploit_permission,
+                terminal=str(exploit_cfg.get("terminal", "visible")),
+                command_timeout_seconds=int(exploit_cfg.get("command_timeout_seconds", 120)),
+                max_commands_per_session=int(exploit_cfg.get("max_commands_per_session", 50)),
+                max_rounds=int(exploit_cfg.get("max_rounds", 30)),
+                workspace_root=exploit_settings.workspace_root / target.ip.replace(".", "_"),
+                target_ip=target.ip,
+                target_cve=target.cve,
+            )
+
+            exploit_result = await run_exploit_session(
+                client=client,
+                model=model,
+                target=target,
+                exploit_settings=exploit_settings_target,
+                config_path=args.config,
+                mcp_transport=args.mcp_transport,
+                exploit_port=exploit_port,
+                reports_dir=reports_dir,
+                policy=policy,
+            )
+
+            ui.status(f"Exploitation for {target.ip} ({target.cve}) complete")
+            print(f"  Actions: {exploit_result.get('total_actions', 0)}")
+            print(f"  Workspace: {exploit_result.get('workspace', 'unknown')}")
+
+            if idx != selected_indices[-1]:
+                print("\n  Press Enter for next target...")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    break
+
     return 0
 
 

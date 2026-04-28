@@ -17,3 +17,64 @@ Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
 Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
 Nmap done: 1 IP address (1 host up) scanned in 15.09 seconds
 STDERR:
+
+
+## service/script/os scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV -sC -O 192.168.1.130
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 21:28 +1000
+Nmap scan report for 192.168.1.130
+Host is up (0.000031s latency).
+Not shown: 998 closed tcp ports (reset)
+PORT     STATE SERVICE         VERSION
+135/tcp  open  msrpc           Microsoft Windows RPC
+7070/tcp open  ssl/realserver?
+|_ssl-date: TLS randomness does not represent time
+| ssl-cert: Subject: commonName=AnyDesk Client
+| Not valid before: 2026-01-12T00:09:11
+|_Not valid after:  2075-12-31T00:09:11
+Aggressive OS guesses: Microsoft Windows 10 1607 - 11 23H2 (97%), Microsoft Windows 11 21H2 (97%), Microsoft Windows 10 1511 (94%), Windows 11 21H2 (94%), Windows Server 2022 (94%), Microsoft Windows 10 1703 (93%), Microsoft Windows 10 1703 - 11 21H2 (93%), Microsoft Windows 10 1703 or Windows 11 21H2 (93%), Microsoft Windows Server 2008 R2 SP1 or Windows 7 SP1 (91%), Microsoft Windows 7 or 8.1 R1 (91%)
+No exact OS matches for host (test conditions non-ideal).
+Network Distance: 0 hops
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+OS and Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 25.16 seconds
+STDERR:
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+send_ip_packet in HostOsScan::send_closedudp_probe: The packet should be dropped, no ICMP should be sent.
+ (-2144206588)
+
+
+## vulnerability script scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE --script vuln -sV 192.168.1.130
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 21:28 +1000
+Nmap scan report for 192.168.1.130
+Host is up (0.00066s latency).
+Not shown: 998 closed tcp ports (reset)
+PORT     STATE SERVICE         VERSION
+135/tcp  open  msrpc           Microsoft Windows RPC
+7070/tcp open  ssl/realserver?
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 27.83 seconds
+STDERR:

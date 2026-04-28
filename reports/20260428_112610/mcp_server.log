@@ -22,3 +22,12 @@ INFO:     127.0.0.1:57093 - "POST /mcp HTTP/1.1" 200 OK
 [04/28/26 21:26:54] INFO     Processing request of type           server.py:727
                              CallToolRequest                                   
 INFO:     127.0.0.1:57096 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+ERROR:    ASGI callable returned without completing response.
+INFO:     Waiting for application shutdown.
+[04/28/26 21:34:00] INFO     StreamableHTTP      streamable_http_manager.py:132
+                             session manager                                   
+                             shutting down                                     
+INFO:     Application shutdown complete.
+INFO:     Finished server process [18984]

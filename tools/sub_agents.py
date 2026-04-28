@@ -47,6 +47,15 @@ Additional rules:
 - Do not attempt brute force, credential theft, persistence, destructive changes, or network contact with any non-target host.
 """
 
+SUB_AGENT_PREAPPROVED_ACTIVE_PROMPT = """Active-check consent mode is preapproved.
+
+Additional rules:
+- Active checks are allowed only through propose_active_python or propose_active_shell.
+- The user has preapproved eligible active commands for this run, so no per-command prompt will appear.
+- Keep generated Python self-contained and use the provided --target argument or ACTIVE_CHECK_TARGET environment variable.
+- Do not attempt brute force, credential theft, persistence, destructive changes, or network contact with any non-target host.
+"""
+
 SUB_AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -182,14 +191,15 @@ SUB_AGENT_ACTIVE_TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-def sub_agent_system_prompt(active_enabled: bool) -> str:
+def sub_agent_system_prompt(active_enabled: bool, active_preapproved: bool = False) -> str:
     if not active_enabled:
         return SUB_AGENT_SYSTEM_PROMPT
     active_base = SUB_AGENT_SYSTEM_PROMPT.replace(
         "- Do not scan other IPs, exploit, brute force, or weaponize anything.",
         "- Do not scan other IPs, brute force, bypass authentication, persist, or weaponize anything.",
     )
-    return active_base + "\n" + SUB_AGENT_ACTIVE_PROMPT
+    prompt = SUB_AGENT_PREAPPROVED_ACTIVE_PROMPT if active_preapproved else SUB_AGENT_ACTIVE_PROMPT
+    return active_base + "\n" + prompt
 
 
 def build_sub_agent_tool_schemas(active_enabled: bool) -> list[dict[str, Any]]:
@@ -286,6 +296,14 @@ class SubAgentTools:
     @property
     def active_enabled(self) -> bool:
         return bool(self.active_policy and self.active_policy.enabled)
+
+    @property
+    def active_preapproved(self) -> bool:
+        return bool(
+            self.active_policy
+            and self.active_policy.enabled
+            and self.active_policy.settings.preapproved
+        )
 
     async def run_nmap_basic_scan(self) -> str:
         if not await self.budget.try_tool():
@@ -436,8 +454,17 @@ class HostSubAgent:
 
     async def run(self) -> StructuredFinding:
         active_enabled = bool(getattr(self.tools, "active_enabled", False))
+        active_preapproved = bool(getattr(self.tools, "active_preapproved", False))
+        active_tool_text = ""
+        if active_enabled:
+            if not active_preapproved:
+                active_tool_text += "- request_active_host_session (ask the user before any custom active check)\n"
+            active_tool_text += (
+                "- propose_active_python (save generated Python and run through active-check policy)\n"
+                "- propose_active_shell (run one reviewed command through active-check policy)\n"
+            )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": sub_agent_system_prompt(active_enabled)},
+            {"role": "system", "content": sub_agent_system_prompt(active_enabled, active_preapproved)},
             {
                 "role": "user",
                 "content": (
@@ -449,13 +476,7 @@ class HostSubAgent:
                     "- run_nmap_vuln_scan (only if evidence suggests risk)\n"
                     "- search_vulnerability_intel (use for service/version strings, not IPs)\n"
                     "- search_cve_intel (use only when a known product/version is found; not for unknown services)\n"
-                    + (
-                        "- request_active_host_session (ask the user before any custom active check)\n"
-                        "- propose_active_python (save generated Python and run only after command approval)\n"
-                        "- propose_active_shell (run one reviewed command only after command approval)\n"
-                        if active_enabled
-                        else ""
-                    )
+                    + active_tool_text
                     + "- finish_assessment (submit your structured JSON findings)\n\n"
                     "Run the scans in order, researching services as you go. "
                     "Then call finish_assessment with a JSON string like:\n"
