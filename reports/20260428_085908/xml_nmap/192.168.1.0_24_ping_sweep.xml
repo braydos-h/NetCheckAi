@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///C:/Program Files (x86)/Nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.98 scan initiated Tue Apr 28 18:59:20 2026 as: &quot;C:\\Program Files (x86)\\Nmap\\nmap.EXE&quot; -sn -oX C:\\Users\\BH\\Documents\\GitHub\\NetCheckAi\\reports\\20260428_085908\\xml_nmap\\192.168.1.0_24_ping_sweep.xml 192.168.1.0/24 -->
+<nmaprun scanner="nmap" args="&quot;C:\\Program Files (x86)\\Nmap\\nmap.EXE&quot; -sn -oX C:\\Users\\BH\\Documents\\GitHub\\NetCheckAi\\reports\\20260428_085908\\xml_nmap\\192.168.1.0_24_ping_sweep.xml 192.168.1.0/24" start="1777366760" startstr="Tue Apr 28 18:59:20 2026" version="7.98" xmloutputversion="1.05">
+<verbose level="0"/>
+<debugging level="0"/>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.1" addrtype="ipv4"/>
+<address addr="74:24:9F:55:BC:0E" addrtype="mac" vendor="Tibro"/>
+<hostnames>
+</hostnames>
+<times srtt="1000" rttvar="3750" to="100000"/>
+</host>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.21" addrtype="ipv4"/>
+<address addr="D0:65:78:95:1B:A4" addrtype="mac" vendor="Intel Corporate"/>
+<hostnames>
+</hostnames>
+<times srtt="717093" rttvar="786312" to="3862341"/>
+</host>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.68" addrtype="ipv4"/>
+<address addr="CC:E8:AC:BE:90:A5" addrtype="mac" vendor="Soyea Technology"/>
+<hostnames>
+</hostnames>
+<times srtt="1000" rttvar="5000" to="100000"/>
+</host>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.208" addrtype="ipv4"/>
+<address addr="14:EB:B6:44:E7:79" addrtype="mac" vendor="TP-Link Limited"/>
+<hostnames>
+</hostnames>
+<times srtt="39000" rttvar="39000" to="195000"/>
+</host>
+<host><status state="up" reason="localhost-response" reason_ttl="0"/>
+<address addr="192.168.1.130" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+</host>
+<runstats><finished time="1777366772" timestr="Tue Apr 28 18:59:32 2026" summary="Nmap done at Tue Apr 28 18:59:32 2026; 256 IP addresses (5 hosts up) scanned in 11.63 seconds" elapsed="11.63" exit="success"/><hosts up="5" down="251" total="256"/>
+</runstats>
+</nmaprun>

@@ -28,6 +28,24 @@ ICONS = {
     "budget": "$",
 }
 
+ASCII_ICONS = {
+    "ping": "*",
+    "triage": ">",
+    "basic_scan": "o",
+    "service_scan": "+",
+    "vuln_scan": "!",
+    "search": "?",
+    "agent_spawn": ">",
+    "agent_done": "OK",
+    "agent_fail": "X",
+    "report": "#",
+    "blocked": "X",
+    "info": "i",
+    "warning": "!",
+    "error": "X",
+    "budget": "$",
+}
+
 SEVERITY_PREFIX = {
     "critical": "[CRIT] ",
     "high": "[HIGH] ",
@@ -96,6 +114,7 @@ class ActivityLog:
         severity: str = "info",
     ) -> None:
         icon = ICONS.get(category, "•")
+        icon = ASCII_ICONS.get(category, icon if icon.isascii() else "*")
         prefix = SEVERITY_PREFIX.get(severity, "")
         event = ActivityEvent(
             timestamp=self._now(),

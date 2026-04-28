@@ -349,31 +349,26 @@ class HostSubAgent:
 
     def _sync_chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"messages": messages, "stream": False, "tools": SUB_AGENT_TOOL_SCHEMAS}
-        content_parts: list[str] = []
-        thinking_parts: list[str] = []
+        response = self.client.chat(self.model, **kwargs)
+        message = get_field(response, "message", {}) or {}
+        content = get_field(message, "content", "") or ""
+        thinking = get_field(message, "thinking", "") or ""
+        response_tool_calls = get_field(message, "tool_calls", []) or []
         tool_calls: list[dict[str, Any]] = []
-        for part in self.client.chat(self.model, **kwargs):
-            message = part.get("message", {}) or {}
-            content = message.get("content", "") or ""
-            thinking = message.get("thinking", "") or ""
-            chunk_tool_calls = message.get("tool_calls", []) or []
-            if content:
-                content_parts.append(content)
-            if thinking:
-                thinking_parts.append(thinking)
-            for call in chunk_tool_calls:
-                tool_calls.append(self._normalize_call(call))
-        out: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
-        if thinking_parts:
-            out["thinking"] = "".join(thinking_parts)
+        for call in response_tool_calls:
+            tool_calls.append(self._normalize_call(call))
+
+        out: dict[str, Any] = {"role": "assistant", "content": str(content)}
+        if thinking:
+            out["thinking"] = str(thinking)
         if tool_calls:
             out["tool_calls"] = tool_calls
         return out
 
     def _normalize_call(self, call: Any) -> dict[str, Any]:
-        function = call.get("function", {}) or {}
-        name = function.get("name", "") or ""
-        arguments = function.get("arguments", {}) or {}
+        function = get_field(call, "function", {}) or {}
+        name = get_field(function, "name", "") or ""
+        arguments = get_field(function, "arguments", {}) or {}
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
@@ -436,6 +431,12 @@ class HostSubAgent:
         self.finding.service_versions = data.get("service_versions", []) or []
 
 
+def get_field(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 async def spawn_sub_agents(
     *,
     ranked_hosts: list[Any],
@@ -462,7 +463,14 @@ async def spawn_sub_agents(
                 return StructuredFinding(host=ip, title=f"Skipped {ip}: host budget exhausted", risk_level="low")
             if activity_log:
                 activity_log.agent_spawn(ip, triage_context[:120])
-            tools = SubAgentTools(ip, runner, search, nvd, budget, activity_log=activity_log)
+            tools = SubAgentTools(
+                ip=ip,
+                runner=runner,
+                search=search,
+                budget=budget,
+                nvd=nvd,
+                activity_log=activity_log,
+            )
             agent = HostSubAgent(
                 ip=ip,
                 triage_context=triage_context,

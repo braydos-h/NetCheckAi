@@ -1,0 +1,18 @@
+{"time": "08:53:07", "category": "info", "message": "Run ID: 20260428_085307 | Profile: standard | Approval: auto | Sub-agents: on", "detail": "", "host": "", "severity": "info"}
+{"time": "08:53:09", "category": "info", "message": "MCP session initialized; loading tool schemas", "detail": "", "host": "", "severity": "info"}
+{"time": "08:53:09", "category": "info", "message": "8 tools available to the model", "detail": "", "host": "", "severity": "info"}
+{"time": "08:53:15", "category": "ping_sweep", "message": "run_nmap_ping_sweep", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}
+{"time": "08:53:25", "category": "ping", "message": "Ping sweep 192.168.1.0/24", "detail": "COMMAND: C:\\Program Files (x86)\\Nmap\\nmap.EXE -sn 192.168.1.0/24\nTARGET: 192.168.1.0/24\nRAW_REPORT: none\nOUTPUT:\nEXIT_CODE: 0\nSTDOUT:\nStarting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:53 +1000\n", "host": "", "severity": "info"}
+{"time": "08:53:31", "category": "triage_scan", "message": "run_nmap_triage_scan", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}
+{"time": "08:54:22", "category": "triage", "message": "Triage scan 192.168.1.0/24", "detail": "COMMAND: C:\\Program Files (x86)\\Nmap\\nmap.EXE -sV --top-ports 100 --open 192.168.1.1 192.168.1.21 192.168.1.68 192.168.1.130 192.168.1.174 192.168.1.208\nTARGET: 192.168.1.0/24\nRAW_REPORT: none\nOUTPUT:", "host": "", "severity": "info"}
+{"time": "08:55:13", "category": "basic_scan", "message": "run_nmap_basic_scan", "detail": "Args: {\"ip\": \"192.168.1.1\"}", "host": "", "severity": "info"}
+{"time": "08:55:48", "category": "basic_scan", "message": "run_nmap_basic_scan", "detail": "Args: {\"ip\": \"192.168.1.208\"}", "host": "", "severity": "info"}
+{"time": "08:56:47", "category": "info", "message": "spawning sub-agents for 3 suspicious host(s)", "detail": "", "host": "", "severity": "info"}
+{"time": "08:56:47", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.1", "detail": "IP: 192.168.1.1\nScore: 3\nSeverity: medium\nReasons: remote login surface: 22/tcp ssh OpenSSH 8.4 (protocol 2.0); web/admi", "host": "192.168.1.1", "severity": "info"}
+{"time": "08:56:47", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.208", "detail": "IP: 192.168.1.208\nScore: 2\nSeverity: low\nReasons: web/admin surface possible: 5357/tcp http Microsoft HTTPAPI httpd 2.0 ", "host": "192.168.1.208", "severity": "info"}
+{"time": "08:56:47", "category": "agent_spawn", "message": "Spawning sub-agent for 192.168.1.130", "detail": "IP: 192.168.1.130\nScore: 0\nSeverity: low\nReasons: open services found but no obvious high-risk indicator\nServices: [{\"po", "host": "192.168.1.130", "severity": "info"}
+{"time": "08:56:53", "category": "agent_fail", "message": "Sub-agent 192.168.1.130 failed", "detail": "'NVDClient' object has no attribute 'try_tool'", "host": "192.168.1.130", "severity": "error"}
+{"time": "08:56:59", "category": "agent_fail", "message": "Sub-agent 192.168.1.1 failed", "detail": "'NVDClient' object has no attribute 'try_tool'", "host": "192.168.1.1", "severity": "error"}
+{"time": "08:57:06", "category": "agent_fail", "message": "Sub-agent 192.168.1.208 failed", "detail": "'NVDClient' object has no attribute 'try_tool'", "host": "192.168.1.208", "severity": "error"}
+{"time": "08:57:06", "category": "info", "message": "sub-agents completed for 3 host(s)", "detail": "", "host": "", "severity": "info"}
+{"time": "08:57:06", "category": "info", "message": "generating reports", "detail": "", "host": "", "severity": "info"}

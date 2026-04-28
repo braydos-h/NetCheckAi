@@ -5,3 +5,4 @@ uvicorn>=0.30.0
 starlette>=0.37.0
 questionary>=2.0.0
 pytest>=8.0.0
+pytest-asyncio>=0.23.0

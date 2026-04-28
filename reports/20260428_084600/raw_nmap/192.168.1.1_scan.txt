@@ -1,0 +1,111 @@
+
+
+## basic scan
+COMMAND: C:\Program Files (x86)\Nmap\nmap.EXE -sV --top-ports 1000 192.168.1.1
+
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:48 +1000
+Nmap scan report for 192.168.1.1
+Host is up (0.00091s latency).
+Not shown: 992 filtered tcp ports (no-response)
+PORT     STATE  SERVICE      VERSION
+22/tcp   open   ssh          OpenSSH 8.4 (protocol 2.0)
+53/tcp   closed domain
+80/tcp   open   http         Golang net/http server
+443/tcp  closed https
+9000/tcp open   grpc
+9001/tcp open   http         Golang net/http server
+9002/tcp open   ssl/dynamid?
+9003/tcp open   grpc
+2 services unrecognized despite returning data. If you know the service/version, please submit the following fingerprints at https://nmap.org/cgi-bin/submit.cgi?new-service :
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port80-TCP:V=7.98%I=7%D=4/28%Time=69F07460%P=i686-pc-windows-windows%r(
+SF:GetRequest,1553,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20n
+SF:osniff\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x20202
+SF:6\x2008:48:32\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\
+SF:n\r\n<!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"
+SF:Content-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<l
+SF:ink\x20rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<
+SF:title>Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet
+SF:\"\x20type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"s
+SF:creen\">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\
+SF:"width=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x
+SF:20\x20\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,
+SF:\x20\.button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x2
+SF:0\x20\x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20
+SF:\x20\x20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.butt
+SF:on-link:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20")%r(HTTPOptions,
+SF:B9,"HTTP/1\.0\x20405\x20Method\x20Not\x20Allowed\r\nContent-Type:\x20te
+SF:xt/plain;\x20charset=utf-8\r\nX-Content-Type-Options:\x20nosniff\r\nDat
+SF:e:\x20Tue,\x2028\x20Apr\x202026\x2008:48:32\x20GMT\r\nContent-Length:\x
+SF:2019\r\n\r\nMethod\x20not\x20allowed\n")%r(RTSPRequest,67,"HTTP/1\.1\x2
+SF:0400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf-8
+SF:\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request")%r(FourOhFourReq
+SF:uest,1553,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20nosniff
+SF:\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x200
+SF:8:48:32\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\n\r\n<
+SF:!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"Conten
+SF:t-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<link\x2
+SF:0rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<title>
+SF:Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet\"\x20
+SF:type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"screen\
+SF:">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\"width
+SF:=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x20\x20
+SF:\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,\x20\.
+SF:button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-lin
+SF:k:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port9001-TCP:V=7.98%I=7%D=4/28%Time=69F07460%P=i686-pc-windows-windows%
+SF:r(GenericLines,67,"HTTP/1\.1\x20400\x20Bad\x20Request\r\nContent-Type:\
+SF:x20text/plain;\x20charset=utf-8\r\nConnection:\x20close\r\n\r\n400\x20B
+SF:ad\x20Request")%r(GetRequest,BF,"HTTP/1\.0\x20500\x20Internal\x20Server
+SF:\x20Error\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nX-Content
+SF:-Type-Options:\x20nosniff\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x2008:4
+SF:8:32\x20GMT\r\nContent-Length:\x2022\r\n\r\nInternal\x20Server\x20Error
+SF:\n")%r(SSLSessionReq,67,"HTTP/1\.1\x20400\x20Bad\x20Request\r\nContent-
+SF:Type:\x20text/plain;\x20charset=utf-8\r\nConnection:\x20close\r\n\r\n40
+SF:0\x20Bad\x20Request")%r(HTTPOptions,BF,"HTTP/1\.0\x20500\x20Internal\x2
+SF:0Server\x20Error\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nX-
+SF:Content-Type-Options:\x20nosniff\r\nDate:\x20Tue,\x2028\x20Apr\x202026\
+SF:x2008:48:32\x20GMT\r\nContent-Length:\x2022\r\n\r\nInternal\x20Server\x
+SF:20Error\n")%r(RTSPRequest,67,"HTTP/1\.1\x20400\x20Bad\x20Request\r\nCon
+SF:tent-Type:\x20text/plain;\x20charset=utf-8\r\nConnection:\x20close\r\n\
+SF:r\n400\x20Bad\x20Request")%r(Help,67,"HTTP/1\.1\x20400\x20Bad\x20Reques
+SF:t\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nConnection:\x20cl
+SF:ose\r\n\r\n400\x20Bad\x20Request")%r(FourOhFourRequest,BF,"HTTP/1\.0\x2
+SF:0500\x20Internal\x20Server\x20Error\r\nContent-Type:\x20text/plain;\x20
+SF:charset=utf-8\r\nX-Content-Type-Options:\x20nosniff\r\nDate:\x20Tue,\x2
+SF:028\x20Apr\x202026\x2008:48:47\x20GMT\r\nContent-Length:\x2022\r\n\r\nI
+SF:nternal\x20Server\x20Error\n")%r(LPDString,67,"HTTP/1\.1\x20400\x20Bad\
+SF:x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\nConnecti
+SF:on:\x20close\r\n\r\n400\x20Bad\x20Request")%r(SIPOptions,67,"HTTP/1\.1\
+SF:x20400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf
+SF:-8\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request")%r(Socks5,67,"
+SF:HTTP/1\.1\x20400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20c
+SF:harset=utf-8\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request")%r(O
+SF:fficeScan,A3,"HTTP/1\.1\x20400\x20Bad\x20Request:\x20missing\x20require
+SF:d\x20Host\x20header\r\nContent-Type:\x20text/plain;\x20charset=utf-8\r\
+SF:nConnection:\x20close\r\n\r\n400\x20Bad\x20Request:\x20missing\x20requi
+SF:red\x20Host\x20header");
+MAC Address: 74:24:9F:55:BC:0E (Tibro)
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 34.61 seconds
+STDERR:

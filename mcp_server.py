@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
 import sys
 from pathlib import Path
@@ -145,7 +144,7 @@ def create_mcp_server(runner: SafeNmapRunner, search: VulnerabilitySearch, nvd: 
 
     @mcp.tool()
     def run_nmap_triage_scan(subnet: str) -> str:
-        """Run only `nmap -sV --top-ports 100 --open <subnet>` after discovery."""
+        """Run triage port checks only against hosts found alive by the prerequisite ping sweep."""
         return runner.run_nmap_triage_scan(subnet)
 
     @mcp.tool()
@@ -188,21 +187,14 @@ def run_http_server(mcp: Any, host: str, port: int) -> None:
 
     try:
         import uvicorn
-        from starlette.applications import Starlette
-        from starlette.routing import Mount
+        app = mcp.streamable_http_app()
     except ImportError as exc:
         raise RuntimeError(
             "HTTP MCP transport needs uvicorn and starlette. "
             "Run: python -m pip install -r requirements.txt"
         ) from exc
 
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette):
-        async with mcp.session_manager.run():
-            yield
-
-    app = Starlette(routes=[Mount("/", app=mcp.streamable_http_app())], lifespan=lifespan)
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

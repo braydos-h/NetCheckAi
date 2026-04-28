@@ -1,0 +1,90 @@
+EXIT_CODE: 0
+STDOUT:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:35 +1000
+Stats: 0:00:35 elapsed; 251 hosts completed (4 up), 4 undergoing Service Scan
+Service scan Timing: About 66.67% done; ETC: 18:36 (0:00:11 remaining)
+Stats: 0:00:35 elapsed; 251 hosts completed (4 up), 4 undergoing Service Scan
+Service scan Timing: About 66.67% done; ETC: 18:36 (0:00:11 remaining)
+Nmap scan report for 192.168.1.1
+Host is up (0.00084s latency).
+Not shown: 96 filtered tcp ports (no-response), 2 closed tcp ports (reset)
+Some closed ports may be reported as filtered due to --defeat-rst-ratelimit
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.4 (protocol 2.0)
+80/tcp open  http    Golang net/http server
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port80-TCP:V=7.98%I=7%D=4/28%Time=69F07165%P=i686-pc-windows-windows%r(
+SF:GetRequest,1553,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20n
+SF:osniff\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x20202
+SF:6\x2008:35:49\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\
+SF:n\r\n<!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"
+SF:Content-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<l
+SF:ink\x20rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<
+SF:title>Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet
+SF:\"\x20type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"s
+SF:creen\">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\
+SF:"width=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x
+SF:20\x20\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,
+SF:\x20\.button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x2
+SF:0\x20\x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20
+SF:\x20\x20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.butt
+SF:on-link:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20")%r(HTTPOptions,
+SF:B9,"HTTP/1\.0\x20405\x20Method\x20Not\x20Allowed\r\nContent-Type:\x20te
+SF:xt/plain;\x20charset=utf-8\r\nX-Content-Type-Options:\x20nosniff\r\nDat
+SF:e:\x20Tue,\x2028\x20Apr\x202026\x2008:35:49\x20GMT\r\nContent-Length:\x
+SF:2019\r\n\r\nMethod\x20not\x20allowed\n")%r(RTSPRequest,67,"HTTP/1\.1\x2
+SF:0400\x20Bad\x20Request\r\nContent-Type:\x20text/plain;\x20charset=utf-8
+SF:\r\nConnection:\x20close\r\n\r\n400\x20Bad\x20Request")%r(FourOhFourReq
+SF:uest,1553,"HTTP/1\.0\x20200\x20OK\r\nX-Content-Type-Options:\x20nosniff
+SF:\r\nX-Frame-Options:\x20DENY\r\nDate:\x20Tue,\x2028\x20Apr\x202026\x200
+SF:8:35:49\x20GMT\r\nContent-Type:\x20text/html;\x20charset=utf-8\r\n\r\n<
+SF:!doctype\x20html>\r\n<html>\r\n<head>\r\n\t<meta\x20http-equiv=\"Conten
+SF:t-Type\"\x20content=\"text/html;\x20charset=utf-8\"\x20/>\r\n\t<link\x2
+SF:0rel=\"shortcut\x20icon\"\x20href=\"static/favicon\.ico\">\r\n\t<title>
+SF:Starlink</title>\r\n\r\n\x20\x20\x20\x20<link\x20rel=\"stylesheet\"\x20
+SF:type=\"text/css\"\x20href=\"static/css/layout\.css\"\x20media=\"screen\
+SF:">\r\n\r\n\x20\x20\x20\x20<meta\x20name=\"viewport\"\x20content=\"width
+SF:=device-width,\x20maximum-scale=1\.0,\x20user-scalable=1\">\r\n\x20\x20
+SF:\x20\x20<style>\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-link,\x20\.
+SF:button-link:visited\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20display:\x20inline-block;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x20\
+SF:x20\x20\x20padding:\x2010px\x2020px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20font-size:\x2016px;\r\n\x20\x20\x20\x20\x20\x20\x20\x2
+SF:0\x20\x20\x20\x20color:\x20black;\r\n\x20\x20\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20background-color:\x20white;\r\n\x20\x20\x20\x20\x20\x20\x
+SF:20\x20\x20\x20\x20\x20text-decoration:\x20none;\r\n\x20\x20\x20\x20\x20
+SF:\x20\x20\x20\x20\x20\x20\x20border-radius:\x205px;\r\n\x20\x20\x20\x20\
+SF:x20\x20\x20\x20\x20\x20\x20\x20text-align:\x20center;\r\n\x20\x20\x20\x
+SF:20\x20\x20\x20\x20}\r\n\r\n\x20\x20\x20\x20\x20\x20\x20\x20\.button-lin
+SF:k:hover\x20{\r\n\x20\x20\x20\x20\x20\x20\x20\x20");
+MAC Address: 74:24:9F:55:BC:0E (Tibro)
+
+Nmap scan report for 192.168.1.208
+Host is up (0.077s latency).
+Not shown: 99 filtered tcp ports (no-response)
+Some closed ports may be reported as filtered due to --defeat-rst-ratelimit
+PORT     STATE SERVICE VERSION
+5357/tcp open  http    Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+MAC Address: 14:EB:B6:44:E7:79 (TP-Link Limited)
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Stats: 0:00:46 elapsed; 255 hosts completed (5 up), 1 undergoing Service Scan
+Service scan Timing: About 0.00% done
+Nmap scan report for 192.168.1.130
+Host is up (0.000058s latency).
+Not shown: 98 closed tcp ports (reset)
+PORT     STATE SERVICE         VERSION
+135/tcp  open  msrpc           Microsoft Windows RPC
+7070/tcp open  ssl/realserver?
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 256 IP addresses (5 hosts up) scanned in 51.53 seconds
+STDERR:

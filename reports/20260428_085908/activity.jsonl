@@ -1,0 +1,6 @@
+{"time": "08:59:09", "category": "info", "message": "Run ID: 20260428_085908 | Profile: standard | Approval: auto | Sub-agents: on", "detail": "", "host": "", "severity": "info"}
+{"time": "08:59:12", "category": "info", "message": "MCP session initialized; loading tool schemas", "detail": "", "host": "", "severity": "info"}
+{"time": "08:59:12", "category": "info", "message": "8 tools available to the model", "detail": "", "host": "", "severity": "info"}
+{"time": "08:59:20", "category": "ping_sweep", "message": "run_nmap_ping_sweep", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}
+{"time": "08:59:32", "category": "ping", "message": "Ping sweep 192.168.1.0/24", "detail": "COMMAND: C:\\Program Files (x86)\\Nmap\\nmap.EXE -sn 192.168.1.0/24\nTARGET: 192.168.1.0/24\nRAW_REPORT: none\nOUTPUT:\nEXIT_CODE: 0\nSTDOUT:\nStarting Nmap 7.98 ( https://nmap.org ) at 2026-04-28 18:59 +1000\n", "host": "", "severity": "info"}
+{"time": "08:59:45", "category": "triage_scan", "message": "run_nmap_triage_scan", "detail": "Args: {\"subnet\": \"192.168.1.0/24\"}", "host": "", "severity": "info"}

@@ -200,6 +200,7 @@ class SafeNmapRunner:
 
     settings: SafeNmapSettings
     completed_ping_sweeps: set[str] = field(default_factory=set)
+    live_hosts_by_subnet: dict[str, set[str]] = field(default_factory=dict)
     triaged_subnets: set[str] = field(default_factory=set)
     basic_scanned_hosts: set[str] = field(default_factory=set)
     service_scanned_hosts: set[str] = field(default_factory=set)
@@ -214,20 +215,18 @@ class SafeNmapRunner:
         if not any(network.subnet_of(approved) for approved in self.settings.approved_subnets):
             return f"BLOCKED: subnet {network} is not in the runtime-approved scan scope."
 
-        profile = SCAN_PROFILES.get(self.settings.scan_profile, SCAN_PROFILES["standard"])
-        args = list(profile.subnet_args) if profile.subnet_args else ["-sn", str(network)]
-        if "-sn" not in args:
-            args.insert(0, "-sn")
-        if str(network) not in args:
-            args.append(str(network))
+        args = ["-sn", str(network)]
         argv = (self._nmap_binary(), *args)
         xml_path = self.settings.xml_nmap_dir / f"{safe_name(str(network))}_ping_sweep.xml"
         xml_path.parent.mkdir(parents=True, exist_ok=True)
         result = self._run_nmap(argv, timeout=self.settings.nmap_timeout_seconds, xml_path=xml_path)
         self._write_raw(f"{safe_name(str(network))}_ping_sweep.txt", result)
+        live_hosts: set[str] = set()
         if nmap_completed(result):
             self.completed_ping_sweeps.add(str(network))
-        return format_tool_result(argv, str(network), result)
+            live_hosts = self._extract_live_hosts(network, result, xml_path)
+            self.live_hosts_by_subnet[str(network)] = live_hosts
+        return format_tool_result(argv, str(network), result) + "\n\nLIVE_HOSTS:\n" + build_live_hosts_summary(network, live_hosts)
 
     def run_nmap_triage_scan(self, subnet: str) -> str:
         network = validate_subnet(
@@ -240,11 +239,12 @@ class SafeNmapRunner:
         if str(network) not in self.completed_ping_sweeps:
             return f"BLOCKED: run_nmap_ping_sweep must complete before triage scan for {network}."
 
-        profile = SCAN_PROFILES.get(self.settings.scan_profile, SCAN_PROFILES["standard"])
-        base = list(profile.subnet_args) if profile.subnet_args else ["-sV", "--top-ports", str(self.settings.triage_top_ports), "--open"]
-        if str(network) not in base:
-            base.append(str(network))
-        argv = (self._nmap_binary(), *base)
+        argv = self._triage_argv_for_live_hosts(network)
+        if argv is None:
+            result = skipped_triage_output(network)
+            self._write_raw(f"{safe_name(str(network))}_triage_scan.txt", result)
+            self.triaged_subnets.add(str(network))
+            return format_tool_result(("SKIPPED", "run_nmap_triage_scan", str(network)), str(network), result) + "\n\nTRIAGE_HINTS:\nNo live hosts were discovered by the prerequisite ping sweep; no port scan was run.\n\nCOMPACT_SUMMARY:\nNo live hosts discovered."
         xml_path = self.settings.xml_nmap_dir / f"{safe_name(str(network))}_triage_scan.xml"
         xml_path.parent.mkdir(parents=True, exist_ok=True)
         result = self._run_nmap(argv, timeout=self.settings.nmap_timeout_seconds, xml_path=xml_path)
@@ -361,6 +361,8 @@ class SafeNmapRunner:
             target in ipaddress.ip_network(subnet) for subnet in self.completed_ping_sweeps
         ):
             return f"BLOCKED: run_nmap_ping_sweep must complete before host scans for {target}."
+        if require_ping_sweep and not self._host_was_discovered_alive(target):
+            return f"BLOCKED: {target} was not reported alive by the prerequisite ping sweep; refusing host scan."
         return target
 
     def _run_nmap(
@@ -518,11 +520,12 @@ class SafeNmapRunner:
             return f"BLOCKED: subnet {network} is not in the runtime-approved scan scope."
         if str(network) not in self.completed_ping_sweeps:
             return f"BLOCKED: run_nmap_ping_sweep must complete before triage scan for {network}."
-        profile = SCAN_PROFILES.get(self.settings.scan_profile, SCAN_PROFILES["standard"])
-        base = list(profile.subnet_args) if profile.subnet_args else ["-sV", "--top-ports", str(self.settings.triage_top_ports), "--open"]
-        if str(network) not in base:
-            base.append(str(network))
-        argv = (self._nmap_binary(), *base)
+        argv = self._triage_argv_for_live_hosts(network)
+        if argv is None:
+            result = skipped_triage_output(network)
+            self._write_raw(f"{safe_name(str(network))}_triage_scan.txt", result)
+            self.triaged_subnets.add(str(network))
+            return format_tool_result(("SKIPPED", "run_nmap_triage_scan", str(network)), str(network), result) + "\n\nTRIAGE_HINTS:\nNo live hosts were discovered by the prerequisite ping sweep; no port scan was run.\n\nCOMPACT_SUMMARY:\nNo live hosts discovered."
         xml_path = self.settings.xml_nmap_dir / f"{safe_name(str(network))}_triage_scan.xml"
         xml_path.parent.mkdir(parents=True, exist_ok=True)
         result = await self._run_nmap_async(argv, timeout=self.settings.nmap_timeout_seconds, xml_path=xml_path)
@@ -551,6 +554,40 @@ class SafeNmapRunner:
         if windows_default.exists():
             return str(windows_default)
         return configured
+
+    def _triage_argv_for_live_hosts(self, network: ipaddress.IPv4Network) -> tuple[str, ...] | None:
+        live_hosts = self._live_hosts_for_network(network)
+        if not live_hosts:
+            return None
+        profile = SCAN_PROFILES.get(self.settings.scan_profile, SCAN_PROFILES["standard"])
+        base = list(profile.subnet_args) if profile.subnet_args else ["-sV", "--top-ports", str(self.settings.triage_top_ports), "--open"]
+        return (self._nmap_binary(), *base, *live_hosts)
+
+    def _live_hosts_for_network(self, network: ipaddress.IPv4Network) -> list[str]:
+        hosts = self.live_hosts_by_subnet.get(str(network), set())
+        return sorted(
+            (host for host in hosts if ipaddress.ip_address(host) in network),
+            key=ip_sort_key,
+        )
+
+    def _host_was_discovered_alive(self, target: ipaddress.IPv4Address) -> bool:
+        for subnet in self.completed_ping_sweeps:
+            network = ipaddress.ip_network(subnet)
+            if target in network and str(target) in self.live_hosts_by_subnet.get(str(network), set()):
+                return True
+        return False
+
+    def _extract_live_hosts(
+        self,
+        network: ipaddress.IPv4Network,
+        output: str,
+        xml_path: Path,
+    ) -> set[str]:
+        xml_text = ""
+        if xml_path.exists():
+            with contextlib.suppress(OSError):
+                xml_text = xml_path.read_text(encoding="utf-8", errors="replace")
+        return set(parse_live_hosts(output, xml_text=xml_text, network=network))
 
     def _host_raw_path(self, ip: str) -> Path:
         return self.settings.raw_nmap_dir / f"{safe_name(ip)}_scan.txt"
@@ -689,6 +726,84 @@ def safe_name(value: str) -> str:
 
 def nmap_completed(output: str) -> bool:
     return not output.startswith("ERROR:")
+
+
+def parse_live_hosts(
+    output: str,
+    *,
+    xml_text: str = "",
+    network: ipaddress.IPv4Network | None = None,
+) -> list[str]:
+    """Extract hosts Nmap explicitly reported as up during discovery."""
+    hosts: list[str] = []
+
+    def add_host(value: str) -> None:
+        host = extract_host_identifier(value)
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return
+        if ip.version != 4:
+            return
+        if network is not None and ip not in network:
+            return
+        hosts.append(str(ip))
+
+    if xml_text:
+        with contextlib.suppress(ET.ParseError):
+            root = ET.fromstring(xml_text)
+            for host_elem in root.findall("host"):
+                status = host_elem.find("status")
+                if status is None or status.get("state", "") != "up":
+                    continue
+                ip_elem = host_elem.find("address[@addrtype='ipv4']")
+                if ip_elem is not None:
+                    add_host(ip_elem.get("addr", ""))
+
+    current_host = ""
+    in_live_hosts_section = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped == "LIVE_HOSTS:":
+            in_live_hosts_section = True
+            current_host = ""
+            continue
+        if in_live_hosts_section:
+            if stripped.startswith("- "):
+                add_host(stripped[2:].split()[0])
+                continue
+            if stripped.startswith(("TRIAGE_HINTS:", "COMPACT_SUMMARY:", "COMMAND:", "OUTPUT:")):
+                in_live_hosts_section = False
+        report_match = re.match(r"Nmap scan report for (.+)$", stripped)
+        if report_match:
+            current_host = report_match.group(1)
+            continue
+        if current_host and stripped.startswith("Host is up"):
+            add_host(current_host)
+            current_host = ""
+
+    return sorted(set(hosts), key=ip_sort_key)
+
+
+def build_live_hosts_summary(network: ipaddress.IPv4Network, live_hosts: Iterable[str]) -> str:
+    hosts = sorted(set(live_hosts), key=ip_sort_key)
+    if not hosts:
+        return f"No live hosts discovered in {network}. Downstream port scans for this subnet will be skipped."
+    lines = [f"{len(hosts)} live host(s) discovered in {network}:"]
+    lines.extend(f"- {host}" for host in hosts)
+    return "\n".join(lines)
+
+
+def skipped_triage_output(network: ipaddress.IPv4Network) -> str:
+    return "\n".join(
+        (
+            "EXIT_CODE: 0",
+            "STDOUT:",
+            f"No live hosts were discovered by run_nmap_ping_sweep for {network}.",
+            "No triage port scan was run.",
+            "STDERR:",
+        )
+    )
 
 
 def build_triage_hints(output: str) -> str:
