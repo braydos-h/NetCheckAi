@@ -244,6 +244,14 @@ def ask_concurrency(history: dict[str, Any]) -> int:
     return int(ans)
 
 
+def ask_demo_mode() -> bool:
+    return confirm(
+        "Run in DEMO mode with a fake vulnerable network?",
+        default=False,
+        style=CUSTOM_STYLE,
+    ).unsafe_ask()
+
+
 def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
     """Launch the full interactive menu and return a dict of chosen args."""
     history = load_history()
@@ -254,6 +262,34 @@ def interactive_menu(config: dict[str, Any]) -> dict[str, Any]:
     print("  Defensive Local Network Scanner")
     print("=" * 40)
     print()
+
+    demo_mode = ask_demo_mode()
+    if demo_mode:
+        return {
+            "subnet": ["10.0.0.0/24"],
+            "mcp_transport": "stdio",
+            "model": config.get("ollama", {}).get("model", "kimi-k2.6:cloud"),
+            "reports_dir": Path(config.get("reports", {}).get("base_dir", "reports")),
+            "max_hosts": None,
+            "config": Path("config.yaml"),
+            "http_port": None,
+            "plain": False,
+            "no_search": False,
+            "profile": "standard",
+            "approval_mode": "auto",
+            "output": "all",
+            "no_sub_agents": False,
+            "sub_agent_concurrency": 4,
+            "max_sub_agent_rounds": None,
+            "active_checks": False,
+            "active_consent_mode": "per-command",
+            "exploit": False,
+            "exploit_mode": "integrated",
+            "exploit_permission": "approve_only",
+            "exploit_target": "",
+            "exploit_cve": "",
+            "demo": True,
+        }
 
     # Quick mode or full menu
     quick = confirm(

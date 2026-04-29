@@ -11,24 +11,6 @@ from typing import Any
 
 
 ICONS = {
-    "ping": "●",
-    "triage": "▶",
-    "basic_scan": "◎",
-    "service_scan": "◇",
-    "vuln_scan": "◈",
-    "search": "◇",
-    "agent_spawn": "▶",
-    "agent_done": "✔",
-    "agent_fail": "✘",
-    "report": "◆",
-    "blocked": "✘",
-    "info": "◉",
-    "warning": "⚠",
-    "error": "✘",
-    "budget": "$",
-}
-
-ASCII_ICONS = {
     "ping": "*",
     "triage": ">",
     "basic_scan": "o",
@@ -38,8 +20,6 @@ ASCII_ICONS = {
     "agent_spawn": ">",
     "agent_done": "OK",
     "agent_fail": "X",
-    "active_approval": "A",
-    "active_check": "!",
     "report": "#",
     "blocked": "X",
     "info": "i",
@@ -48,13 +28,16 @@ ASCII_ICONS = {
     "budget": "$",
 }
 
-SEVERITY_PREFIX = {
-    "critical": "[CRIT] ",
-    "high": "[HIGH] ",
-    "medium": "[MED]  ",
-    "low": "[LOW]  ",
-    "info": "",
+SEVERITY_COLOR = {
+    "critical": "\x1b[1;31m",
+    "high": "\x1b[31m",
+    "medium": "\x1b[33m",
+    "low": "\x1b[32m",
+    "info": "\x1b[36m",
+    "warning": "\x1b[33m",
+    "error": "\x1b[1;31m",
 }
+RESET = "\x1b[0m"
 
 
 @dataclass
@@ -69,14 +52,16 @@ class ActivityEvent:
 
 
 class ActivityLog:
-    """Plain activity logger writes JSONL audit trail and prints clean CLI lines."""
+    """Plain activity logger that writes JSONL audit trail and prints clean CLI lines."""
 
     def __init__(
         self,
         reports_dir: Path,
         *,
+        plain: bool = False,
         max_events: int = 80,
     ):
+        self.plain = plain
         self.max_events = max_events
         self.events: list[ActivityEvent] = []
         self.reports_dir = reports_dir
@@ -91,8 +76,16 @@ class ActivityLog:
         }
         self._agent_status: dict[str, dict[str, Any]] = {}
 
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
     def _now(self) -> str:
         return datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+    def _elapsed(self) -> str:
+        elapsed = int(time.monotonic() - self._start)
+        m, s = divmod(elapsed, 60)
+        return f"{m:02d}:{s:02d}"
 
     def _write_audit(self, event: ActivityEvent) -> None:
         entry = {
@@ -106,6 +99,28 @@ class ActivityLog:
         with self.audit_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
 
+    def _fmt_line(self, event: ActivityEvent) -> str:
+        icon = ICONS.get(event.category, "*")
+        sev = event.severity
+        if sev in ("critical", "high", "medium", "low", "info", "warning", "error"):
+            label = sev.upper()[:4]
+        else:
+            label = "INFO"
+        parts = ["", event.timestamp, icon, f"[{label:4}]", event.message]
+        if event.host:
+            parts.append(f"[{event.host}]")
+        return " ".join(parts)
+
+    def _print(self, text: str, severity: str = "info") -> None:
+        if self.plain:
+            print(text)
+            return
+        color = SEVERITY_COLOR.get(severity, "")
+        print(f"{color}{text}{RESET}")
+
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
     def log(
         self,
         category: str,
@@ -115,12 +130,9 @@ class ActivityLog:
         host: str = "",
         severity: str = "info",
     ) -> None:
-        icon = ICONS.get(category, "•")
-        icon = ASCII_ICONS.get(category, icon if icon.isascii() else "*")
-        prefix = SEVERITY_PREFIX.get(severity, "")
         event = ActivityEvent(
             timestamp=self._now(),
-            icon=icon,
+            icon=ICONS.get(category, "*"),
             category=category,
             message=message,
             detail=detail,
@@ -132,15 +144,29 @@ class ActivityLog:
             self.events.pop(0)
         self._write_audit(event)
 
-        line = f"[{event.timestamp}] {icon} [{category.upper():12}] {prefix}{message}"
-        if host:
-            line += f"  (host: {host})"
-        print(line)
+        self._print(self._fmt_line(event), severity=event.severity)
         if detail:
             for dline in detail.splitlines()[:3]:
                 dline = dline.strip()
                 if dline:
-                    print(f"                 {dline[:120]}")
+                    self._print(f"                 {dline[:120]}", severity="info")
+
+    def progress(self) -> str:
+        """Return a one-line progress string."""
+        s = self._overall_progress
+        parts: list[str] = []
+        if s["subnets_total"]:
+            parts.append(f"subnets {s['subnets_done']}/{s['subnets_total']}")
+        if s["agents_total"]:
+            parts.append(f"agents {s['agents_done']}/{s['agents_total']}")
+        return f"elapsed {self._elapsed()}  {' | '.join(parts)}"
+
+    def print_progress(self) -> None:
+        text = self.progress()
+        if self.plain:
+            print(text)
+        else:
+            print(f"\x1b[90m{text}\x1b[0m")
 
     def set_progress(self, **kwargs: Any) -> None:
         self._overall_progress.update(kwargs)
@@ -165,6 +191,7 @@ class ActivityLog:
     def __exit__(self, *args: Any) -> None:
         self.stop()
 
+    # Convenience wrappers used by main.py / sub_agents -----------------
     def ping(self, subnet: str, result: str) -> None:
         self.log("ping", f"Ping sweep {subnet}", detail=result[:200])
         self.set_progress(subnets_done=self._overall_progress["subnets_done"] + 1)

@@ -53,6 +53,8 @@ from tools.sub_agents import (
 )
 from tools.activity_log import ActivityLog
 from tools.interactive_ui import interactive_menu
+from tools.demo_session import create_demo_session, DemoSession
+from tools import demo_data
 from tools.active_checks import (
     ActiveCheckPolicy,
     ActiveCheckSettings,
@@ -89,77 +91,117 @@ Rules:
 
 
 class Ui:
-    """Plain terminal UI with clean, single-line output."""
+    """Plain terminal UI with clean, single-line output.
+
+    Uses ANSI colors when ``plain=False`` and ``stderr``/``stdout``
+    are attached to a TTY.  When ``plain=True`` (or output is being
+    redirected) only plain ASCII characters are emitted.
+    """
+
+    COLORS = {
+        "header": "\x1b[1;36m",
+        "subheader": "\x1b[36m",
+        "bold": "\x1b[1m",
+        "green": "\x1b[1;32m",
+        "yellow": "\x1b[1;33m",
+        "red": "\x1b[1;31m",
+        "blue": "\x1b[1;34m",
+        "gray": "\x1b[90m",
+        "reset": "\x1b[0m",
+    }
+
+    RULE_CHAR = "="
 
     def __init__(self, *, plain: bool = False, activity: ActivityLog | None = None) -> None:
         self.activity = activity
-        self.plain = plain
+        self.plain = plain or not self._is_tty()
 
+    @staticmethod
+    def _is_tty() -> bool:
+        import sys as _sys
+
+        return _sys.stdout.isatty() and _sys.stderr.isatty()
+
+    def _c(self, key: str) -> str:
+        return "" if self.plain else self.COLORS.get(key, "")
+
+    # --- high-level helpers ---
+    def _header(self, text: str) -> None:
+        print(f"\n{text}\n")
+
+    def _rule(self, length: int = 50) -> None:
+        print(self.RULE_CHAR * length)
+
+    def _print_pair(self, label: str, value: str, width: int = 12) -> None:
+        print(f"  {self._c('bold')}{label:>{width}}{self._c('reset')}  {value}")
+
+    # --- public API ---
     def header(self, model: str, subnets: tuple[ipaddress.IPv4Network, ...], transport: str) -> None:
         scope = ", ".join(str(network) for network in subnets)
-        print()
-        print("=" * 60)
-        print("  Defensive Local Network Assessment")
-        print("=" * 60)
-        print(f"  Model:     {model}")
-        print(f"  Scope:     {scope}")
-        print(f"  Transport: {transport}")
-        print("=" * 60)
-        print()
+        self._rule(60)
+        print(f"  {self._c('header')}Defensive Local Network Assessment{self._c('reset')}")
+        self._rule(60)
+        self._print_pair("Model:", model)
+        self._print_pair("Scope:", scope)
+        self._print_pair("Transport:", transport)
+        self._rule(60)
 
     def status(self, message: str) -> None:
         if self.activity:
             self.activity.log("info", message)
         else:
-            print(f"[STATUS] {message}", flush=True)
+            print(f"{self._c('yellow')}[STATUS]{self._c('reset')} {message}", flush=True)
 
     def tool(self, name: str, arguments: dict[str, Any]) -> None:
         payload = json.dumps(arguments, sort_keys=True)
         if self.activity:
             self.activity.tool_call(name, arguments)
         else:
-            print(f"[TOOL] {name} {payload}")
+            print(f"{self._c('blue')}[TOOL]{self._c('reset')} {self._c('gray')}{name}{self._c('reset')} {payload}")
 
     def blocked(self, reason: str) -> None:
         if self.activity:
             self.activity.blocked(reason)
         else:
-            print(f"[BLOCKED] {reason}")
+            print(f"{self._c('red')}[BLOCKED]{self._c('reset')} {reason}")
 
     def stream(self, text: str) -> None:
         print(text, end="", flush=True)
 
     def ai_message(self, text: str) -> None:
-        print("[AI response]")
-        for line in text.splitlines():
+        lines = text.strip().splitlines()
+        if not lines:
+            return
+        print(f"\n{self._c('green')}  AI:{self._c('reset')}")
+        for line in lines:
             print(f"    {line}")
-        print()
 
     def thinking(self, text: str) -> None:
-        print("[AI thinking]")
-        for line in text.splitlines():
-            print(f"    {line}")
-        print()
+        lines = text.strip().splitlines()
+        if not lines:
+            return
+        print(f"\n{self._c('gray')}  Thinking:{self._c('reset')}")
+        for line in lines:
+            print(f"    {self._c('gray')}{line}{self._c('reset')}")
 
     def report(self, path: Path) -> None:
         if self.activity:
             self.activity.report_written(path)
         else:
-            print(f"[REPORT] {path}")
+            print(f"{self._c('green')}[REPORT]{self._c('reset')} {path}")
 
     def approval(self, action_desc: str) -> None:
-        print(f"[APPROVAL REQUIRED] {action_desc}")
+        print(f"\n{self._c('yellow')}[APPROVAL]{self._c('reset')} {action_desc}")
 
     def pending(self, action_desc: str) -> None:
-        print(f"[PENDING] {action_desc}")
+        print(f"{self._c('yellow')}[PENDING]{self._c('reset')}  {action_desc}")
 
     def menu(self, options: list[str], title: str = "Choose an action") -> int | None:
-        """Display a menu and return the selected index, or None if cancelled."""
-        print(f"\n{title}")
+        print(f"\n  {self._c('bold')}{title}{self._c('reset')}")
         for i, opt in enumerate(options, 1):
-            print(f"  {i}. {opt}")
+            print(f"  {self._c('gray')}{i}.{self._c('reset')} {opt}")
         try:
-            choice = input("Enter number (or Enter to skip): ").strip()
+            choice = input("  > ").strip()
             if not choice:
                 return None
             idx = int(choice) - 1
@@ -167,7 +209,7 @@ class Ui:
                 return idx
         except ValueError:
             pass
-        print("Invalid choice; skipping.")
+        print("  Invalid choice; skipping.")
         return None
 
 
@@ -681,10 +723,10 @@ async def run_exploit_session(
     if target.severity in ("critical", "high"):
         service_context += f"Severity: {target.severity}."
 
-    print(f"\n  Starting exploitation session for {target_ip}")
-    print(f"  CVE: {target_cve}")
-    print(f"  Permission: {exploit_settings.permission.value}")
-    print(f"  Workspace: {workspace}")
+    ui.status(f"Starting exploitation session for {target_ip}")
+    ui.status(f"CVE: {target_cve}")
+    ui.status(f"Permission: {exploit_settings.permission.value}")
+    ui.status(f"Workspace: {workspace}")
 
     async with open_exploit_mcp_session(
         transport=mcp_transport,
@@ -784,6 +826,7 @@ async def run_agent_loop(
     max_sub_agent_rounds: int,
     reports_dir: Path = Path("reports"),
     active_settings: ActiveCheckSettings = ActiveCheckSettings(),
+    demo_mode: bool = False,
 ) -> tuple[list[dict[str, Any]], list[StructuredFinding]]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -866,7 +909,11 @@ async def run_agent_loop(
             if kind not in ("ping_sweep", "triage_scan")
         ]
 
-        async def _exec_call(name: str, arguments: dict[str, Any], kind: str | None, target: str | None) -> tuple[str, str | None, str | None, str]:
+        semaphore = asyncio.Semaphore(3)
+
+        async def _exec_call(
+            name: str, arguments: dict[str, Any], kind: str | None, target: str | None
+        ) -> tuple[str, str | None, str | None, str]:
             if policy.approval_mode in ("review", "manual"):
                 action_desc = f"{name}({json.dumps(arguments)})"
                 if policy.approval_mode == "manual":
@@ -883,25 +930,30 @@ async def run_agent_loop(
             policy.mark_success(kind, target, text)
             return name, kind, target, text
 
-        async with asyncio.Semaphore(3):
-            if discovery_calls:
-                gathered = await asyncio.gather(
-                    *(_exec_call(n, a, k, t) for n, a, k, t in discovery_calls),
-                    return_exceptions=True,
-                )
-                for item in gathered:
-                    if isinstance(item, Exception):
-                        messages.append({"role": "tool", "tool_name": "unknown", "content": f"ERROR: {item}"})
-                        continue
-                    name, kind, target, text = item
-                    messages.append({"role": "tool", "tool_name": name, "content": text})
-                    if kind == "triage_scan" and target:
-                        triage_outputs[target] = text
-                        if ui.activity:
-                            ui.activity.triage(target, text)
-                    elif kind == "ping_sweep" and target:
-                        if ui.activity:
-                            ui.activity.ping(target, text)
+        async def _exec_discovery_call(
+            name: str, arguments: dict[str, Any], kind: str | None, target: str | None
+        ) -> tuple[str, str | None, str | None, str]:
+            async with semaphore:
+                return await _exec_call(name, arguments, kind, target)
+
+        if discovery_calls:
+            gathered = await asyncio.gather(
+                *(_exec_discovery_call(n, a, k, t) for n, a, k, t in discovery_calls),
+                return_exceptions=True,
+            )
+            for item in gathered:
+                if isinstance(item, Exception):
+                    messages.append({"role": "tool", "tool_name": "unknown", "content": f"ERROR: {item}"})
+                    continue
+                name, kind, target, text = item
+                messages.append({"role": "tool", "tool_name": name, "content": text})
+                if kind == "triage_scan" and target:
+                    triage_outputs[target] = text
+                    if ui.activity:
+                        ui.activity.triage(target, text)
+                elif kind == "ping_sweep" and target:
+                    if ui.activity:
+                        ui.activity.ping(target, text)
 
         for name, arguments, kind, target in host_calls:
             if sub_agent_mode_ready(policy, approved_subnets, use_sub_agents):
@@ -922,7 +974,12 @@ async def run_agent_loop(
             break
 
     sub_findings: list[StructuredFinding] = []
-    if use_sub_agents and triage_outputs:
+    if demo_mode:
+        # In demo mode, skip real sub-agent spawn and inject pre-baked findings
+        ui.status("Demo mode: injecting pre-baked sub-agent findings")
+        for raw in demo_data.get_demo_sub_findings():
+            sub_findings.append(StructuredFinding(**raw))
+    elif use_sub_agents and triage_outputs:
         all_ranked: list[Any] = []
         for text in triage_outputs.values():
             ranked = extract_triage_ranked(text)
@@ -1872,7 +1929,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--exploit-mode", choices=("integrated", "standalone"), default="integrated", help="Exploitation mode: integrated with scan or standalone")
     parser.add_argument("--exploit-permission", choices=("full_access", "approve_only"), default="approve_only", help="Exploit permission: full_access (auto-approve) or approve_only (user confirms each action)")
     parser.add_argument("--exploit-target", default="", help="Target IP for standalone exploit mode")
-    parser.add_argument("--exploit-cve", default="", help="Specific CVE to exploit (optional)")
+    parser.add_argument("--demo", action="store_true", help="Run in synthetic demo mode with fake scan data (no real Nmap)")
     return parser.parse_args(argv)
 
 
@@ -1888,15 +1945,19 @@ async def async_main(args: argparse.Namespace) -> int:
     reports_base = args.reports_dir or Path(config.get("reports", {}).get("base_dir", "reports"))
     reports_base.mkdir(parents=True, exist_ok=True)
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    demo_mode = getattr(args, "demo", False)
+    run_id = "demo_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") if demo_mode else datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     reports_dir = reports_base / run_id
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     latest_link = reports_base / "latest"
     if latest_link.exists() or latest_link.is_symlink():
         try:
-            latest_link.unlink()
-        except OSError:
+            if latest_link.is_dir() and not latest_link.is_symlink():
+                latest_link.rmdir()
+            else:
+                latest_link.unlink()
+        except (OSError, PermissionError):
             pass
     try:
         latest_link.symlink_to(reports_dir, target_is_directory=True)
@@ -1959,7 +2020,6 @@ async def async_main(args: argparse.Namespace) -> int:
     exploit_permission_raw = str(getattr(args, "exploit_permission", "approve_only"))
     exploit_target_raw = str(getattr(args, "exploit_target", ""))
     exploit_cve_raw = str(getattr(args, "exploit_cve", ""))
-
     if exploit_enabled and exploit_mode == "standalone" and not exploit_target_raw:
         raise ValueError("--exploit-target is required in standalone exploit mode.")
 
@@ -1984,21 +2044,32 @@ async def async_main(args: argparse.Namespace) -> int:
 
     exploit_port = http_port + 1
 
-    ui = Ui(plain=args.plain, activity=ActivityLog(reports_dir))
-    ui.header(model, approved_subnets, args.mcp_transport)
-    ui.status(
-        f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | "
-        f"Sub-agents: {'on' if use_sub_agents else 'off'} | "
-        f"Active checks: {'on' if active_enabled else 'off'} | "
-        f"Exploit: {exploit_mode if exploit_enabled else 'off'}"
-    )
-    if exploit_settings.enabled and exploit_settings.preapproved:
+    ui = Ui(plain=args.plain, activity=ActivityLog(reports_dir, plain=args.plain))
+    if demo_mode:
+        ui.header(model, approved_subnets, args.mcp_transport)
         ui.status(
-            "WARNING: exploit actions are preapproved (full_access). The AI will auto-execute "
-            "all commands. Target-scope enforcement, timeouts, and audit logs still apply."
+            f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | "
+            f"Sub-agents: {'on' if use_sub_agents else 'off'} | "
+            f"Active checks: {'on' if active_enabled else 'off'} | "
+            f"Exploit: {exploit_mode if exploit_enabled else 'off'} | "
+            f"DEMO MODE"
         )
+        ui.status("DEMO SCAN — This is a fake network. No real Nmap is running.")
+    else:
+        ui.header(model, approved_subnets, args.mcp_transport)
+        ui.status(
+            f"Run ID: {run_id} | Profile: {profile} | Approval: {approval_mode} | "
+            f"Sub-agents: {'on' if use_sub_agents else 'off'} | "
+            f"Active checks: {'on' if active_enabled else 'off'} | "
+            f"Exploit: {exploit_mode if exploit_enabled else 'off'}"
+        )
+        if exploit_settings.enabled and exploit_settings.preapproved:
+            ui.status(
+                "WARNING: exploit actions are preapproved (full_access). The AI will auto-execute "
+                "all commands. Target-scope enforcement, timeouts, and audit logs still apply."
+            )
 
-    if args.no_search:
+    if args.no_search and not demo_mode:
         os.environ["DISABLE_VULN_SEARCH"] = "1"
 
     try:
@@ -2046,9 +2117,9 @@ async def async_main(args: argparse.Namespace) -> int:
         )
 
         ui.status("exploitation session complete")
-        print(f"\n  Results saved to: {exploit_result.get('workspace', 'unknown')}")
-        print(f"  Actions executed: {exploit_result.get('total_actions', 0)}")
-        print(f"  Audit trail: {exploit_result.get('audit_path', 'unknown')}")
+        ui.status(f"Results saved to: {exploit_result.get('workspace', 'unknown')}")
+        ui.status(f"Actions executed: {exploit_result.get('total_actions', 0)}")
+        ui.status(f"Audit trail: {exploit_result.get('audit_path', 'unknown')}")
         return 0
 
     # --- Normal scan flow ---
@@ -2101,13 +2172,18 @@ async def async_main(args: argparse.Namespace) -> int:
     )
     nvd = NVDClient(cve_settings)
 
-    async with open_mcp_session(
-        transport=args.mcp_transport,
-        config_path=args.config,
-        approved_subnets=approved_subnets,
-        reports_dir=reports_dir,
-        http_port=http_port,
-    ) as session:
+    if demo_mode:
+        session_context = create_demo_session(reports_dir=reports_dir)
+    else:
+        session_context = open_mcp_session(
+            transport=args.mcp_transport,
+            config_path=args.config,
+            approved_subnets=approved_subnets,
+            reports_dir=reports_dir,
+            http_port=http_port,
+        )
+
+    async with session_context as session:
         ui.activity.set_progress(subnets_total=len(approved_subnets))
         ui.status("MCP session initialized; loading tool schemas")
         tools_response = await session.list_tools()
@@ -2130,6 +2206,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 max_sub_agent_rounds=max_sub_agent_rounds,
                 reports_dir=reports_dir,
                 active_settings=active_settings,
+                demo_mode=demo_mode,
             )
 
     ui.status("generating reports")
@@ -2154,7 +2231,7 @@ async def async_main(args: argparse.Namespace) -> int:
             ui.status("No exploitable targets with confirmed CVEs were found.")
             return 0
 
-        print(f"\n  {len(targets)} exploit target(s) available:\n")
+        ui.status(f"{len(targets)} exploit target(s) available:")
         for i, t in enumerate(targets, 1):
             print(f"  {i}. {t.ip} | {t.cve} | {t.severity} | {t.service}:{t.port}")
 
@@ -2226,7 +2303,6 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     # If no CLI args provided and stdin is a tty, launch interactive menu
     if not argv and sys.stdin.isatty():
-        from tools.interactive_ui import interactive_menu
         config = load_config(Path("config.yaml"))
         try:
             settings = interactive_menu(config)
