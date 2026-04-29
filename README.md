@@ -1,6 +1,6 @@
 # NetCheckAI
 
-> AI-assisted offensive and defensive network assessment for approved private networks.
+> Your AI-powered network security copilot for fast, scoped, evidence-backed assessments.
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Nmap](https://img.shields.io/badge/Nmap-required-00457C)](https://nmap.org/)
@@ -9,17 +9,30 @@
 [![Tests](https://img.shields.io/badge/tests-pytest-0A7BBB)](https://docs.pytest.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-NetCheckAI turns Nmap into a governed, repeatable, AI-assisted assessment workflow for internal networks. It combines a Python orchestration layer, restricted MCP tool servers, safe Nmap wrappers, vulnerability-intelligence lookup, per-host AI sub-agents, AI-driven exploitation, and deterministic evidence-backed reports.
+NetCheckAI makes internal network assessments dramatically faster without turning your workflow into a black box. It combines trusted Nmap scanning with AI-guided triage, host prioritization, CVE enrichment, and ready-to-share reporting.
 
-It is built for defenders and pentesters who need speed without giving up control: every scan is constrained to approved RFC1918 IPv4 ranges, every host-level action is gated by discovery evidence, and every report preserves the raw artifacts needed for audit and follow-up. When exploitation mode is enabled, the AI can research and execute exploits — but every action is permission-gated, audited, and target-scoped.
+Instead of deep-scanning everything and drowning in output, NetCheckAI helps you:
+
+- Find what is actually exposed
+- Focus on the hosts most likely to matter
+- Produce audit-friendly reports your team can act on immediately
+
+Built-in guardrails keep scans inside approved private ranges, enforce evidence-driven scan flow, and preserve raw artifacts for verification and compliance. Optional exploitation mode is available for authorized testing with approval gates and full audit trails.
 
 ---
 
 ## Product Overview
 
-NetCheckAI helps security engineers, blue teams, consultants, and DevSecOps teams assess approved local networks with a workflow that is more selective than a raw scanner and more auditable than a free-form AI agent.
+NetCheckAI is designed for security teams that need speed, signal, and control in one tool.
 
-The project exists to solve a common operational problem: internal scans either produce too little context or too much noise. NetCheckAI starts with discovery, performs triage, ranks hosts by observable risk, then sends deeper scans only where the evidence justifies them.
+### Why teams choose NetCheckAI
+
+- **Cut noise:** triage-first logic prioritizes likely-risky hosts before deeper scans.
+- **Move faster:** AI assists with analysis, enrichment, and next-step recommendations.
+- **Stay in control:** scope limits, command restrictions, and approval workflows are enforced in code.
+- **Prove your work:** raw outputs, structured findings, and reports are saved per run.
+
+The workflow is simple: discover live hosts, triage exposure, go deeper only where evidence supports it, then generate reports for remediation, audits, and retesting.
 
 | Dimension | What NetCheckAI Does |
 |---|---|
