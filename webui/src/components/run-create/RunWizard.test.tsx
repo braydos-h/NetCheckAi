@@ -134,6 +134,11 @@ function setup({
     source: "ollama",
     liveCount: 0,
     error: undefined,
+    status: "online",
+    statusText: "Online",
+    isChecking: false,
+    isFallback: false,
+    fixHint: "Is the daemon running?",
   } as never);
 
   const search = new URLSearchParams();

@@ -634,6 +634,17 @@ class RunEventBroker:
             self._stop_queue(queue)
         self._subscribers.clear()
 
+    def reopen(self) -> None:
+        """Re-arm a closed broker for post-run operator annotations.
+
+        ``RunManager`` closes a run's broker when the run leaves active
+        handling, but operator actions after the run (HITL decisions, …)
+        still need a durable, sequenced event. Reopening resumes the stored
+        sequence counter, so replay stays monotonic and future subscribers
+        (poll/WS/SSE) observe the late event. No-op on an open broker.
+        """
+        self._closed = False
+
     @staticmethod
     def _stop_queue(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
         while not queue.empty():

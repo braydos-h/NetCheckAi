@@ -145,6 +145,12 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class HitlDecideRequest(BaseModel):
+    finding_id: str = ""
+    decision: str = ""
+    note: str = ""
+
+
 def create_router(auth: BearerAuth, persistence: ApiPersistence, run_manager: RunManager) -> APIRouter:
     """Create a runs router with isolated dependencies."""
     router = APIRouter(prefix="/api/v1", tags=["runs"])
@@ -661,6 +667,76 @@ def create_router(auth: BearerAuth, persistence: ApiPersistence, run_manager: Ru
         if _ps().get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return _run_sandbox_summary(run_id)
+
+    # ── HITL evidence loop (Flow A: agents propose, human decides) ──────────
+
+    @router.get("/runs/{run_id}/proposed")
+    async def list_proposed(run_id: str, auth: str = Depends(_require_auth)) -> dict[str, Any]:
+        """List findings awaiting human review (hitl_status=PROPOSED) for a run.
+
+        Each entry embeds its read-only ``proof`` capsule (stored probe exec +
+        output excerpt + machine retest/verify verdicts) — no target touch.
+        """
+        if _ps().get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        from tools.mcp_tools.hitl import list_proposed_findings, proof_capsule
+
+        try:
+            proposed, _resolved = list_proposed_findings(_ps().reports_dir, run_id)
+        except LookupError:
+            return {"run_id": run_id, "proposed": []}
+        return {
+            "run_id": run_id,
+            "proposed": [{**finding, "proof": proof_capsule(finding)} for finding in proposed],
+        }
+
+    @router.post("/runs/{run_id}/decide")
+    async def decide_finding(
+        run_id: str, body: HitlDecideRequest, auth: str = Depends(_require_auth)
+    ) -> dict[str, Any]:
+        """Record a human Approve/Reject decision (actor is always ``human``).
+
+        The bearer-gated WebUI IS the human path, so the actor is hardcoded
+        server-side and never accepted from the client — an LLM cannot
+        self-approve. Persists into the run artifact JSON and emits a
+        ``hitl_decision`` event for live WebUI refresh.
+        """
+        if _ps().get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not (body.finding_id or "").strip():
+            raise HTTPException(status_code=400, detail="finding_id is required")
+        from tools.mcp_tools.hitl import persist_hitl_decision
+        from tools.mcp_tools.retest import _finding_file
+
+        json_path = _finding_file(_ps().reports_dir / run_id)
+        if not json_path.is_file():
+            raise HTTPException(status_code=404, detail="Run has no enhanced report")
+        try:
+            finding = persist_hitl_decision(json_path, body.finding_id.strip(), body.decision, body.note, actor="human")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        broker_registry = getattr(_rm(), "_events", None)
+        if broker_registry is not None:
+            hitl_event = {
+                "finding_id": body.finding_id.strip(),
+                "decision": str(finding.get("hitl_status") or ""),
+                "note": body.note or "",
+                "actor": "human",
+            }
+            try:
+                broker = broker_registry.get_or_create(run_id)
+                try:
+                    await broker.emit("hitl_decision", hitl_event)
+                except RuntimeError:
+                    # Broker closed when the run left active handling (review
+                    # happens post-run) — re-arm it for this annotation, then emit.
+                    broker.reopen()
+                    await broker.emit("hitl_decision", hitl_event)
+            except Exception:  # noqa: BLE001 -- persistence won; a dropped live event heals via polling
+                pass
+        return {"run_id": run_id, "finding_id": body.finding_id.strip(), "finding": finding}
 
     # ── Swarm + campaign state (C7-C8) ──────────────────────────────────────────
 

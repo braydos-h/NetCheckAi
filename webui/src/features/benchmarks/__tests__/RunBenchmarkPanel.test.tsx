@@ -19,6 +19,11 @@ vi.mock("@/features/benchmarks/api", () => ({
   startBenchmarkRun: (...args: unknown[]) => startBenchmarkRun(...args),
 }));
 
+vi.mock("@/components/ProviderSetup", () => ({
+  useDefaultModel: () => "glm",
+  useModelOptions: () => ["glm", "glm-mini"],
+}));
+
 const SCENARIOS: ScenarioInfo[] = [
   {
     suite: "xben",

@@ -13,11 +13,15 @@ import time
 from typing import Any, Callable
 
 from tools.attack_modules import AttackModule, ModuleContext, ModuleResult, _module_target_signature
+from tools.attack_planner import StepContext
 from tools.attack_ui import get_ui
+from tools.exceptions import _EXC_GROUP_CATCH
+from tools.failure_taxonomy import classify_failure
 from tools.logging_setup import get_logger
 
 from tools.campaign.state import (
     AggressionLevel,
+    AttackPhase,
     AttackState,
     AttackTask,
     TaskStatus,
@@ -26,6 +30,21 @@ from tools.campaign.state import (
 
 logger = get_logger()
 ui = get_ui()
+
+
+def _result_evidence(result: Any) -> list[str]:
+    """Pull human-readable evidence strings out of a module result dict."""
+    if not isinstance(result, dict):
+        return [str(result)[:500]] if result else ["no evidence returned"]
+    out: list[str] = []
+    ev = result.get("evidence")
+    if isinstance(ev, list):
+        out.extend(str(e)[:500] for e in ev)
+    for key in ("note", "status"):
+        val = result.get(key)
+        if val:
+            out.append(str(val)[:500])
+    return out[:10] or ["no evidence returned"]
 
 
 class AttackModuleExecutor:
@@ -444,6 +463,70 @@ class AttackModuleExecutor:
             logger.exception(f"Module {task.module_name} failed against {task.target}")
             self._record_failure_on_blackboard(task.module_name)
             return {"success": False, "error": task.error}
+
+    async def execute_plan_step(self, step: StepContext) -> dict[str, Any]:
+        """Run ONE planner step with no cross-step memory (FSM executor role).
+
+        Takes only a StepContext (target/tool/arguments/expected evidence) --
+        never a plan, battle log, or history. Builds an ephemeral AttackTask /
+        AttackState, runs it through execute(), and folds the outcome into
+        ``{"success", "evidence", "failure_class"}`` for
+        ``tools.attack_planner.record_step_result``. Scope gating stays inside
+        execute() (fail-closed); a scope block maps to ``scope_blocked``.
+        """
+        task = AttackTask(
+            task_id=f"FSM-{self._action_count + 1:05d}",
+            phase=self._campaign_phase_for(step.phase),
+            module_name=step.tool,
+            target=step.target_ip,
+            parameters=dict(step.arguments),
+        )
+        state = AttackState(target=step.target_ip)
+        try:
+            raw = await self.execute(task, state)
+        except _EXC_GROUP_CATCH as exc:
+            err = f"{type(exc).__name__}: {exc}"[:2000]
+            task.failure_class = classify_failure(err).value
+            return {
+                "success": False,
+                "evidence": [err],
+                "failure_class": task.failure_class,
+                "tool": step.tool,
+                "target_ip": step.target_ip,
+            }
+        if raw.get("success"):
+            task.failure_class = ""
+            return {
+                "success": True,
+                "evidence": _result_evidence(raw.get("result")),
+                "failure_class": "",
+                "tool": step.tool,
+                "target_ip": step.target_ip,
+            }
+        err = str(raw.get("error") or "unknown failure")[:2000]
+        # Fail-closed scope blocks are scope_blocked even when the message
+        # misses the taxonomy regexes (never retry a blocked step blindly).
+        task.failure_class = "scope_blocked" if raw.get("blocked") else classify_failure(err).value
+        return {
+            "success": False,
+            "evidence": [err],
+            "failure_class": task.failure_class,
+            "tool": step.tool,
+            "target_ip": step.target_ip,
+        }
+
+    @staticmethod
+    def _campaign_phase_for(planner_phase: str) -> AttackPhase:
+        """Map a planner phase value to the campaign enum (never raises)."""
+        try:
+            # ponytail: lazy import -- planner_adapter pulls the
+            # autonomous_orchestrator shim, which re-exports this module.
+            from tools.intelligence.adapters.planner_adapter import AttackPhaseBridge
+
+            mapped = AttackPhaseBridge.to_orchestrator(planner_phase)
+        except _EXC_GROUP_CATCH:
+            mapped = None
+        return mapped if mapped is not None else AttackPhase.RECONNAISSANCE
 
     # ── Phase 2.1 dispatch helper ───────────────────────────────────────────
 

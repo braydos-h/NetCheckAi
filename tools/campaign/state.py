@@ -100,6 +100,10 @@ class AttackTask:
     # satisfy a missing artifact for a failed sibling. Empty for normal
     # planner-created tasks. Additive; serialized for resume/debugging only.
     created_from: str = ""
+    # FSM/planner-executor split: classified failure of the last attempt
+    # (tools/failure_taxonomy.FailureClass value, "" = unclassified/success).
+    # Additive with default; old state dicts load unchanged.
+    failure_class: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +127,7 @@ class AttackTask:
             "chain_children": self.chain_children,
             "prerequisites": self.prerequisites,
             "created_from": self.created_from,
+            "failure_class": self.failure_class,
         }
 
     @classmethod
@@ -170,6 +175,7 @@ class AttackTask:
             chain_children=list(data.get("chain_children", []) or []),
             prerequisites=list(data.get("prerequisites", []) or []),
             created_from=str(data.get("created_from", "") or ""),
+            failure_class=str(data.get("failure_class", "") or ""),
         )
 
 

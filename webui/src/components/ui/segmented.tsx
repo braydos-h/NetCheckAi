@@ -8,14 +8,16 @@ interface SegmentedControlProps {
   options: Array<{ value: string; label: string }>;
   /** Accessible name for the radiogroup when no visible label is associated. */
   label?: string;
+  disabled?: boolean;
 }
 
-export function SegmentedControl({ value, onChange, options, label }: SegmentedControlProps) {
+export function SegmentedControl({ value, onChange, options, label, disabled }: SegmentedControlProps) {
   return (
     <div
-      className="inline-flex h-9 items-center rounded-md border bg-muted/40 p-0.5"
+      className={cn("inline-flex h-9 items-center rounded-md border bg-muted/40 p-0.5", disabled && "opacity-60")}
       role="radiogroup"
       aria-label={label}
+      aria-disabled={disabled || undefined}
     >
       {options.map((opt) => (
         <button
@@ -23,6 +25,7 @@ export function SegmentedControl({ value, onChange, options, label }: SegmentedC
           type="button"
           role="radio"
           aria-checked={value === opt.value}
+          disabled={disabled}
           onClick={() => onChange(opt.value)}
           className={cn(
             "h-8 rounded px-3 text-sm transition-colors",

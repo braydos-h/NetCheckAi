@@ -190,6 +190,9 @@ Orchestrated via `tools/swarm/orchestrator.py` with a shared blackboard, battle 
 | `runtime_skills` | `list`, `search`, and `load` skills at runtime |
 | `killchain` | `killchain_status`, `killchain_attempt`, `killchain_plan` — evidence-verified stage machine (opt-in, `killchain.enabled`) |
 | `snapshots` | `snapshot_create`, `snapshot_revert`, `snapshot_list` — provider-backed VM/container rollback (opt-in, `snapshots.enabled`) |
+| `retest` | `retest_finding` — re-runs a confirmed finding's stored PoC probe (`STILL_OPEN` / `FIXED` / `INCONCLUSIVE`), persists the verdict into the run report |
+| `hitl` | `propose_finding`, `hitl_decide`, `list_proposed` — agents propose candidates (`PROPOSED`), a human Approves/Rejects them in the WebUI Evidence tab; only `APPROVED` becomes a finding |
+| `verify` | `verify_finding` — re-proves a candidate finding's stored probe N/N times (`VERIFIED` / `HOLDING` / `INCONCLUSIVE` + proof capsule), persists the verdict into the run report |
 | + 13 more | `assessment_state`, `parallel_agents`, `poc_verifier`, `replay_simulator`, `mitre`, `ad`, `operator_connection`, and others |
 
 All tools are registered via `tools/mcp_tools/registry.py` using the `@audit_tool` / `@require_allowlist()` decorators and auto-discovered through `collect_tools()`, which also fails CI if a tool lacks its audit or allowlist gate. No manual registration required. See [docs/mcp-tools.md](docs/mcp-tools.md).

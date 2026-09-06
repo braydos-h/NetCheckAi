@@ -225,6 +225,12 @@ class TechnicalFinding:
     attack_chain: ExploitationChain | None = None
     remediation: str = ""
     references: list[str] = field(default_factory=list)
+    # Closed-loop retest ("prove the fix"): the stored verification probe
+    # re-executes ONLY the original PoC command; retest_status is one of
+    # "" (never retested) | STILL_OPEN | FIXED | INCONCLUSIVE.
+    verification_probe: dict[str, Any] = field(default_factory=dict)
+    retest_status: str = ""
+    retest_history: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -244,6 +250,9 @@ class TechnicalFinding:
             "attack_chain": self.attack_chain.to_dict() if self.attack_chain else None,
             "remediation": self.remediation,
             "references": self.references,
+            "verification_probe": self.verification_probe,
+            "retest_status": self.retest_status,
+            "retest_history": self.retest_history,
         }
 
 
@@ -719,6 +728,10 @@ class EnhancedReportGenerator:
                 summary = f"Successfully exploited {exploit}"
                 if verdict is not None:
                     summary = f"{summary} (hypothesis {verdict})"
+                # Closed-loop retest: carry the stored verification probe so
+                # retest_finding can re-execute ONLY the original PoC command.
+                raw_probe = (state.get("exploit_probes", {}) or {}).get(exploit, {})
+                probe = dict(raw_probe) if isinstance(raw_probe, dict) else {}
                 findings.append(
                     TechnicalFinding(
                         finding_id=f"F-{target.replace('.', '-')}-{exploit}",
@@ -736,6 +749,7 @@ class EnhancedReportGenerator:
                         else "Exploit verified",
                         privilege_level_gained=state.get("privilege_level", ""),
                         remediation=self._get_remediation(exploit),
+                        verification_probe=probe,
                     )
                 )
 
@@ -1042,6 +1056,9 @@ class EnhancedReportGenerator:
             )
             sections.append("</div>")
             sections.append(f"<p><strong>Summary:</strong> {_esc(finding.get('summary', ''))}</p>")
+            retest_html = _format_retest_html(finding)
+            if retest_html:
+                sections.append(f"<p><strong>Retest:</strong> {retest_html}</p>")
             if finding.get("exploitation_result"):
                 sections.append(f"<p><strong>Exploitation:</strong> {_esc(finding.get('exploitation_result', ''))}</p>")
             if finding.get("privilege_level_gained"):
@@ -1134,6 +1151,7 @@ class EnhancedReportGenerator:
             lines.append(f"- **Class**: {finding['vuln_class']}")
             lines.append(f"- **Confidence**: {finding['confidence']:.0%}")
             lines.append(f"- **Asset**: {finding['affected_asset']}")
+            lines.append(f"- **Retest**: {_format_retest_md(finding)}")
             lines.append("")
             lines.append(f"**Summary**: {finding['summary']}")
             lines.append("")
@@ -1367,6 +1385,41 @@ def _confidence_from_verdict(verdict: str | None) -> float:
     if verdict in ("inconclusive", "exhausted", "open"):
         return 0.5
     return 0.5
+
+
+def _format_retest_md(finding: dict[str, Any]) -> str:
+    """One-line retest status for the Markdown report (never raises)."""
+    status = str(finding.get("retest_status") or "")
+    if not status:
+        return "not retested"
+    history = finding.get("retest_history") or []
+    if isinstance(history, list) and history and isinstance(history[-1], dict):
+        last = history[-1]
+        evidence = str(last.get("evidence") or "")
+        ts = str(last.get("timestamp") or "")
+        suffix = f" @ {ts}" if ts else ""
+        if evidence:
+            return f"{status}{suffix} (evidence: {evidence})"
+        return f"{status}{suffix}"
+    return status
+
+
+def _format_retest_html(finding: dict[str, Any]) -> str:
+    """Escaped retest status line for the HTML report (never raises)."""
+    status = str(finding.get("retest_status") or "")
+    if not status:
+        return _esc("not retested")
+    parts = [_esc(status)]
+    history = finding.get("retest_history") or []
+    if isinstance(history, list) and history and isinstance(history[-1], dict):
+        last = history[-1]
+        ts = str(last.get("timestamp") or "")
+        evidence = str(last.get("evidence") or "")
+        if ts:
+            parts.append(f" {_esc('@ ' + ts)}")
+        if evidence:
+            parts.append(f" (evidence: {_esc(evidence)})")
+    return "".join(parts)
 
 
 def _resolve_verdict(

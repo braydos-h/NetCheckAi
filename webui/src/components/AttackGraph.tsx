@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CheckCircle2, Clock, Loader2, Network, Wrench, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useFetchArtifactBlob } from "@/api/hooks";
+import { useCallTool, useFetchArtifactBlob } from "@/api/hooks";
 import { ApiError } from "@/api/client";
 import type {
   AttackTimelineEntry,
@@ -125,7 +126,7 @@ export function AttackGraph({ runId, className, ready = true }: AttackGraphProps
         <ChainCard key={chain.chain_id} chain={chain} />
       ))}
 
-      {findings.length > 0 && <FindingsTable findings={findings} />}
+      {findings.length > 0 && <FindingsTable findings={findings} runId={runId} />}
 
       {timeline.length > 0 && <TimelineCard entries={timeline} />}
 
@@ -256,11 +257,50 @@ function severityVariant(sev: string): "danger" | "info" | "success" | "outline"
   return "outline";
 }
 
-function FindingsTable({ findings }: { findings: TechnicalFinding[] }) {
+function retestVariant(v: string): "danger" | "success" | "outline" {
+  if (v === "STILL_OPEN") return "danger";
+  if (v === "FIXED") return "success";
+  return "outline";
+}
+
+function FindingsTable({ findings, runId }: { findings: TechnicalFinding[]; runId: string }) {
   const rows = useMemo(
     () => [...findings].sort((a, b) => (b.cvss?.base_score ?? 0) - (a.cvss?.base_score ?? 0)),
     [findings],
   );
+  // Closed-loop retest: one Retest button per finding calls retest_finding
+  // through the existing tool-call path; the returned verdict shows inline.
+  const callTool = useCallTool(runId);
+  const [verdicts, setVerdicts] = useState<Record<string, string>>({});
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const retest = (f: TechnicalFinding) => {
+    setPendingId(f.finding_id);
+    callTool.mutate(
+      { tool: "retest_finding", arguments: { target_ip: f.affected_asset, finding_id: f.finding_id } },
+      {
+        onSuccess: (data) => {
+          const m = /VERDICT:\s*(STILL_OPEN|FIXED|INCONCLUSIVE)/.exec(data.result || "");
+          setVerdicts((v) => ({ ...v, [f.finding_id]: m?.[1] ?? data.result ?? "(no output)" }));
+          setErrors((e) => {
+            const next = { ...e };
+            delete next[f.finding_id];
+            return next;
+          });
+          setPendingId(null);
+        },
+        onError: (err) => {
+          setErrors((e) => ({
+            ...e,
+            [f.finding_id]: err instanceof ApiError ? err.message : "Tool call failed.",
+          }));
+          setPendingId(null);
+        },
+      },
+    );
+  };
+
   return (
     <Card className="border-border/60">
       <CardHeader className="pb-2">
@@ -277,24 +317,56 @@ function FindingsTable({ findings }: { findings: TechnicalFinding[] }) {
                 <th scope="col" className="p-2 text-left">Finding</th>
                 <th scope="col" className="p-2 text-left">Asset</th>
                 <th scope="col" className="p-2 text-left">Class</th>
+                <th scope="col" className="p-2 text-left">Retest</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((f) => (
-                <tr key={f.finding_id} className="border-t border-border/40">
-                  <td className="p-2">
-                    <Badge variant={severityVariant(f.severity)} className="text-[10px]">
-                      {f.severity}
-                    </Badge>
-                  </td>
-                  <td className="p-2 font-mono tabular-nums">
-                    {f.cvss?.base_score?.toFixed(1) ?? "—"}
-                  </td>
-                  <td className="p-2 max-w-md truncate" title={f.title}>{f.title}</td>
-                  <td className="p-2 font-mono">{f.affected_asset}</td>
-                  <td className="p-2">{f.vuln_class}</td>
-                </tr>
-              ))}
+              {rows.map((f) => {
+                const live = verdicts[f.finding_id];
+                const stored = f.retest_status || "";
+                const shown = live || stored;
+                return (
+                  <tr key={f.finding_id} className="border-t border-border/40">
+                    <td className="p-2">
+                      <Badge variant={severityVariant(f.severity)} className="text-[10px]">
+                        {f.severity}
+                      </Badge>
+                    </td>
+                    <td className="p-2 font-mono tabular-nums">
+                      {f.cvss?.base_score?.toFixed(1) ?? "—"}
+                    </td>
+                    <td className="p-2 max-w-md truncate" title={f.title}>{f.title}</td>
+                    <td className="p-2 font-mono">{f.affected_asset}</td>
+                    <td className="p-2">{f.vuln_class}</td>
+                    <td className="p-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px]"
+                          disabled={pendingId === f.finding_id || callTool.isPending}
+                          onClick={() => retest(f)}
+                          aria-label={`Retest ${f.finding_id}`}
+                        >
+                          {pendingId === f.finding_id ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            "Retest"
+                          )}
+                        </Button>
+                        {shown && (
+                          <Badge variant={retestVariant(shown)} className="text-[10px]">
+                            {shown}
+                          </Badge>
+                        )}
+                      </div>
+                      {errors[f.finding_id] && (
+                        <p className="mt-1 text-destructive" role="alert">{errors[f.finding_id]}</p>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

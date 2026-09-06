@@ -526,6 +526,28 @@ def create_router(
             "registry": models.get("registry", {}),
             "info": models.get("info", {}),
         }
+        # Generic active-provider block: default + configured models resolved
+        # through the registered adapter, so provider #4 needs no route change.
+        # (Absent only when the active id names no registered adapter.)
+        try:
+            from tools.providers.registry import get_provider as _get_adapter
+            from tools.providers.registry import resolve_default_model as _resolve_default
+
+            _adapter = _get_adapter(provider)
+            _pcfg = _adapter.provider_config(config)
+            _configured = [str(m) for m in (_pcfg.get("models") or []) if str(m).strip()]
+            if provider == "ollama":
+                _configured = [str(v) for v in (models.get("registry", {}) or {}).values() if v]
+            _default = _resolve_default(config, provider)
+            if _default and _default not in _configured:
+                _configured.append(_default)
+            response["active_provider"] = {
+                "id": provider,
+                "default_model": _default,
+                "configured_models": _configured,
+            }
+        except Exception:
+            pass
         if provider == "chatgpt":
             chatgpt_cfg = get_chatgpt_config(config)
             response["chatgpt"] = {
@@ -1360,6 +1382,25 @@ def create_router(
 
         provider = get_ai_provider(config)
         registry_fallback = [str(v) for v in (config.get("models", {}).get("registry", {}) or {}).values() if v]
+
+        def _provider_fallback() -> list[str]:
+            """Provider-specific fallback models (never another provider's ids).
+
+            Ollama degrades to the static ``models.registry`` values; every
+            other provider degrades to its adapter's configured models +
+            default_model. Unknown/unregistered ids keep the registry list.
+            """
+            if provider == "ollama":
+                return registry_fallback
+            try:
+                pcfg = get_provider(provider).provider_config(config)
+            except Exception:
+                return registry_fallback
+            configured = [str(m) for m in (pcfg.get("models") or []) if str(m).strip()]
+            default = str(pcfg.get("default_model") or "")
+            ordered = ([default] + [m for m in configured if m != default]) if default else configured
+            return ordered or registry_fallback
+
         try:
             adapter = get_provider(provider)
         except Exception as exc:  # unknown provider id — surface, don't crash
@@ -1384,7 +1425,7 @@ def create_router(
             return Response(
                 content=json.dumps(
                     {
-                        "models": exc.fallback_models or registry_fallback,
+                        "models": exc.fallback_models or _provider_fallback(),
                         "source": "registry",
                         "error": exc.message,
                     }
@@ -1395,7 +1436,11 @@ def create_router(
         except Exception as exc:  # defensive: never 500 the models panel
             return Response(
                 content=json.dumps(
-                    {"models": registry_fallback, "source": "registry", "error": f"{provider} discovery failed: {exc}"}
+                    {
+                        "models": _provider_fallback(),
+                        "source": "registry",
+                        "error": f"{provider} discovery failed: {exc}",
+                    }
                 ),
                 status_code=503,
                 media_type="application/json",

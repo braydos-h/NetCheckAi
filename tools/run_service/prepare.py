@@ -92,6 +92,10 @@ def _build_campaign_result_from_records(
     failed: dict[str, list[str]] = {}
     timeline: list[dict[str, Any]] = []
     privilege_level = "none"
+    # Closed-loop retest: keep the first successful command per exploit action
+    # as the finding's stored verification probe (same shell_command vocabulary
+    # as the killchain verify specs). retest_finding re-executes ONLY this.
+    exploit_probes: dict[str, dict[str, Any]] = {}
     # ponytail: the verified-compromise signal lives in outcome_summary, not
     # in per-record ``status == "completed"``. A completed exploit-tool call
     # only means the tool ran -- the tightened outcome-truth classifier must
@@ -124,6 +128,9 @@ def _build_campaign_result_from_records(
             )
         elif status == "completed" and is_exploit and _run_verified_compromise:
             successful.append(action)
+            probe_cmd = str(rec.get("command", "") or detail or "")
+            if action not in exploit_probes and probe_cmd.strip():
+                exploit_probes[action] = {"type": "shell_command", "exec": probe_cmd[:4000]}
             timeline.append(
                 {
                     "timestamp": ts,
@@ -155,6 +162,7 @@ def _build_campaign_result_from_records(
                 "timeline": timeline,
                 "recon_result": {"services": []},
                 "credentials_found": [],
+                "exploit_probes": exploit_probes,
             },
         },
     }

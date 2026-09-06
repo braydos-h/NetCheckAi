@@ -201,6 +201,9 @@ autonomous:
   dedup_targets: false
   skip_non_routable: false
   hard_target_max_rounds: 0
+fsm:
+  enabled: false
+  max_retries_per_step: 3
 orchestrator:
   semantic_memory: true
 recon:
@@ -351,6 +354,8 @@ poc_verification:
 replay_simulator:
   enabled: true
   counterfactual: false
+hitl:
+  enabled: true
 snapshots:
   enabled: false
   provider: docker

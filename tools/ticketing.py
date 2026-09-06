@@ -138,15 +138,24 @@ def create_ticket(
     config: dict[str, Any] | None = None,
     *,
     timeout_seconds: int = 10,
+    require_signoff: bool = False,
 ) -> dict[str, Any]:
     """Create a remediation ticket from a confirmed finding.
 
     Returns ``{"created": bool, "url": str, "status": str}``. On failure
     (API down, auth missing, rate limit) returns ``{"created": False, ...}``
     and never raises — ticketing is best-effort and must not block the run.
+    With ``require_signoff=True``, findings whose ``verify_status`` is not
+    ``VERIFIED`` (verify-or-it-didn't-happen) are held and never ticketed.
     """
     global _logged_missing_token
     cfg = _load_ticketing_config(config)
+    if require_signoff and str(finding.get("verify_status") or "") != "VERIFIED":
+        return {
+            "created": False,
+            "status": f"held: finding not VERIFIED (verify_status={finding.get('verify_status') or 'HOLDING'})",
+            "url": "",
+        }
     if not cfg.get("enabled"):
         return {"created": False, "status": "disabled", "url": ""}
     provider = str(cfg.get("provider") or "").strip().lower()

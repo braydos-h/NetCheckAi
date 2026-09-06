@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ClipboardList, Flag, FlaskConical, Globe, Loader2, Network, ScanSearch, ScrollText, Share2, ShieldCheck, Square, Wrench } from "lucide-react";
+import { ClipboardList, FileCheck, Flag, FlaskConical, Globe, Loader2, Network, ScanSearch, ScrollText, Share2, ShieldCheck, Square, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -49,6 +49,7 @@ import { BrowserTab } from "@/routes/run/tabs/BrowserTab";
 import { SandboxTab } from "@/routes/run/tabs/SandboxTab";
 import { SwarmTab } from "@/routes/run/tabs/SwarmTab";
 import { CampaignTab } from "@/routes/run/tabs/CampaignTab";
+import { EvidenceTab } from "@/routes/run/tabs/EvidenceTab";
 import { DecisionHistoryCard } from "@/routes/run/DecisionHistoryCard";
 
 export function RunPage() {
@@ -223,6 +224,7 @@ export function RunPage() {
                     <TabsTrigger value="browser" className="h-6 px-2 py-0 text-xs"><Globe className="mr-1 h-3 w-3" />Browser</TabsTrigger>
                     <TabsTrigger value="swarm" className="h-6 px-2 py-0 text-xs"><Share2 className="mr-1 h-3 w-3" />Swarm</TabsTrigger>
                     <TabsTrigger value="campaign" className="h-6 px-2 py-0 text-xs"><Flag className="mr-1 h-3 w-3" />Campaign</TabsTrigger>
+                    <TabsTrigger value="evidence" className="h-6 px-2 py-0 text-xs"><FileCheck className="mr-1 h-3 w-3" />Evidence</TabsTrigger>
                   </TabsList>
                 </ScrollArea>
               </div>
@@ -241,6 +243,7 @@ export function RunPage() {
                 <TabsContent value="browser" className="mt-0 space-y-2"><BrowserTab runId={runData.id} records={audit.data?.records ?? []} loading={audit.isLoading} error={audit.error} /></TabsContent>
                 <TabsContent value="swarm" className="mt-0"><SwarmTab loading={swarm.isLoading} error={swarm.error} state={swarm.data?.state} witnessFlags={witness.data?.flags} witnessLoading={witness.isLoading} negotiationRounds={Number((config.data?.swarm as Record<string, unknown> | undefined)?.negotiation_rounds ?? 0) || 0} /></TabsContent>
                 <TabsContent value="campaign" className="mt-0"><CampaignTab loading={campaign.isLoading} error={campaign.error} state={campaign.data?.state} runId={runData.id} target={runData.request?.target || ""} runActive={active} tools={(tools.data?.tools ?? []).map((t) => t.function?.name ?? "")} /></TabsContent>
+                <TabsContent value="evidence" className="mt-0 space-y-2"><EvidenceTab runId={runData.id} /></TabsContent>
               </div>
             </Tabs>
           </div>

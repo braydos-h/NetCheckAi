@@ -418,6 +418,14 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "max_cycles": 100,  # round cap when adaptive_replan is on
         "max_pivot_depth": 0,  # already consumed by the orchestrator (single-IP lock default)
     },
+    # FSM / planner-executor split (tools/attack_planner.py). Opt-in
+    # (default OFF): when enabled, campaign code may route plan execution
+    # through the FSM phase guard + memoryless step executor instead of the
+    # LLM-does-everything loop. First-run behavior is unchanged.
+    "fsm": {
+        "enabled": False,
+        "max_retries_per_step": 3,
+    },
     # D1: cross-mission semantic-memory consumer for the autonomous
     # orchestrator. When true, the orchestrator builds a
     # SemanticMemoryManager and calls store_lesson on confirmed module wins.
@@ -635,6 +643,14 @@ CONFIG_SCHEMA: dict[str, Any] = {
     "replay_simulator": {
         "enabled": False,
         "counterfactual": False,
+    },
+    # Proxy-backed HITL evidence loop (Flow A): agents propose candidate
+    # findings (PROPOSED), a human Approves/Rejects them in the WebUI
+    # Evidence tab (or hitl_decide / POST /runs/{id}/decide). Default ON —
+    # the gate is additive (undecided findings render with their PROPOSED
+    # badge; only APPROVED surface via approved_findings). No new DB/infra.
+    "hitl": {
+        "enabled": True,
     },
     # Snapshot + rollback (design §snapshots). Opt-in (default OFF): when
     # enabled, the snapshot_* MCP tools register and the loop may take an

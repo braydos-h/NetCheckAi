@@ -1,13 +1,13 @@
 ﻿// Subtle status overview — muted, text-xs, not a dashboard. Six items:
 // AI, Models, Secrets, Plugins, Sandbox, Browser with small colored dots.
 
-import { useBrowserStatus, useModels, usePlugins, useSandboxStatus, useSecrets } from "@/api/hooks";
-import { useProviderStatus } from "@/components/ProviderSetup";
+import { useBrowserStatus, usePlugins, useSandboxStatus, useSecrets } from "@/api/hooks";
+import { useModelOptions, useProviderStatus } from "@/components/ProviderSetup";
 import { cn } from "@/lib/utils";
 
 export function StatusOverview() {
   const status = useProviderStatus();
-  const models = useModels();
+  const modelOptions = useModelOptions();
   const secrets = useSecrets();
   const plugins = usePlugins();
   const sandbox = useSandboxStatus();
@@ -18,7 +18,9 @@ export function StatusOverview() {
   const pluginList = plugins.data?.plugins ?? [];
   const loaded = pluginList.filter((p) => p.loaded).length;
   const total = pluginList.length;
-  const modelCount = status.liveCount > 0 ? status.liveCount : Object.keys(models.data?.registry ?? {}).length;
+  // Provider-aware count: live models when online, else the provider's
+  // configured/default options (never another provider's registry).
+  const modelCount = status.liveCount > 0 ? status.liveCount : modelOptions.length;
 
   const sandboxEnabled = sandbox.data?.enabled ?? false;
   const sandboxTone: "ok" | "warn" | "bad" = !sandboxEnabled

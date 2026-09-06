@@ -50,7 +50,7 @@ import {
   useSystemInfo,
   useTelemetry,
 } from "@/api/hooks";
-import { useModelOptions, useProviderStatus } from "@/components/ProviderSetup";
+import { useDefaultModel, useModelOptions, useProviderStatus } from "@/components/ProviderSetup";
 
 const configMock = vi.mocked(useConfig);
 const schemaMock = vi.mocked(useConfigSchema);
@@ -70,6 +70,7 @@ const sandboxStatusMock = vi.mocked(useSandboxStatus);
 const browserStatusMock = vi.mocked(useBrowserStatus);
 const providerStatusMock = vi.mocked(useProviderStatus);
 const modelOptionsMock = vi.mocked(useModelOptions);
+const defaultModelMock = vi.mocked(useDefaultModel);
 
 const CONFIG = {
   nmap: { path: "/usr/bin/nmap", sudo: true },
@@ -144,8 +145,14 @@ function setup() {
     source: "ollama",
     liveCount: 1,
     error: undefined,
+    status: "online",
+    statusText: "Online",
+    isChecking: false,
+    isFallback: false,
+    fixHint: "Is the daemon running?",
   } as never);
   modelOptionsMock.mockReturnValue(["glm-5.2:cloud"]);
+  defaultModelMock.mockReturnValue("glm");
 
   const user = userEvent.setup();
   render(

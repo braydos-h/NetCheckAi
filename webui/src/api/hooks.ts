@@ -28,6 +28,7 @@ import type {
   DecisionAnswerResponse,
   DecisionListRow,
   DecisionOut,
+  DecideFindingResponse,
   DeleteRunResponse,
   CustomGoal,
   DiagnosticsResponse,
@@ -40,6 +41,7 @@ import type {
   ModelsSyncResponse,
   OperatorConnection,
   PluginSummary,
+  ProposedResponse,
   ProvidersResponse,
   RemoveConnectionResponse,
   ResumeRunResponse,
@@ -105,6 +107,7 @@ export const queryKeys = {
   runWorkspace: (runId: string) => ["runs", runId, "workspace"] as const,
   runGraph: (runId: string) => ["runs", runId, "graph"] as const,
   runWitness: (runId: string) => ["runs", runId, "witness"] as const,
+  runProposed: (runId: string) => ["runs", runId, "proposed"] as const,
 };
 
 const DEFAULT_RETRY = (failureCount: number, error: unknown) => {
@@ -1049,6 +1052,40 @@ export function useWitness(runId: string | null | undefined, enabled = true) {
       // 404 = witness feature off / no witness.jsonl yet; don't retry.
       if (error instanceof ApiError && error.isNotFound) return false;
       return DEFAULT_RETRY(count, error);
+    },
+  });
+}
+
+/** HITL evidence loop: findings awaiting human review (Evidence tab).
+ * Polls while the run is active (new proposals arrive mid-run); the decide
+ * mutation invalidates immediately so Approve/Reject feels live. */
+export function useProposed(runId: string | null | undefined, enabled = true) {
+  const qc = useQueryClient();
+  return useQuery<ProposedResponse>({
+    queryKey: queryKeys.runProposed(runId ?? ""),
+    queryFn: () => apiFetch<ProposedResponse>(`/runs/${encodeURIComponent(runId as string)}/proposed`),
+    ...defaultQueryOptions,
+    enabled: !!runId && enabled,
+    refetchInterval: () => {
+      if (!runId) return false;
+      const run = qc.getQueryData<RunDetail>(queryKeys.run(runId));
+      if (!run || isActiveState(run.state)) return 10_000;
+      return false;
+    },
+  });
+}
+
+export function useDecideFinding(runId: string) {
+  const qc = useQueryClient();
+  return useMutation<DecideFindingResponse, ApiError, { findingId: string; decision: string; note?: string }>({
+    mutationFn: ({ findingId, decision, note }) =>
+      apiFetch<DecideFindingResponse>(`/runs/${encodeURIComponent(runId)}/decide`, {
+        method: "POST",
+        body: { finding_id: findingId, decision, note: note ?? "" },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.runProposed(runId) });
+      void qc.invalidateQueries({ queryKey: queryKeys.run(runId) });
     },
   });
 }

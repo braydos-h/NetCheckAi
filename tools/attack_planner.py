@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tools.failure_taxonomy import is_permanent
+
 
 class AttackPhase(str, enum.Enum):
     RECON = "recon"
@@ -45,6 +47,7 @@ class AttackStep:
     status: str = "pending"  # pending|running|done|failed|blocked|cancelled
     attempt_count: int = 0
     failure_class: str = ""  # tools/failure_taxonomy.FailureClass value
+    failure_streak: int = 0  # consecutive failures with the same failure_class (stuck-loop breaker)
     failure_reason: str = ""
     capability: str = ""  # module/tool capability name when known
     expected_evidence: list[str] = field(default_factory=list)
@@ -217,6 +220,7 @@ class AttackPlan:
                     "status": s.status,
                     "attempt_count": s.attempt_count,
                     "failure_class": s.failure_class,
+                    "failure_streak": s.failure_streak,
                     "failure_reason": s.failure_reason,
                     "capability": s.capability,
                     "expected_evidence": s.expected_evidence,
@@ -259,6 +263,7 @@ class AttackPlan:
                 status=s.get("status", "done" if s.get("completed") else "pending"),
                 attempt_count=s.get("attempt_count", 0),
                 failure_class=s.get("failure_class", ""),
+                failure_streak=s.get("failure_streak", 0),
                 failure_reason=s.get("failure_reason", ""),
                 capability=s.get("capability", ""),
                 expected_evidence=s.get("expected_evidence", []),
@@ -283,6 +288,207 @@ class AttackPlan:
             if s.completed:
                 lines.append(f"       Result: {s.result_summary[:120]}")
         return "\n".join(lines)
+
+
+# --- FSM + planner-executor split -------------------------------------------
+# The campaign loop used to let one LLM call own planning AND execution with
+# the full battle history in context. The split below separates the roles:
+#
+# - planner (persistent): owns the single AttackPlan via add_step /
+#   mark_step_done / record_step_result. It only ever sees planner_context()
+#   (current phase + ready/blocked summary, never raw step output).
+# - executor (memoryless): takes ONE StepContext, runs it via
+#   AttackModuleExecutor.execute_plan_step, returns an ExecutorResult. It
+#   cannot see sibling steps or history by construction (the step is its
+#   only input).
+# - FSM guard: the RECON -> ... -> DONE chain with explicit allowed
+#   transitions, plus a stuck-loop breaker (same failure_class N times in a
+#   row -> step blocked, caller must replan instead of retrying blindly).
+
+# ponytail: linear chain + DONE escape + one-step back-edge for replan
+# regression. Anything else (e.g. a recon->loot jump) is a planner bug and
+# fails loudly in fsm_advance.
+FSM_TRANSITIONS: dict[str, list[str]] = {
+    "recon": ["enumerate", "done"],
+    "enumerate": ["exploit", "recon", "done"],
+    "exploit": ["escalate", "enumerate", "done"],
+    "escalate": ["loot", "exploit", "done"],
+    "loot": ["pivot", "escalate", "done"],
+    "pivot": ["done", "recon"],
+    "done": [],
+}
+
+
+def fsm_can_transition(frm: str, to: str) -> bool:
+    """True when the FSM guard allows a phase move (never raises)."""
+    return str(to) in FSM_TRANSITIONS.get(str(frm), [])
+
+
+def _fsm_next(plan: AttackPlan) -> AttackPhase:
+    nxt_idx = plan.current_phase_index + 1
+    if 0 <= nxt_idx < len(plan.phases):
+        return plan.phases[nxt_idx]
+    return AttackPhase.DONE
+
+
+def fsm_advance(plan: AttackPlan, target: AttackPhase | str | None = None) -> AttackPhase:
+    """Move the plan through the FSM guard to the next (or ``target``) phase.
+
+    Raises ValueError on an illegal jump so a planner bug fails loudly
+    instead of silently skipping phases.
+    """
+    cur = plan.current_phase
+    nxt = AttackPhase(target) if target is not None else _fsm_next(plan)
+    if nxt == cur:
+        return cur
+    if not fsm_can_transition(cur.value, nxt.value):
+        raise ValueError(f"Illegal FSM transition {cur.value} -> {nxt.value}")
+    try:
+        plan.current_phase_index = plan.phases.index(nxt)
+    except ValueError:
+        plan.next_phase()  # custom phase list without nxt: single-step fallback
+    plan.updated_at = time.time()
+    return plan.current_phase
+
+
+def planner_context(plan: AttackPlan, max_steps: int = 20) -> str:
+    """State-scoped planner view: current phase + ready/blocked summary.
+
+    Deliberately excludes per-step results and history (no result_summary,
+    no battle log) so planner context stays bounded and one step's raw
+    output cannot leak into the next plan via the planner.
+    """
+    ready = plan.ready_steps()
+    blocked = plan.blocked_steps()
+    lines = [
+        f"TARGET: {plan.target_ip}",
+        f"CURRENT PHASE: {plan.current_phase.value}",
+        f"STEPS: {len(plan.steps)} total, {len(ready)} ready, {len(blocked)} blocked, "
+        f"{sum(1 for s in plan.steps if s.completed)} completed",
+        "READY:",
+    ]
+    for i, s in ready[:max_steps]:
+        ev = f" evidence={s.expected_evidence}" if s.expected_evidence else ""
+        lines.append(f"  [{i}] {s.phase}/{s.tool}: {s.reason[:120]}{ev}")
+    lines.append("BLOCKED:")
+    for i, s, why in blocked[:max_steps]:
+        lines.append(f"  [{i}] {s.phase}/{s.tool}: {why}")
+    return "\n".join(lines)
+
+
+@dataclass
+class StepContext:
+    """Memoryless executor input: ONE step plus the minimum to run it.
+
+    No plan reference, no history, no sibling steps -- serializing this can
+    never contain another step's output.
+    """
+
+    target_ip: str
+    tool: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    expected_evidence: list[str] = field(default_factory=list)
+    phase: str = ""
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_ip": self.target_ip,
+            "tool": self.tool,
+            "arguments": dict(self.arguments),
+            "expected_evidence": list(self.expected_evidence),
+            "phase": self.phase,
+            "reason": self.reason,
+        }
+
+
+@dataclass
+class ExecutorResult:
+    """Memoryless executor output, folded into the plan via record_step_result."""
+
+    success: bool
+    evidence: list[str] = field(default_factory=list)
+    failure_class: str = ""
+    tool: str = ""
+    target_ip: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "evidence": list(self.evidence),
+            "failure_class": self.failure_class,
+            "tool": self.tool,
+            "target_ip": self.target_ip,
+        }
+
+
+def step_context_for(plan: AttackPlan, index: int) -> StepContext:
+    """Build the memoryless input for one ready step (planner-side read)."""
+    s = plan.steps[index]
+    return StepContext(
+        target_ip=s.target_ip or plan.target_ip,
+        tool=s.tool,
+        arguments=dict(s.arguments),
+        expected_evidence=list(s.expected_evidence),
+        phase=s.phase,
+        reason=s.reason,
+    )
+
+
+def record_step_result(
+    plan: AttackPlan,
+    index: int,
+    result: ExecutorResult | dict[str, Any],
+    *,
+    max_retries: int = 3,
+) -> str:
+    """Fold ONE memoryless executor result into the plan (planner-side write).
+
+    The ONLY writer path for executor outcomes: returns "done" (step
+    succeeded), "retry" (failed, may be reset for another attempt), or
+    "replan" (step blocked -- same failure_class hit the retry budget, or the
+    class is permanent -- the planner must author a NEW step, never blindly
+    retry this one).
+    """
+    if isinstance(result, dict):
+        success = bool(result.get("success"))
+        evidence = [str(e)[:500] for e in (result.get("evidence") or [])][:10]
+        failure_class = str(result.get("failure_class") or "")
+    else:
+        success = result.success
+        evidence = [str(e)[:500] for e in result.evidence][:10]
+        failure_class = result.failure_class
+    step = plan.steps[index]
+    if success:
+        plan.mark_step_done(index, True, "; ".join(evidence)[:2000] or f"{step.tool} succeeded")
+        step.failure_streak = 0
+        return "done"
+    if not failure_class:
+        failure_class = "unknown"
+    if is_permanent(failure_class):
+        # ponytail: scope/false-positive failures never burn the retry budget.
+        plan.fail_step(index, failure_class, "; ".join(evidence)[:500])
+        step.status = "blocked"
+        return "replan"
+    streak = step.failure_streak + 1 if failure_class == step.failure_class else 1
+    plan.fail_step(index, failure_class, "; ".join(evidence)[:500] or f"{step.tool} failed ({failure_class})")
+    step.failure_streak = streak
+    if streak >= max(1, max_retries):
+        step.status = "blocked"  # stuck-loop breaker: same failure N times
+        return "replan"
+    return "retry"
+
+
+def fsm_settings(config: dict[str, Any] | None = None) -> tuple[bool, int]:
+    """Read the ``fsm`` config block (never raises; defaults off / 3 retries)."""
+    block = (config or {}).get("fsm")
+    if not isinstance(block, dict):
+        return False, 3
+    try:
+        max_retries = max(1, int(block.get("max_retries_per_step", 3)))
+    except (TypeError, ValueError):
+        max_retries = 3
+    return bool(block.get("enabled", False)), max_retries
 
 
 def build_planning_prompt(

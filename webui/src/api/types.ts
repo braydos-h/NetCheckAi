@@ -158,15 +158,23 @@ export interface OpencodeGoModelsBlock {
   enabled?: boolean;
 }
 
+export interface ActiveProviderModelsBlock {
+  id: string;
+  default_model?: string;
+  configured_models?: string[];
+}
+
 export interface ModelRegistryInfo {
-  /** Active chat/generate provider: "ollama" (default) | "chatgpt" | "opencode_go". */
+  /** Active chat/generate provider id (any registered adapter; "ollama" default). */
   provider?: string;
   default_alias: string;
   registry: Record<string, string>;
   info?: Record<string, ModelInfo>;
-  /** Present only when provider === "chatgpt". */
+  /** Always present when the active id names a registered adapter (generic, provider #4 included). */
+  active_provider?: ActiveProviderModelsBlock;
+  /** Present only when provider === "chatgpt" (legacy; prefer active_provider). */
   chatgpt?: ChatgptModelsBlock;
-  /** Present only when provider === "opencode_go". */
+  /** Present only when provider === "opencode_go" (legacy; prefer active_provider). */
   opencode_go?: OpencodeGoModelsBlock;
 }
 
@@ -621,6 +629,11 @@ export interface TechnicalFinding {
   attack_chain?: ExploitationChain | null;
   remediation?: string;
   references?: string[];
+  /** Stored PoC probe re-executed by the retest_finding tool (shell_command spec). */
+  verification_probe?: Record<string, unknown>;
+  /** Closed-loop retest verdict: "" (never retested) | STILL_OPEN | FIXED | INCONCLUSIVE. */
+  retest_status?: string;
+  retest_history?: Array<{ timestamp: string; verdict: string; evidence: string; [key: string]: unknown }>;
   [key: string]: unknown;
 }
 
@@ -1121,4 +1134,46 @@ export interface RemoveConnectionResponse {
   connection: OperatorConnection;
   removed: boolean;
   listener_stopped: boolean;
+}
+
+// ── HITL evidence loop (agents propose, human decides) ───────────────────────
+// Backed by tools/mcp_tools/hitl.py — GET /runs/{id}/proposed lists
+// PROPOSED findings with their read-only proof capsule; POST
+// /runs/{id}/decide records the human Approve/Reject.
+
+export interface HitlProof {
+  finding_id: string;
+  probe_exec: string;
+  output_excerpt: string;
+  proof_sha256: string;
+  proof_runs: number;
+  verify_status: string;
+  verify_detail: string;
+  retest_status: string;
+  retest_detail: string;
+}
+
+export interface ProposedFinding {
+  finding_id: string;
+  title: string;
+  affected_asset: string;
+  severity: string;
+  vuln_class: string;
+  summary: string;
+  confidence: number;
+  hitl_status: string;
+  hitl_history: Array<{ timestamp: string; decision: string; note: string; actor: string }>;
+  proof: HitlProof;
+  [key: string]: unknown;
+}
+
+export interface ProposedResponse {
+  run_id: string;
+  proposed: ProposedFinding[];
+}
+
+export interface DecideFindingResponse {
+  run_id: string;
+  finding_id: string;
+  finding: Record<string, unknown>;
 }

@@ -28,8 +28,10 @@ export function ModelSelector({ model, onModelChange }: ModelSelectorProps) {
   const refetch = liveModels.refetch;
   // Ollama only: refresh also bumps models.registry to the newest versions
   // the Ollama API lists (POST /models/refresh), then refetches the live list.
+  // Other providers just refetch live (refresh is ollama-only, 400 otherwise).
+  const isOllama = status.provider === "ollama";
   const handleRefresh = () => {
-    if (status.provider === "ollama") {
+    if (isOllama) {
       syncModels.mutate(undefined, { onSettled: () => void refetch() });
     } else {
       void refetch();
@@ -37,21 +39,22 @@ export function ModelSelector({ model, onModelChange }: ModelSelectorProps) {
   };
   const busy = liveModels.isFetching || syncModels.isPending;
 
-  const meta: StatusMeta = liveModels.isLoading
+  // Single shared state machine (from useProviderStatus): Connected /
+  // Checking… / Registry fallback (ollama only, warn) / Auth required
+  // (provider error + fix hint) / Offline. No per-provider branches.
+  const meta: StatusMeta = status.isChecking
     ? { tone: "warn", label: "Checking…", detail: "Contacting the model provider." }
     : status.online
       ? { tone: "ok", label: "Connected", detail: `${status.liveCount} live ${status.label} models` }
-      : status.provider === "ollama" && status.source === "registry"
+      : isOllama && status.isFallback
         ? { tone: "warn", label: "Registry fallback", detail: "Ollama unreachable — using configured registry models." }
-        : status.provider === "chatgpt"
-          ? { tone: "err", label: "Authentication required", detail: status.error ?? "Sign in via System → Models." }
-          : status.provider === "opencode_go"
-            ? {
-                tone: "err",
-                label: "Authentication required",
-                detail: status.error ?? "Set OPENCODE_GO_API_KEY via System → API keys.",
-              }
-            : { tone: "err", label: "Offline", detail: status.error ?? `${status.label} is not reachable.` };
+        : status.error
+          ? { tone: "err", label: "Authentication required", detail: `${status.error} ${status.fixHint}` }
+          : { tone: "err", label: "Offline", detail: `${status.label} is not reachable. ${status.fixHint}` };
+
+  // Preserve the current value if it is not in the new options (provider
+  // switch); the wizard auto-selects the default only when empty.
+  const items = model && !modelOptions.includes(model) ? [model, ...modelOptions] : modelOptions;
 
   const dot = cn(
     "h-1.5 w-1.5 rounded-full",
@@ -70,10 +73,10 @@ export function ModelSelector({ model, onModelChange }: ModelSelectorProps) {
               <SelectValue placeholder="Default model" />
             </SelectTrigger>
             <SelectContent>
-              {modelOptions.length === 0 ? (
-                <div className="px-3 py-2 text-xs text-muted-foreground">No models discovered.</div>
+              {items.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">No models discovered. {status.fixHint}</div>
               ) : (
-                modelOptions.map((m) => (
+                items.map((m) => (
                   <SelectItem key={m} value={m}>
                     {m}
                   </SelectItem>
@@ -90,7 +93,11 @@ export function ModelSelector({ model, onModelChange }: ModelSelectorProps) {
           onClick={handleRefresh}
           disabled={busy}
           aria-label="Refresh models"
-          title="Refresh models (also syncs the registry to the newest Ollama versions)"
+          title={
+            isOllama
+              ? "Refresh models (also syncs the registry to the newest Ollama versions)"
+              : "Refresh models"
+          }
         >
           <RefreshCw className={cn("h-4 w-4", busy && "animate-spin")} />
         </Button>

@@ -1,19 +1,22 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { AttackGraph } from "@/components/AttackGraph";
+import type { ToolCallResponse } from "@/api/types";
 
 // ── module mocks ────────────────────────────────────────────────────────────
 
 vi.mock("@/api/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/hooks")>()),
   useFetchArtifactBlob: vi.fn(),
+  useCallTool: vi.fn(),
 }));
 
-import { useFetchArtifactBlob } from "@/api/hooks";
+import { useCallTool, useFetchArtifactBlob } from "@/api/hooks";
 import { ApiError } from "@/api/client";
 
 const fetchMock = vi.mocked(useFetchArtifactBlob);
+const callToolMock = vi.mocked(useCallTool);
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -78,6 +81,7 @@ function setup(blobText: string | null, opts: { ready?: boolean; fails?: boolean
     }
   });
   fetchMock.mockReturnValue({ mutate } as never);
+  callToolMock.mockReturnValue({ mutate: vi.fn(), isPending: false } as never);
   render(<AttackGraph runId="run-1" ready={opts.ready ?? true} />);
   return mutate;
 }
@@ -171,5 +175,59 @@ describe("AttackGraph timeline + failure analysis", () => {
     const row = (await screen.findByText("Port sweep")).closest("li")!;
     expect(row.querySelector("svg.lucide-clock")).not.toBeNull();
     expect(row.querySelector("svg.lucide-x-circle")).toBeNull();
+  });
+});
+
+describe("AttackGraph closed-loop retest", () => {
+  function setupWithRetest(resultText: string) {
+    const mutate = vi.fn(
+      (
+        _vars: unknown,
+        handlers?: { onSuccess?: (data: ToolCallResponse) => void; onError?: (e: unknown) => void },
+      ) => {
+        handlers?.onSuccess?.({ tool: "retest_finding", result: resultText });
+      },
+    );
+    const fetchMutate = vi.fn(
+      (_name: string, handlers?: { onSuccess?: (b: Blob) => void; onError?: (e: unknown) => void }) => {
+        handlers?.onSuccess?.(
+          new Blob([JSON.stringify(reportFixture())], { type: "application/json" }),
+        );
+      },
+    );
+    fetchMock.mockReturnValue({ mutate: fetchMutate } as never);
+    callToolMock.mockReturnValue({ mutate, isPending: false } as never);
+    render(<AttackGraph runId="run-1" />);
+    return mutate;
+  }
+
+  it("renders one Retest button per finding calling retest_finding", async () => {
+    const mutate = setupWithRetest("RETEST_VERDICT:\nVERDICT: FIXED");
+    const btn = await screen.findByRole("button", { name: "Retest F-1" });
+    fireEvent.click(btn);
+    expect(mutate).toHaveBeenCalledWith(
+      { tool: "retest_finding", arguments: { target_ip: "10.0.0.50", finding_id: "F-1" } },
+      expect.anything(),
+    );
+  });
+
+  it("displays the returned verdict inline", async () => {
+    setupWithRetest("RETEST_VERDICT:\nFINDING: F-1\nVERDICT: FIXED\nEVIDENCE: x");
+    fireEvent.click(await screen.findByRole("button", { name: "Retest F-1" }));
+    expect(await screen.findByText("FIXED")).toBeInTheDocument();
+  });
+
+  it("shows the stored retest_status from the report without clicking", async () => {
+    const report = reportFixture();
+    (report.technical_findings[0] as Record<string, unknown>).retest_status = "STILL_OPEN";
+    const fetchMutate = vi.fn(
+      (_name: string, handlers?: { onSuccess?: (b: Blob) => void }) => {
+        handlers?.onSuccess?.(new Blob([JSON.stringify(report)], { type: "application/json" }));
+      },
+    );
+    fetchMock.mockReturnValue({ mutate: fetchMutate } as never);
+    callToolMock.mockReturnValue({ mutate: vi.fn(), isPending: false } as never);
+    render(<AttackGraph runId="run-1" />);
+    expect(await screen.findByText("STILL_OPEN")).toBeInTheDocument();
   });
 });

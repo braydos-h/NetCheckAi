@@ -8,13 +8,12 @@ import { ErrorState } from "@/components/Loading";
 import { RunBenchmarkPanel } from "@/features/benchmarks/RunBenchmarkPanel";
 import { BenchmarksShell } from "@/features/benchmarks/BenchmarksShell";
 import { useBenchmarksOverview } from "@/features/benchmarks/useBenchmarksOverview";
-import { useModels } from "@/api/hooks";
+import { useDefaultModel } from "@/components/ProviderSetup";
 import { formatCost, formatDuration, formatPct } from "@/features/benchmarks/format";
 
 export function BenchmarksStartPage() {
   const { overview, active } = useBenchmarksOverview();
-  const models = useModels();
-  const defaultModel = models.data?.default_alias ?? "";
+  const defaultModel = useDefaultModel();
   const baseline = overview.data?.baseline;
 
   return (

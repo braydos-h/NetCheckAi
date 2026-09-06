@@ -44,42 +44,51 @@ export function useProviderSwitch() {
   return { provider, switchTo, isPending: patchConfig.isPending, error: patchConfig.error };
 }
 
-/** Provider-aware list of selectable models for a run: live models (when the
- *  provider is reachable) plus configured/registry models plus the provider
- *  default. Single source of truth — RunWizard and ProviderPicker consumers all use this
- *  so a provider switch is reflected everywhere, not just one component. */
+/** Provider-aware list of selectable models for a run: live models plus
+ *  configured/registry models plus the provider default. Single source of
+ *  truth — every picker consumes this, so a provider switch is reflected
+ *  everywhere. Degraded live payloads (source "registry") are provider-
+ *  specific by backend contract, so they are included, never dropped. */
 export function useModelOptions(): string[] {
   const models = useModels();
   const live = useLiveModels();
+  const providers = useProviders();
   const provider = models.data?.provider ?? "ollama";
   return useMemo(() => {
     const set = new Set<string>();
+    // Live when fresh (source === provider) or degraded-but-provider-specific
+    // (source === "registry" — the backend guarantees the active provider's
+    // fallback only, never another provider's ids).
+    if (live.data && (live.data.source === provider || live.data.source === "registry")) {
+      (live.data.models ?? []).forEach((m) => set.add(m));
+    }
     if (provider === "chatgpt") {
-      if (live.data?.source === "chatgpt") (live.data.models ?? []).forEach((m) => set.add(m));
       (models.data?.chatgpt?.configured_models ?? []).forEach((m) => set.add(m));
       if (models.data?.chatgpt?.default_model) set.add(models.data.chatgpt.default_model);
     } else if (provider === "opencode_go") {
-      if (live.data?.source === "opencode_go") (live.data.models ?? []).forEach((m) => set.add(m));
       (models.data?.opencode_go?.configured_models ?? []).forEach((m) => set.add(m));
       if (models.data?.opencode_go?.default_model) set.add(models.data.opencode_go.default_model);
     } else if (provider === "ollama") {
-      if (live.data?.source === "ollama") (live.data.models ?? []).forEach((m) => set.add(m));
       Object.values(models.data?.registry ?? {}).forEach((m) => set.add(String(m)));
       if (models.data?.default_alias) set.add(models.data.default_alias);
     } else {
-      // Generic registered provider: live models come straight from the
-      // provider adapter (/models/live dispatches by registry id); the static
-      // registry is the configured fallback.
-      if (live.data?.source === provider) (live.data.models ?? []).forEach((m) => set.add(m));
+      // Generic registered provider: the active_provider block first, then
+      // registry metadata, then the static registry as a last resort.
+      const active = models.data?.active_provider;
+      if (active?.id === provider) {
+        (active.configured_models ?? []).forEach((m) => set.add(m));
+        if (active.default_model) set.add(active.default_model);
+      }
+      const meta = providers.data?.providers?.find((p) => p.id === provider);
+      if (meta?.default_model) set.add(meta.default_model);
       Object.values(models.data?.registry ?? {}).forEach((m) => set.add(String(m)));
     }
     return Array.from(set);
-  }, [models.data, live.data, provider]);
+  }, [models.data, live.data, providers.data, provider]);
 }
 
-/** Provider-aware default model id to preselect (chatgpt/opencode_go default_model, registry
- *  metadata default_model for other providers, else the ollama default_alias). Empty string
- *  when nothing is configured. */
+/** Provider-aware default model id to preselect (provider default_model,
+ *  else the ollama default_alias). Empty string when nothing is configured. */
 export function useDefaultModel(): string {
   const models = useModels();
   const providers = useProviders();
@@ -87,10 +96,26 @@ export function useDefaultModel(): string {
   if (provider === "chatgpt") return models.data?.chatgpt?.default_model ?? "";
   if (provider === "opencode_go") return models.data?.opencode_go?.default_model ?? "";
   if (provider !== "ollama") {
+    const active = models.data?.active_provider;
+    if (active?.id === provider && active.default_model) return active.default_model;
     const meta = providers.data?.providers?.find((p) => p.id === provider);
     if (meta?.default_model) return meta.default_model;
   }
   return models.data?.default_alias ?? "";
+}
+
+/** Provider-specific fix hint for empty/error model states (never blank). */
+export function providerFixHint(provider: string): string {
+  switch (provider) {
+    case "chatgpt":
+      return "Sign in via System → Models.";
+    case "opencode_go":
+      return "Set OPENCODE_GO_API_KEY via System → API keys.";
+    case "ollama":
+      return "Is the daemon running?";
+    default:
+      return `Check the ${providerLabel(provider)} configuration under System → Models.`;
+  }
 }
 
 export interface ProviderStatus {
@@ -106,6 +131,10 @@ export interface ProviderStatus {
   status: "online" | "offline" | "checking" | "unreachable";
   statusText: string;
   isChecking: boolean;
+  /** Degraded live payload (source "registry", provider-specific fallback). */
+  isFallback: boolean;
+  /** Provider-specific fix hint for empty/error states (never blank). */
+  fixHint: string;
 }
 
 export function providerLabel(provider: string, registryDisplayName?: string): string {
@@ -164,6 +193,8 @@ export function useProviderStatus(): ProviderStatus {
     status,
     statusText,
     isChecking,
+    isFallback: live.data?.source === "registry",
+    fixHint: providerFixHint(provider),
   };
 }
 
@@ -189,7 +220,7 @@ export function ProviderPicker() {
       : BUILTIN_PROVIDER_OPTIONS;
   return (
     <div className="space-y-2">
-      <SegmentedControl value={provider} onChange={switchTo} options={options} />
+      <SegmentedControl value={provider} onChange={switchTo} options={options} disabled={isPending} />
       {isPending && <p className="text-xs text-muted-foreground">Switching provider…</p>}
       {error && (
         <p className="text-xs text-destructive">

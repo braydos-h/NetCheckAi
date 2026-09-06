@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { fetchSuiteScenarios, startBenchmarkRun } from "@/features/benchmarks/api";
 import { isActiveState } from "@/features/benchmarks/format";
 import type { ScenarioInfo, SuiteInfo } from "@/features/benchmarks/types";
+import { useDefaultModel, useModelOptions } from "@/components/ProviderSetup";
 import { cn } from "@/lib/utils";
 
 export interface RunBenchmarkPanelProps {
@@ -25,9 +26,14 @@ export interface RunBenchmarkPanelProps {
   defaultModel?: string;
 }
 
-export function RunBenchmarkPanel({ suites, active, defaultModel }: RunBenchmarkPanelProps) {
+export function RunBenchmarkPanel({ suites, active, defaultModel: defaultModelProp }: RunBenchmarkPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Provider-aware picker: live + configured + default models for the active
+  // provider only (single source of truth — same hooks the wizard uses).
+  const modelOptions = useModelOptions();
+  const hookDefault = useDefaultModel();
+  const defaultModel = defaultModelProp || hookDefault;
   const [suite, setSuite] = useState(suites[0]?.suite_id ?? "");
   const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
   const [scenariosError, setScenariosError] = useState("");
@@ -156,14 +162,21 @@ export function RunBenchmarkPanel({ suites, active, defaultModel }: RunBenchmark
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="bench-model">Model alias</Label>
-            <Input
+            <select
               id="bench-model"
               value={model}
               disabled={busy}
               onChange={(e) => setModel(e.target.value)}
-              placeholder={defaultModel || "server default"}
-            />
-            <p className="text-[11px] text-muted-foreground">Blank uses the server's default model.</p>
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="">Server default{defaultModel ? ` (${defaultModel})` : ""}</option>
+              {(model && !modelOptions.includes(model) ? [model, ...modelOptions] : modelOptions).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">Server default uses the active provider's default model.</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="bench-trials">Trials per scenario</Label>

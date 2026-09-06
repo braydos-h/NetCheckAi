@@ -523,6 +523,54 @@ snapshot at all when `snapshots.enabled` is false. With
 snapshot is auto-reverted and the mutated payload retries against the clean
 state; both outcomes land in `final_result["counterfactual"]`.
 
+### Retest — `tools/mcp_tools/retest.py` (always registered)
+
+Closed-loop retest ("prove the fix"). One tool re-runs a confirmed
+finding's stored PoC probe against the current target:
+
+| Tool | Params | Target | Lock |
+|---|---|---|---|
+| `retest_finding` | `target_ip`, `finding_id`, `run_id` (optional; empty = latest run containing it) | yes | allowlist |
+
+The probe (`verification_probe`, a `shell_command` spec captured from the
+finding's successful audit record via `tools/run_service/prepare.py` and
+carried on `TechnicalFinding`) is re-executed ONLY through the registered
+`run_exploit_terminal` function in-process (the killchain playbook-dispatch
+precedent), so the allowlist lock, audit trail, and sandbox funnel apply
+unchanged — `SANDBOX_*` output classifies `INCONCLUSIVE` (fail closed, no
+host fallback). The verdict reuses the `outcome_truth` classifier:
+compromise/cred_dump → `STILL_OPEN`, explicit failure → `FIXED`, anything
+else (no stored probe, blocked run, ambiguous output) → `INCONCLUSIVE`.
+The verdict persists into the finding's `retest_status`/`retest_history[]`
+in `reports/<run_id>/enhanced/enhanced_report.json` (sibling `.md`/`.html`
+regenerated when present); snapshot state is attached best-effort via
+`SnapshotManager.list` (fail-open). Returned block: `RETEST_VERDICT:`.
+
+### HITL — `tools/mcp_tools/hitl.py` (cfg: `hitl.enabled`, default true)
+
+Proxy-backed HITL evidence loop, Flow A only ("agents propose, human
+decides" — Caido Replay / Burp AT style). Agent candidates land as
+`PROPOSED` findings; only a human `APPROVED`/`REJECTED` promotes them:
+
+| Tool | Params | Target | Lock |
+|---|---|---|---|
+| `propose_finding` | `run_id`, `title`, `affected_asset`, `summary`, `probe_exec`, `evidence`, `severity`, `vuln_class` | no | audit |
+| `hitl_decide` | `finding_id`, `decision` (`APPROVED`/`REJECTED`), `note`, `run_id` (optional), `actor` (must be `'human'`) | no | audit |
+| `list_proposed` | `run_id` (optional; empty = all runs, newest first) | no | audit |
+
+All three are local-only `@audit_tool` (zero target touch — probe re-exec
+stays inside `verify_finding`/`retest_finding`). `verify_poc` /
+`verify_finding` / `retest_finding` never write `hitl_status`, so machine
+verdicts stay `PROPOSED` until a human signs off; `record_hitl_decision`
+raises `PermissionError` for any non-`human` actor, so an LLM can never
+self-approve (every decision lands in `hitl_history[]` and the JSONL audit
+trail with its actor). Decisions persist into `hitl_status`/`hitl_history[]`
+in the run artifact JSON (sibling `.md`/`.html` regenerated when present).
+Returned blocks: `HITL_PROPOSED:` / `HITL_DECIDED:`. WebUI: the Evidence tab
+on the run page (`GET /runs/{id}/proposed`, `POST /runs/{id}/decide`, live
+via the `hitl_decision` event); `approved_findings()` is the final-report
+filter (APPROVED-only).
+
 ### Browser — `tools/mcp_tools/browser.py` (cfg: `browser.enabled` + `backend: playwright`)
 
 Conditional family (the killchain/snapshots precedent): nothing registers

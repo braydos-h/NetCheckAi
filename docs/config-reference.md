@@ -322,6 +322,15 @@ Semantic-memory consumer for the autonomous orchestrator. When true, the orchest
 |-----|------|---------|----------|-------------|
 | `semantic_memory` | bool | `true` | Build a SemanticMemoryManager + store cross-mission lessons on confirmed wins | autonomous_orchestrator.py:1095-1116 |
 
+### `fsm:` (config.yaml) — FSM / planner-executor split (opt-in, default off)
+
+When `enabled`, campaign code may route plan execution through the FSM phase guard + memoryless step executor (`tools/attack_planner.py`: `planner_context` / `step_context_for` / `record_step_result` / `fsm_advance`, `AttackModuleExecutor.execute_plan_step`) instead of the LLM-does-everything loop. No command-content gates — only the target-IP allowlist at the MCP layer; recon stays `read_only`.
+
+| Key | Type | Default | Controls | Consumed at |
+|-----|------|---------|----------|-------------|
+| `enabled` | bool | `false` | Route plan execution through the FSM guard + memoryless executors | attack_planner.py:482 (`fsm_settings`) |
+| `max_retries_per_step` | int | `3` | Same-`failure_class` failures before the stuck-loop breaker blocks the step and forces a replan | attack_planner.py:438 (`record_step_result`) |
+
 ### `recon:` (config.yaml:251-274) — recon coverage & depth
 
 | Key | Type | Default | Controls | Consumed at |

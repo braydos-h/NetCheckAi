@@ -23,7 +23,7 @@ import { SettingRow } from "./SettingRow";
 import { ConfigEditor } from "./ConfigEditor";
 import { StatusDot } from "./StatusOverview";
 import { useSettingsDraft } from "./useSettingsDraft";
-import { ChatGptControls, OpenCodeGoControls, ProviderPicker, useModelOptions, useProviderStatus } from "@/components/ProviderSetup";
+import { ChatGptControls, OpenCodeGoControls, ProviderPicker, useDefaultModel, useModelOptions, useProviderStatus } from "@/components/ProviderSetup";
 import { useAddModel, useLiveModels, useModels, usePutSecrets, useRemoveModel, useSecrets } from "@/api/hooks";
 import { ApiError } from "@/api/client";
 import { SkeletonRows } from "@/components/Loading";
@@ -47,29 +47,39 @@ export function ProviderSettings() {
 
 function ProviderStatusRow() {
   const status = useProviderStatus();
-  const models = useModels();
   const { draft, update } = useSettingsDraft();
   const options = useModelOptions();
+  const defaultModel = useDefaultModel();
   const [manageOpen, setManageOpen] = useState(false);
 
   const provider = status.provider;
-  const chatgptDraft = draft.chatgpt as Record<string, unknown> | undefined;
-  const ogDraft = draft.opencode_go as Record<string, unknown> | undefined;
-  const modelsDraft = draft.models as Record<string, unknown> | undefined;
-  let current = "";
-  if (provider === "chatgpt") {
-    current = (chatgptDraft?.default_model as string | undefined) ?? models.data?.chatgpt?.default_model ?? "";
-  } else if (provider === "opencode_go") {
-    current = (ogDraft?.default_model as string | undefined) ?? models.data?.opencode_go?.default_model ?? "";
-  } else {
-    current = (modelsDraft?.default_alias as string | undefined) ?? models.data?.default_alias ?? "";
-  }
+  // Single read path (useDefaultModel); only the draft override is
+  // provider-keyed, since each provider persists its default under its own
+  // config key. Generic providers persist under providers.<id>.default_model.
+  const draftOverride = (() => {
+    if (provider === "chatgpt")
+      return (draft.chatgpt as Record<string, unknown> | undefined)?.default_model as string | undefined;
+    if (provider === "opencode_go")
+      return (draft.opencode_go as Record<string, unknown> | undefined)?.default_model as string | undefined;
+    if (provider === "ollama")
+      return (draft.models as Record<string, unknown> | undefined)?.default_alias as string | undefined;
+    const entry = (draft.providers as Record<string, unknown> | undefined)?.[provider];
+    return (entry as Record<string, unknown> | undefined)?.default_model as string | undefined;
+  })();
+  const current = draftOverride ?? defaultModel;
   const all = current && !options.includes(current) ? [current, ...options] : options;
 
   const onDefaultModel = (value: string) => {
     if (provider === "chatgpt") update("chatgpt", "default_model", value);
     else if (provider === "opencode_go") update("opencode_go", "default_model", value);
-    else update("models", "default_alias", value);
+    else if (provider === "ollama") update("models", "default_alias", value);
+    else {
+      const entry = ((draft.providers as Record<string, unknown> | undefined)?.[provider] ?? {}) as Record<
+        string,
+        unknown
+      >;
+      update("providers", provider, { ...entry, default_model: value });
+    }
   };
 
   return (
@@ -186,11 +196,19 @@ function SecretsEditor() {
 function ModelRegistry() {
   const models = useModels();
   const live = useLiveModels();
+  const status = useProviderStatus();
   const addModel = useAddModel();
   const removeModel = useRemoveModel();
   const provider = models.data?.provider ?? "ollama";
   const isChatgpt = provider === "chatgpt";
   const isOpencodeGo = provider === "opencode_go";
+  const isOllama = provider === "ollama";
+  // Generic providers surface their configured models via the
+  // active_provider block (no per-provider UI branches).
+  const genericConfigured =
+    !isChatgpt && !isOpencodeGo && !isOllama && models.data?.active_provider?.id === provider
+      ? (models.data.active_provider.configured_models ?? [])
+      : [];
   const registry = Object.entries(models.data?.registry ?? {});
   const registryMap = new Map(registry);
   const [newAlias, setNewAlias] = useState("");
@@ -209,7 +227,7 @@ function ModelRegistry() {
       <div>
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {isChatgpt ? "Live ChatGPT models" : isOpencodeGo ? "Live OpenCode Go models" : "Live Ollama models"}
+            Live {status.label} models
           </span>
           <Button size="sm" variant="ghost" onClick={() => live.refetch()} disabled={live.isFetching}>
             <RefreshCw className={cn("h-3.5 w-3.5", live.isFetching && "animate-spin")} />
@@ -229,12 +247,8 @@ function ModelRegistry() {
           ))}
           {(live.data?.models ?? []).length === 0 && (
             <li className="text-muted-foreground">
-              No models reported.{" "}
-              {isChatgpt
-                ? "Sign in and start the proxy, then refresh."
-                : isOpencodeGo
-                  ? "Set OPENCODE_GO_API_KEY, then refresh. Uses https://opencode.ai/zen/go/v1/responses."
-                  : "Is the daemon running?"}
+              No models reported. {status.fixHint}
+              {isOpencodeGo && " Uses https://opencode.ai/zen/go/v1/responses."}
             </li>
           )}
         </ul>
@@ -271,6 +285,22 @@ function ModelRegistry() {
             )}
           </ul>
           <p className="mt-2 text-xs text-muted-foreground">Registry editing for OpenCode Go uses opencode_go.models.</p>
+        </div>
+      ) : !isOllama ? (
+        <div>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Configured {status.label} models
+          </span>
+          <ul className="mt-1.5 space-y-1 font-mono text-xs">
+            {genericConfigured.map((m) => (
+              <li key={m} className="rounded bg-muted/40 px-2 py-1">
+                {m}
+              </li>
+            ))}
+            {genericConfigured.length === 0 && (
+              <li className="text-muted-foreground">Empty — models are discovered at run time. {status.fixHint}</li>
+            )}
+          </ul>
         </div>
       ) : (
         <div>

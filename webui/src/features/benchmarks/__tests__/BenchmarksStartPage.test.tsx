@@ -10,6 +10,11 @@ vi.mock("@/api/hooks", () => ({
   useModels: () => ({ data: { default_alias: "glm" } }),
 }));
 
+vi.mock("@/components/ProviderSetup", () => ({
+  useDefaultModel: () => "glm",
+  useModelOptions: () => ["glm"],
+}));
+
 const fetchOverview = vi.fn();
 vi.mock("@/features/benchmarks/api", () => ({
   fetchOverview: (...args: unknown[]) => fetchOverview(...args),
