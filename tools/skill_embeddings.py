@@ -66,8 +66,12 @@ class SkillEmbedder:
     text->vector cache so each skill's search text is embedded once.
     """
 
-    def __init__(self, semantic_memory: Any | None) -> None:
+    def __init__(self, semantic_memory: Any | None, *, quiet: bool = False) -> None:
         self._sm = semantic_memory
+        # ponytail: quiet=True means embeddings were explicitly disabled
+        # (embeddings.provider:none) -- callers fall back to tag matching
+        # silently instead of emitting the one-shot [WARN].
+        self._quiet = quiet
         self._cache: dict[str, list[float]] = {}
 
     def available(self) -> bool:
@@ -104,11 +108,13 @@ def semantic_rank(
     lazily and cached on the embedder.
     """
     if embedder is None or not embedder.available() or not query_text:
-        _warn_no_embedder_once()
+        if not getattr(embedder, "_quiet", False):
+            _warn_no_embedder_once()
         return []
     qvec = embedder.embed_text(query_text)
     if qvec is None:
-        _warn_no_embedder_once()
+        if not getattr(embedder, "_quiet", False):
+            _warn_no_embedder_once()
         return []
 
     scored: list[tuple[LoadedSkill, float]] = []
@@ -188,7 +194,7 @@ def get_shared_skill_embedder(config: dict[str, Any] | None) -> SkillEmbedder:
                     embed_cfg["embeddings"] = embeddings_block
                 embedding_provider = build_embedding_provider(embed_cfg)
                 if isinstance(embedding_provider, NullEmbeddingProvider):
-                    embedder = SkillEmbedder(None)
+                    embedder = SkillEmbedder(None, quiet=True)
                     _shared_embedder = embedder
                     return _shared_embedder
                 from db import get_default_db

@@ -175,7 +175,9 @@ def _opencode_go_status_sync(og_cfg: dict[str, Any]) -> dict[str, Any]:
         try:
             import httpx
 
-            headers = {"Authorization": f"Bearer {api_key}"}
+            from tools.providers.opencode_go_provider import _SESSION_HEADER, opencode_session_id
+
+            headers = {"Authorization": f"Bearer {api_key}", _SESSION_HEADER: opencode_session_id()}
             with httpx.Client(timeout=3.0, headers=headers) as client:
                 resp = client.get(f"{base_url}/models")
                 if resp.status_code < 400:
@@ -1481,7 +1483,9 @@ def create_router(
             try:
                 import httpx
 
-                headers = {"Authorization": f"Bearer {api_key}"}
+                from tools.providers.opencode_go_provider import _SESSION_HEADER, opencode_session_id
+
+                headers = {"Authorization": f"Bearer {api_key}", _SESSION_HEADER: opencode_session_id()}
                 with httpx.Client(timeout=3.0, headers=headers) as client:
                     resp = client.get(f"{base_url}/models")
                     if resp.status_code < 400:

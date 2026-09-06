@@ -372,7 +372,12 @@ def _check_opencode_go(config: dict[str, Any] | None = None) -> dict[str, Any]:
     models_error: str = ""
     if api_key:
         try:
-            req = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+            from tools.providers.opencode_go_provider import _SESSION_HEADER, opencode_session_id
+
+            req = urllib.request.Request(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}", _SESSION_HEADER: opencode_session_id()},
+            )
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 data = json.loads(resp.read().decode("utf-8") or "{}")
             raw = data.get("data") if isinstance(data, dict) else None

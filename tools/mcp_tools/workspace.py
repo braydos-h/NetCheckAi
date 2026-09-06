@@ -22,7 +22,7 @@ from tools.validation_utils import validate_target_or_ip
 
 
 def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
-    from tools.mcp_tools.sandbox_exec import run_argv_in_sandbox
+    from tools.mcp_tools.sandbox_exec import loopback_hint, run_argv_in_sandbox
 
     workspace = ctx.workspace
     config = ctx.config
@@ -179,11 +179,18 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 + f"\nEXIT_CODE: {result.exit_code if result.exit_code is not None else 'timed_out'}\n"
             )
             log_path.write_text(text, encoding="utf-8", errors="replace")
+            _hint = ""
+            try:
+                # ponytail: unconditional for loopback targets -- see terminal/execute.py
+                _hint = loopback_hint(str(target_ip), config)
+            except Exception:  # ponytail: bare except intentional -- hint is advisory only
+                _hint = ""
             return (
                 f"PYTHON_RUN_RESULT: {result.status} (exit_code={result.exit_code}, duration={result.duration_seconds:.1f}s, sandbox)\n"
                 f"ATTEMPT_ID: {attempt_id}\n"
                 f"SCRIPT: {script_path}\n"
                 f"TARGET: {target_ip}\n"
+                f"{_hint}"
                 f"LOG_TAIL:\n{merged[-3000:]}"
             )
 

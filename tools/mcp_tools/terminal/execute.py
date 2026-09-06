@@ -17,6 +17,8 @@ from tools.kernel.audit import _mask_secret_content
 from tools.mcp_shared import _is_inside_workspace
 from tools.mcp_tools.registry import ToolContext, _attempt_dir, _run_with_pgrp_timeout
 from tools.mcp_tools.sandbox_exec import (
+    collect_command_targets,
+    loopback_hint,
     run_argv_in_sandbox,
     run_command_in_sandbox,
     sandbox_error_block,
@@ -130,6 +132,17 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     f"{sandbox_error_block(exc, tool_name='run_exploit_terminal')}"
                 )
             _sstatus, _output_tail, _exit_code, _elapsed = _sandbox_terminal_ok(result)
+            _hint = ""
+            try:
+                # ponytail: unconditional for loopback targets -- gating on output
+                # substrings ("connection refused") misses curl/python/timeout
+                # variants and exit-0-masked probes (cmd1; curl | head).
+                _targets = collect_command_targets(sanitized_command)
+                _primary = _targets[0] if _targets else ""
+                if _primary:
+                    _hint = loopback_hint(_primary, config)
+            except Exception:  # ponytail: bare except intentional -- hint is advisory only
+                _hint = ""
             # Persisted logs are redacted: raw stdout may carry dumped hashes,
             # tokens, or key material that must not sit on disk in the clear.
             # (The live OUTPUT below stays verbatim -- cracking workflows need
@@ -150,6 +163,7 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 f"{preflight_note}"
                 f"{_sandbox_status_line(ctx.sandbox)}"
                 f"{_opsec_advisory}"
+                f"{_hint}"
                 f"WORKSPACE: {attempt_dir}\n"
                 f"OUTPUT:\n{_output_tail}"
             )

@@ -245,6 +245,19 @@ class MissionRunner:
 
             goal = GoalEngine().get(scenario.goal, risk_profile="high_authorized_testing")
 
+        # Persist the mission goal into the assessment store so
+        # get_assessment_state never reports GOAL (unset) mid-run.
+        try:
+            from tools.assessment_state import AssessmentStateStore
+
+            _store = AssessmentStateStore(workspace)
+            _state = _store.load(scenario.target_host)
+            if not _state.goal:
+                _state.goal = str(getattr(goal, "name", "") or scenario.goal or "")
+                _store.save(_state)
+        except Exception:  # noqa: BLE001 -- snapshot metadata is best-effort
+            pass
+
         model_client = None
         session_error = ""
         try:

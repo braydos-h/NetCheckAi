@@ -221,6 +221,13 @@ def aggregate_state(target: str, workspace: Path | str, config: dict[str, Any] |
             "blocked": [i for i, _s, _r in plan.blocked_steps()],
             "failed": [i for i, s in enumerate(plan.steps) if s.status == "failed"],
         }
+        # The assessment store's goal/phase are only set when something writes
+        # them -- fall back to the live plan so snapshots never report
+        # GOAL/PHASE (unset) mid-run when a plan already exists.
+        if not snap["goal"]:
+            snap["goal"] = str(getattr(plan, "goal", "") or "")
+        if not snap["phase"]:
+            snap["phase"] = str(plan.current_phase.value or "")
 
     # Newest recon result.
     recon = _newest_recon(ws, target)
@@ -292,7 +299,10 @@ def _audit_rollup(ws: Path, target: str, limit: int = 25) -> dict[str, Any]:
                     continue
                 if rec.get("status") == "started":
                     continue
-                tool = str(rec.get("tool_name", ""))
+                # Some audit rows (capability discovery, sandbox scope gates)
+                # carry no tool_name -- fall back to the action so BY_TOOL
+                # never reports an empty-name bucket.
+                tool = str(rec.get("tool_name", "") or rec.get("action", ""))
                 out["tool_calls"] += 1
                 if rec.get("status") == "blocked" or rec.get("approved") is False:
                     out["blocked"] += 1

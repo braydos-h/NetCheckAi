@@ -677,6 +677,12 @@ def parse_service_banners(text: str) -> list[ServiceBanner]:
     host_match = re.search(r"TARGET[:\s]+(\S+)", text)
     if host_match:
         host = host_match.group(1)
+    if not host:
+        # quick_scan / check_os headers carry the host without a TARGET: key
+        # ("QUICK_SCAN_RESULTS: 127.0.0.1", "SERVICE_FINGERPRINT: 127.0.0.1:2121").
+        alt_match = re.search(r"(?:QUICK_SCAN_RESULTS|OS_CHECK_RESULTS|SERVICE_FINGERPRINT)[:\s]+(\S+)", text)
+        if alt_match:
+            host = alt_match.group(1).split(":")[0].strip()
 
     # Extract OS verdict
     os_guess = ""

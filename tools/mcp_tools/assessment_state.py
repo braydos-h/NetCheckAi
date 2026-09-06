@@ -96,7 +96,7 @@ def _format_state_block(snap: dict[str, Any]) -> str:
     by_tool = activity.get("by_tool", {}) or {}
     if by_tool:
         top = sorted(by_tool.items(), key=lambda kv: kv[1], reverse=True)[:10]
-        lines.append("  BY_TOOL: " + ", ".join(f"{k}={v}" for k, v in top))
+        lines.append("  BY_TOOL: " + ", ".join(f"{k or '(unnamed)'}={v}" for k, v in top))
     recent = activity.get("recent", []) or []
     if recent:
         lines.append("  RECENT:")
@@ -199,7 +199,7 @@ def register_assessment_state_tools(mcp: Any, *, ctx: ToolContext) -> None:
         @mcp.tool()
         @audit_tool
         def get_capability_details(name: str, scope: str = "modules") -> str:
-            """Get the full capability record for one named module or skill, plus (for modules) an applicability explanation against a minimal empty-services context so the model can see why it would/wouldn't rank. Advisory only. Returns a CAPABILITY_DETAILS: block."""
+            """Get the full capability record for one named module, tool, or skill, plus (for modules) an applicability explanation against a minimal empty-services context so the model can see why it would/wouldn't rank. Advisory only. Returns a CAPABILITY_DETAILS: block."""
             scope_lc = (scope or "modules").strip().lower()
             if scope_lc == "modules":
                 mod = get_module(name)
@@ -246,7 +246,26 @@ def register_assessment_state_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     lines.append(f"MITRE_ATTACK: {', '.join(m.mitre_attack)}")
                 lines.append(f"PATH: {m.path}")
                 return "\n".join(lines)
-            return f"BLOCKED: unknown scope {scope!r} (use modules|skills)."
+            if scope_lc == "tools":
+                # ponytail: query_capabilities lists scope=tools, so details must
+                # accept it too -- otherwise the agent hits BLOCKED and loops.
+                try:
+                    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
+                except _EXC_GROUP_CATCH as exc:  # noqa: BLE001 -- introspection is best-effort
+                    _log_nested_exceptions(exc)
+                    tools = None
+                if isinstance(tools, dict) and name in tools:
+                    tool = tools[name]
+                    desc = str(getattr(tool, "description", "") or "").replace("\n", " ")
+                    lines = ["CAPABILITY_DETAILS: scope=tools"]
+                    lines.append(f"NAME: {name}")
+                    lines.append(f"DESCRIPTION: {_truncate_text(desc, 500)}")
+                    return "\n".join(lines)
+                return (
+                    f"CAPABILITY_DETAILS: tool not found: {name!r}. "
+                    "Use query_capabilities(scope='tools') to list registered MCP tool names."
+                )
+            return f"BLOCKED: unknown scope {scope!r} (use modules|tools|skills)."
 
     @mcp.tool()
     @require_allowlist()

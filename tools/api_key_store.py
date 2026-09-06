@@ -38,21 +38,32 @@ def configured_api_key_env_names(config: dict[str, Any]) -> list[str]:
     # MAIN model path (model_router._build_model_client swaps the client to
     # https://api.ollama.com when local is unreachable). Without this the key
     # is loaded only for the research subsystem (research.ollama.api_key_env).
-    top_ollama = config.get("ollama", {}) or {}
+    # Provider blocks resolve via the single normalization layer so a custom
+    # api_key_env under providers.<id> is honored, not just the legacy
+    # top-level block.
+    try:
+        from tools.config.loader import get_provider_config
+
+        top_ollama_env = str(get_provider_config(config, "ollama").get("api_key_env") or "OLLAMA_API_KEY")
+        opencode_go_env = str(get_provider_config(config, "opencode_go").get("api_key_env") or "OPENCODE_GO_API_KEY")
+    except Exception:
+        top_ollama = config.get("ollama", {}) or {}
+        top_ollama_env = str(top_ollama.get("api_key_env", "OLLAMA_API_KEY"))
+        legacy_go = config.get("opencode_go", {}) or {}
+        opencode_go_env = str(legacy_go.get("api_key_env", "OPENCODE_GO_API_KEY"))
     research = config.get("research", {}) or {}
     ollama = research.get("ollama", {}) or {}
     serpapi = research.get("serpapi", {}) or {}
     cve_lookup = config.get("cve_lookup", {}) or {}
     github = cve_lookup.get("github", {}) or {}
-    opencode_go = config.get("opencode_go", {}) or {}
 
     for value in (
-        top_ollama.get("api_key_env", "OLLAMA_API_KEY"),
+        top_ollama_env,
         ollama.get("api_key_env", "OLLAMA_API_KEY"),
         serpapi.get("api_key_env", "SERPAPI_API_KEY"),
         cve_lookup.get("api_key_env", "NVD_API_KEY"),
         github.get("token_env", "GITHUB_TOKEN"),
-        opencode_go.get("api_key_env", "OPENCODE_GO_API_KEY"),
+        opencode_go_env,
     ):
         name = str(value or "").strip()
         if name and name not in names:
@@ -194,9 +205,10 @@ def disabled_mcp_tools_without_api_key(config: dict[str, Any]) -> set[str]:
 def disabled_research_tools_message(config: dict[str, Any]) -> str:
     names = ", ".join(research_api_key_env_names(config) or ["OLLAMA_API_KEY", "SERPAPI_API_KEY"])
     return (
-        "RESEARCH_API_KEY_MISSING: MCP research tools are disabled because no configured "
+        "RESEARCH_API_KEY_MISSING: MCP web research tools are disabled because no configured "
         f"research API key is available. Set one of: {names}; run "
-        "`python main.py --setup-api-keys`; or save keys to secr.json."
+        "`python main.py --setup-api-keys`; or save keys to secr.json. "
+        "Model research assistant (local CVE intel + chat provider) stays available."
     )
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 from .base import BaseProvider, make_model_client
@@ -42,6 +43,16 @@ _DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 _DEFAULT_MODEL = "muse-spark-1.2-contributor"
 _DEFAULT_TIMEOUT = 300.0
 _MODEL_CACHE_SECONDS = 300.0
+
+_SESSION_HEADER = "x-opencode-session"
+# ponytail: process-stable UUID satisfies "one stable ID per conversation".
+_SESSION_ID = uuid.uuid4().hex
+
+
+def opencode_session_id() -> str:
+    """Stable session ID sent as ``x-opencode-session`` on every OpenCode Go request."""
+    return _SESSION_ID
+
 
 # Ollama-only kwargs that Responses does not understand.
 _DROP_KWARGS = ("options", "keep_alive", "format", "suffix", "think", "raw", "num_ctx")
@@ -838,7 +849,7 @@ class OpenCodeGoResponsesClient:
     # -------------------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {"Content-Type": "application/json", _SESSION_HEADER: _SESSION_ID}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
@@ -1358,7 +1369,7 @@ class OpenCodeGoProvider(BaseProvider):
         try:
             import httpx
 
-            headers = {"Authorization": f"Bearer {api_key}"}
+            headers = {"Authorization": f"Bearer {api_key}", _SESSION_HEADER: _SESSION_ID}
             with httpx.Client(timeout=5.0, headers=headers) as client:
                 resp = client.get(f"{base_url}/models")
                 resp.raise_for_status()

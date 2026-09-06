@@ -83,6 +83,25 @@ def _target_ports_reachable(host: str, ports: list[int], timeout: float = 1.0) -
     return False
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True for loopback targets (container-lo != host-lo under sandbox)."""
+    try:
+        from tools.validation_utils import is_local_target
+
+        return bool(is_local_target(host))
+    except Exception:  # noqa: BLE001 -- preflight is best-effort, never fatal
+        return str(host or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def _loopback_mapping_enabled(config: dict[str, Any]) -> bool:
+    """True when the dev-lab host-loopback mapping is explicitly opted in."""
+    try:
+        network = (config.get("sandbox") or {}).get("network") or {}
+        return bool(network.get("map_host_loopback", False))
+    except Exception:  # noqa: BLE001 -- preflight is best-effort, never fatal
+        return False
+
+
 class BenchmarkRunner:
     """Runs one benchmark suite execution (CLI or API share this path)."""
 
@@ -338,6 +357,36 @@ class BenchmarkRunner:
             trial.failure_detail = (
                 f"target {snapshot.host} refused all declared ports {list(snapshot.ports)} -- "
                 "is the lab suite up? (docker compose -f eval_targets/docker-compose.yml up -d)"
+            )
+            trial.ended_at = datetime.now(timezone.utc).isoformat()
+            event_logger.log(
+                "target_provision_failed",
+                {"detail": trial.failure_detail},
+                trial_id=trial_id,
+                scenario_id=scenario.scenario_id,
+                level="error",
+            )
+            return trial
+
+        # 1c. Loopback containment preflight: a sandboxed worker's loopback is
+        # container-local, so a loopback lab target is unreachable by
+        # construction unless the dev-lab mapping is opted in. Fail fast as
+        # INFRASTRUCTURE_ERROR instead of burning the mission budget on 50
+        # doomed recon rounds against container-lo.
+        _sandbox_enabled = bool((self.config.get("sandbox") or {}).get("enabled", False))
+        if (
+            _is_loopback_host(snapshot.host)
+            and not sandbox_shortfall
+            and _sandbox_enabled
+            and not _loopback_mapping_enabled(self.config)
+        ):
+            trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
+            trial.failure_category = FailureCategory.SANDBOX_FAILED.value
+            trial.failure_detail = (
+                f"target {snapshot.host} is host loopback but the sandboxed worker cannot reach it "
+                "(sandbox.network.map_host_loopback:false; container-lo != host-lo). Rerun the loopback lab "
+                "with sandbox.enabled:false + benchmark.sandbox_required:false (explicit lab opt-out), or set "
+                "sandbox.network.map_host_loopback:true for dev-lab localhost."
             )
             trial.ended_at = datetime.now(timezone.utc).isoformat()
             event_logger.log(

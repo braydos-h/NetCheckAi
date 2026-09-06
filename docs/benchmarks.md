@@ -108,6 +108,16 @@ docker compose -f eval_targets/docker-compose.yml up -d   # loopback-only
 python main.py --benchmark xben
 ```
 
+> **Loopback-lab + sandbox prerequisite.** The shipped `xben` manifests target
+> `127.0.0.1`, but a sandboxed worker's loopback is container-local
+> (`sandbox.network.map_host_loopback:false`), so sandboxed exploit execution
+> cannot reach the lab by construction. Loopback trials fail fast as
+> `INFRASTRUCTURE_ERROR/SANDBOX_FAILED` instead of burning the mission budget.
+> For the loopback lab, rerun with the explicit lab opt-out
+> (`sandbox.enabled:false` + `benchmark.sandbox_required:false`), or set
+> `sandbox.network.map_host_loopback:true` (dev-lab localhost only, never for
+> production runs).
+
 A manifest can also declare `target_type: "docker"` + `target_image`, in which
 case the benchmark provisions one container per trial itself (reset strategy
 `recreate` or `restart`).

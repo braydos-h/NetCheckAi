@@ -23,7 +23,40 @@ __all__ = [
     "run_argv_in_sandbox",
     "sandbox_error_block",
     "sandbox_fallback_notice",
+    "loopback_hint",
 ]
+
+
+def loopback_hint(target_ip: str, config: Any) -> str:
+    """One-line remediation when a loopback target fails from inside the sandbox.
+
+    Sandbox loopback is container-local by design; host loopback needs the
+    explicit dev opt-in ``sandbox.network.map_host_loopback:true``. Without a
+    hint the agent retries Connection-refused commands for dozens of rounds,
+    or hallucinates a host-execution escape that does not exist (the sandbox
+    is fail-closed: no mid-run host fallback). Returns "" unless the target
+    is loopback with mapping disabled.
+    """
+    tip = (target_ip or "").strip().lower()
+    if tip not in ("127.0.0.1", "localhost", "::1"):
+        return ""
+    try:
+        sandbox_cfg = (config or {}).get("sandbox") or {}
+        if not bool(sandbox_cfg.get("enabled", True)):
+            return ""
+        network = sandbox_cfg.get("network") or {}
+        if bool(network.get("map_host_loopback", False)):
+            return ""
+    except Exception:  # ponytail: bare except intentional -- hint never blocks results
+        return ""
+    return (
+        "HINT: target is host loopback but sandbox loopback is container-local "
+        "(sandbox.network.map_host_loopback:false). All commands run inside the disposable "
+        "worker -- there is no host-execution fallback, do not claim you switched. Do not "
+        "retry the same loopback probe; treat as TARGET_UNREACHABLE and report the operator "
+        "prerequisite (sandbox.network.map_host_loopback:true for dev-lab localhost, or "
+        "sandbox.enabled:false).\n"
+    )
 
 
 def collect_command_targets(command: str) -> list[str]:

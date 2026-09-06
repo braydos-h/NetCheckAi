@@ -151,3 +151,29 @@ class TestDockerVersion:
         ok, version = db.docker_version()
         assert ok is True
         assert version == "27.0.3"
+
+
+class TestDockerStdin:
+    def test_input_text_sent_as_lf_bytes(self, monkeypatch):
+        """Regression: text-mode pipes mangle "\n" to "\r\n" on Windows, which
+        makes iptables-restore reject the ruleset (line 1 table name invalid)."""
+        import subprocess
+
+        seen: dict = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = b"out"
+            stderr = b""
+
+        def _fake_run(argv, **kwargs):
+            seen.update(kwargs)
+            return _Proc()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        rc, out, _ = db._docker("run", "img", input_text="*filter\nCOMMIT\n")
+        assert rc == 0
+        assert out == "out"
+        assert isinstance(seen["input"], bytes)
+        assert seen["input"] == b"*filter\nCOMMIT\n"
+        assert b"\r" not in seen["input"]

@@ -76,14 +76,18 @@ def _docker(*args: str, timeout: int = DOCKER_TIMEOUT, input_text: str = "") -> 
     fail-closes; a host-side timeout raises ``DockerCommandTimeout``.
     """
     try:
+        # Binary mode on purpose: text-mode pipes translate "\n" to os.linesep
+        # ("\r\n" on Windows), which corrupts iptables-restore rulesets fed on
+        # stdin ("table name 'filter' invalid", Windows-only failure).
         proc = subprocess.run(  # noqa: S603 -- fixed binary, args fully constructed
             ["docker", *args],
             capture_output=True,
-            text=True,
             timeout=timeout,
-            input=input_text if input_text else None,
+            input=input_text.encode("utf-8") if input_text else None,
         )
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        out = proc.stdout.decode("utf-8", errors="replace") if isinstance(proc.stdout, bytes) else (proc.stdout or "")
+        err = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else (proc.stderr or "")
+        return proc.returncode, out, err
     except FileNotFoundError:
         raise SandboxUnavailableError(
             "Docker CLI not found on PATH. Install Docker Desktop (Windows/macOS) or "

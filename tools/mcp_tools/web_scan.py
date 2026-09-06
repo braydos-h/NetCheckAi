@@ -382,7 +382,8 @@ def register_web_scan_tools(mcp: Any, *, ctx: ToolContext) -> None:
             cmd = " ".join(argv)
 
         # ---- sandbox path: the scanner runs inside the disposable worker
-        # (no host PATH requirement; sandbox image ships the scanners).
+        # (no host PATH requirement; only the scanners baked into the worker
+        # image are available -- the base image is minimal by design).
         if getattr(ctx, "sandbox", None) is not None:
             from tools.mcp_tools.sandbox_exec import run_argv_in_sandbox, sandbox_error_block
             from tools.sandbox.exceptions import SandboxError
@@ -406,6 +407,17 @@ def register_web_scan_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 output = output[-4000:]
                 returncode = result.exit_code
                 status = result.status
+                if returncode == 127 or "No such file or directory" in output:
+                    # The base worker image ships a minimal toolset (nmap, curl,
+                    # netcat, git) -- whatweb/nikto/etc. live in a derived
+                    # image. Say so explicitly so the agent picks another
+                    # scanner instead of retrying the same missing binary.
+                    output += (
+                        f"\nHINT: scanner {sc!r} is not installed in the sandbox worker image "
+                        "(breachpilot-sandbox:latest). Do not retry it; use a Python stdlib probe "
+                        "via write_python_file + run_python_file, or extend a derived image "
+                        "(FROM breachpilot-sandbox:latest) with the scanner."
+                    )
             except SandboxError as exc:
                 return f"WEB_SCAN_RESULT: blocked\n{sandbox_error_block(exc, tool_name='run_web_scan')}"
             try:
