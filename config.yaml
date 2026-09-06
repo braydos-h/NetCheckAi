@@ -525,7 +525,7 @@ operator_connection:
   health_check_interval_seconds: 60
   workspace_dir: exploit_workspace
 sandbox:
-  enabled: false
+  enabled: true
   backend: docker
   image: breachpilot-sandbox:latest
   fallback_native: false

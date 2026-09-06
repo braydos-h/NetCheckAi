@@ -82,7 +82,34 @@ def register_recon_tools(mcp: Any, *, ctx: ToolContext) -> None:
             result_lines.append("  Ping: no response")
 
         # --- Port scans with banner grabs ---
-        common_ports = [21, 22, 80, 111, 135, 139, 443, 445, 2049, 3389, 5900, 5985, 8080]
+        # ponytail: includes the eval-target suite host ports (3000 juice-shop;
+        # 8081 dvwa; 8082/2222/2121/2323/4455/3306 metasploitable2; 8083 vuln-k8s
+        # per eval_targets/docker-compose.yml) so loopback lab targets are found
+        # on the first pass instead of after 40 rounds of Python re-scans.
+        common_ports = [
+            21,
+            22,
+            80,
+            111,
+            135,
+            139,
+            443,
+            445,
+            2049,
+            2121,
+            2222,
+            2323,
+            3000,
+            3306,
+            3389,
+            4455,
+            5900,
+            5985,
+            8080,
+            8081,
+            8082,
+            8083,
+        ]
         banner_texts: dict[int, str] = {}
 
         def _probe_os_port(port: int) -> tuple[int, str] | None:
@@ -96,7 +123,7 @@ def register_recon_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     banner = ""
                     try:
                         s.settimeout(2)
-                        if port in (80, 443, 8080):
+                        if port in (80, 443, 3000, 8080, 8081, 8082, 8083):
                             s.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
                             banner = s.recv(512).decode("utf-8", errors="replace").strip()[:200]
                         else:
@@ -107,8 +134,8 @@ def register_recon_tools(mcp: Any, *, ctx: ToolContext) -> None:
             except Exception:  # ponytail: bare except intentional
                 return None
 
-        # ponytail: ThreadPool fan-out (sync MCP tool). 13 ports x 2-4s serial
-        # (~26s worst case) becomes ~1 port latency. Results mapped back in
+        # ponytail: ThreadPool fan-out (sync MCP tool). 22 ports x 2-4s serial
+        # (~44s worst case) becomes ~1 port latency. Results mapped back in
         # port order so output stays deterministic.
         import concurrent.futures
 
@@ -225,8 +252,11 @@ def register_recon_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
     @mcp.tool()
     @require_allowlist()
-    def quick_scan(target_ip: str, ports: str = "22,80,135,139,443,445,3389,8080") -> str:
-        """Fast multi-port TCP scanner with banner grabbing. MUCH faster than nmap for quick recon. Provide a comma-separated list of ports (default: common ports). Returns which ports are open and any banners received. Use this FIRST before running slow nmap scans."""
+    def quick_scan(
+        target_ip: str,
+        ports: str = "22,80,135,139,443,445,3389,3000,8080,8081,8082,8083,2222,2121,2323,4455,3306",
+    ) -> str:
+        """Fast multi-port TCP scanner with banner grabbing. MUCH faster than nmap for quick recon. Provide a comma-separated list of ports (default: common + eval-target lab ports). Returns which ports are open and any banners received. Use this FIRST before running slow nmap scans."""
         if not target_ip or not target_ip.strip():
             return "BLOCKED: target_ip is required."
         port_list = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]

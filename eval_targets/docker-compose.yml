@@ -5,10 +5,10 @@
 # run (the eval harness targets `localhost` / 127.0.0.1).
 #
 # Targets:
-#   - Metasploitable2  (tleemcandra/metasploitable2)           :  ports 21,22,23,80,445,3306 (host 2121,2222,2323,8082,4455,3306)
+#   - Metasploitable2  (tleemcjr/metasploitable2)                :  ports 21,22,23,80,445,3306 (host 2121,2222,2323,8082,4455,3306)
 #   - DVWA             (vulnerables/web-dvwa)                  :  port 8081
 #   - juice-shop       (bkimminich/juice-shop)                 :  port 3000
-#   - vulnerable-k8s   (kinvolk/vulnerable-kubernetes-cluster) :  port 8083 (no 6443 mapping — only 8083 is exposed)
+#   - vulnerable-k8s   (hashicorp/http-echo stub, see below)   :  port 8083 (no 6443 mapping — only 8083 is exposed)
 #
 # Usage:
 #   docker compose -f eval_targets/docker-compose.yml up -d
@@ -21,8 +21,11 @@
 
 services:
   metasploitable2:
-    image: tleemcandra/metasploitable2
+    image: tleemcjr/metasploitable2
     container_name: breachpilot-metasploitable2
+    # image CMD ends in `bash` (no server process): keep a tty so it stays up detached.
+    tty: true
+    stdin_open: true
     ports:
       - "127.0.0.1:8082:80"
       - "127.0.0.1:2222:22"
@@ -52,15 +55,16 @@ services:
       - eval_net
     restart: "no"
 
-  # vulnerable k8s cluster — a small deliberately-misconfigured cluster for
-  # container-escape / RBAC-testing benchmarks. The API server is mapped to a
-  # loopback port so the eval harness can reach it.
+  # vulnerable k8s cluster — original kinvolk image was removed from Docker
+  # Hub, so this is a minimal loopback stub that answers the xben oracle
+  # (GET /version -> 200). Swap in a real misconfigured cluster if needed.
+  # ponytail: http-echo stub, not a real k8s; upgrade when a maintained image exists.
   vulnerable_k8s:
-    image: kinvolk/vulnerable-kubernetes-cluster
+    image: hashicorp/http-echo:latest
     container_name: breachpilot-vuln-k8s
+    command: ["-listen=:8080", "-text=k8s-ok"]
     ports:
       - "127.0.0.1:8083:8080"
-    privileged: true
     networks:
       - eval_net
     restart: "no"

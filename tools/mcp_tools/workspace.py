@@ -123,11 +123,15 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         # ponytail: static body scan, same ceiling as terminal._target_lock_block
         # -- catches literal IPs/URLs; a dynamically-constructed or DNS-resolved
         # destination is not caught (raise via allowed_targets or accept the gap).
+        # Scanner-verb extraction is off here: that argv heuristic is built for
+        # shell, and on Python source it misfires (an "nmap -sV" mention in a
+        # comment plus "s.settimeout(...)" blocks the script as "Target
+        # s.settimeout is not in the explicit allowlist").
         try:
             _body = script_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             _body = ""
-        _block = _target_lock_block(_body, config, allow_empty=True)
+        _block = _target_lock_block(_body, config, allow_empty=True, include_scanner_targets=False)
         if _block:
             return f"BLOCKED: {_block}\nTOOL: run_python_file\nSCRIPT: {cleaned}"
 

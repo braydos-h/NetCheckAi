@@ -123,3 +123,54 @@ def test_target_lock_blocks_unauthorized_fqdn_after_p(monkeypatch) -> None:
     block = _target_lock_block("nmap -p 445 evil.example.com", config)
     assert block is not None
     assert "evil.example.com" in block
+
+
+# ── Python-source body scans: loopback/bind + attribute FPs ─────────────────
+# (test.log: legit recon scripts were blocked as "Target 0.0.0.0 ..." from a
+# bind() call and "Target s.settimeout ..." from an nmap mention in a comment
+# plus s.settimeout(...). The shell lock stays strict; the Python body scan
+# skips the shell-oriented scanner-verb heuristic and loopback tokens.)
+
+
+def _lock_config(*allowed: str) -> dict:
+    return {"exploit": {"require_explicit_allowlist": True, "allowed_targets": list(allowed)}}
+
+
+def _clear_target_env(monkeypatch) -> None:
+    for var in ("EXPLOIT_TARGET", "EXPLOIT_TARGET_IP", "EXPLOIT_TARGET_DOMAIN", "EXPLOIT_DISCOVERED_TARGETS"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_python_body_scan_ignores_bind_all_and_loopback(monkeypatch) -> None:
+    """bind(('0.0.0.0', ...)) listens, it does not pivot -- must not block."""
+    from tools.mcp_tools.terminal import _target_lock_block
+
+    _clear_target_env(monkeypatch)
+    body = "import socket\ns = socket.socket()\ns.bind(('0.0.0.0', 4444))\ns.connect(('127.0.0.1', 8081))\n"
+    assert _target_lock_block(body, _lock_config("127.0.0.1"), allow_empty=True) is None
+
+
+def test_python_body_scan_ignores_scanner_mention_plus_settimeout(monkeypatch) -> None:
+    """An 'nmap -sV' mention in a comment plus s.settimeout(...) must not
+    extract 's.settimeout' as a scan target in Python-source scans."""
+    from tools.mcp_tools.terminal import _target_lock_block
+
+    _clear_target_env(monkeypatch)
+    body = (
+        "# like nmap -sV but in python\nimport socket\ns = socket.socket()\n"
+        "s.settimeout(2)\ns.connect(('127.0.0.1', 8081))\n"
+    )
+    assert _target_lock_block(body, _lock_config("127.0.0.1"), allow_empty=True, include_scanner_targets=False) is None
+
+
+def test_python_body_scan_still_blocks_off_target_ip(monkeypatch) -> None:
+    """The lock is not weakened: a literal off-target IP in Python source
+    still blocks, with or without the scanner heuristic."""
+    from tools.mcp_tools.terminal import _target_lock_block
+
+    _clear_target_env(monkeypatch)
+    body = "import socket\ns = socket.socket()\ns.connect(('10.0.0.99', 4444))\n"
+    for kw in ({}, {"include_scanner_targets": False}):
+        block = _target_lock_block(body, _lock_config("127.0.0.1"), allow_empty=True, **kw)
+        assert block is not None
+        assert "10.0.0.99" in block

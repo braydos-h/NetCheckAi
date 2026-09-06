@@ -4,6 +4,7 @@ Flow per trial (docs/benchmarks.md §architecture):
 
     provider scenario
       -> provision/reset target          (tools.benchmark.targets)
+      -> preflight port reachability     (fail fast when the lab is down)
       -> run BreachPilot mission         (tools.benchmark.agent_runner, sandboxed
                                           when sandbox.enabled — never a host fallback)
       -> independent verification        (tools.benchmark.verifier, eval_checks executors)
@@ -20,6 +21,7 @@ INFRASTRUCTURE_ERROR, never as exploitation failures.
 from __future__ import annotations
 
 import asyncio
+import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +61,26 @@ _PROGRESS = Callable[[dict[str, Any]], None]
 def mint_run_id() -> str:
     """Unique benchmark run id (filesystem-safe)."""
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + format(time.monotonic_ns() % 100000, "05d")
+
+
+def _target_ports_reachable(host: str, ports: list[int], timeout: float = 1.0) -> bool:
+    """True when at least one declared target port accepts TCP.
+
+    ponytail: stdlib connect probe so a down lab (eval_targets/docker-compose
+    not up) fails fast as INFRASTRUCTURE_ERROR instead of burning the whole
+    mission budget on 50 recon rounds against refused ports.
+    """
+    for port in ports or []:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class BenchmarkRunner:
@@ -306,6 +328,26 @@ class BenchmarkRunner:
             scenario_id=scenario.scenario_id,
             target=snapshot.host,
         )
+
+        # 1b. Preflight: a host-type lab target whose declared ports all
+        # refuse is down (compose suite not up) -- fail fast instead of
+        # running a doomed mission. No ports declared means nothing to probe.
+        if snapshot.ports and not _target_ports_reachable(snapshot.host, snapshot.ports):
+            trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
+            trial.failure_category = FailureCategory.TARGET_PROVISION_FAILED.value
+            trial.failure_detail = (
+                f"target {snapshot.host} refused all declared ports {list(snapshot.ports)} -- "
+                "is the lab suite up? (docker compose -f eval_targets/docker-compose.yml up -d)"
+            )
+            trial.ended_at = datetime.now(timezone.utc).isoformat()
+            event_logger.log(
+                "target_provision_failed",
+                {"detail": trial.failure_detail},
+                trial_id=trial_id,
+                scenario_id=scenario.scenario_id,
+                level="error",
+            )
+            return trial
 
         # 2. Sandbox gate: required-but-unavailable is infrastructure failure.
         if sandbox_shortfall:

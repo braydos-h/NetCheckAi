@@ -255,3 +255,44 @@ def test_no_scenarios_match(tmp_path):
         runner.run(RunConfig(suite="fake", scenario_ids=["does-not-exist"], trials=1, sandbox_required=False))
     )
     assert "error" in payload
+
+
+def test_target_ports_reachable_helper() -> None:
+    """Unit probe: an open loopback port is reachable; closed and empty are not."""
+    import socket as _socket
+
+    from tools.benchmark.runner import _target_ports_reachable
+
+    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    open_port = srv.getsockname()[1]
+    try:
+        assert _target_ports_reachable("127.0.0.1", [open_port]) is True
+    finally:
+        srv.close()
+    assert _target_ports_reachable("127.0.0.1", [open_port]) is False
+    assert _target_ports_reachable("127.0.0.1", []) is False
+
+
+def test_unreachable_target_ports_is_infrastructure_error(tmp_path, runner_cls_patched):
+    """A host-type scenario whose declared ports all refuse fails fast as
+    INFRASTRUCTURE_ERROR/TARGET_PROVISION_FAILED (down lab) without running
+    the mission -- the test.log waste was 50 recon rounds vs refused ports."""
+    import socket as _socket
+
+    probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    closed_port = probe.getsockname()[1]
+    probe.close()
+
+    seed_fake_suite([_scenario("s1", target_ports=[closed_port])])
+    mission = runner_cls_patched([_verified_mission()])
+    runner = BenchmarkRunner(_config(tmp_path), Path("config.yaml"), verifier_factory=lambda s: _v(s, _pass_executor))
+    payload = asyncio.run(runner.run(RunConfig(suite="fake", scenario_ids=["s1"], trials=1, sandbox_required=False)))
+    trial = payload["trials"][0]
+    assert trial["status"] == TrialStatus.INFRASTRUCTURE_ERROR.value
+    assert trial["failure_category"] == FailureCategory.TARGET_PROVISION_FAILED.value
+    assert "up -d" in trial["failure_detail"]
+    assert mission.calls == []  # mission never ran
+    assert payload["summary"]["infra_error_count"] == 1

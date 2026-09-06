@@ -15,6 +15,12 @@ from tools.validation_utils import extract_ips_from_command, is_target_in_allowl
 
 __all__ = ["_opsec_advisory_block", "_target_lock_block"]
 
+# The listen-all wildcard is never a pivot target: ``socket.bind(("0.0.0.0",
+# ...))`` listens, it does not connect anywhere. Loopback *names* such as
+# ``localhost`` / ``::1`` stay gated -- they are real connection targets and
+# the lock pins them (see test_run_exploit_terminal_blocks_ipv6_not_in_allowlist).
+_BIND_ALL_TOKENS = frozenset({"0.0.0.0"})
+
 
 def _opsec_advisory_block(sanitized_command: str, config: Any) -> str:
     """Build an advisory OPSEC feedback block for a command the AI just ran.
@@ -50,7 +56,9 @@ def _opsec_advisory_block(sanitized_command: str, config: Any) -> str:
         return ""
 
 
-def _target_lock_block(command: str, config: Any, *, allow_empty: bool = False) -> str | None:
+def _target_lock_block(
+    command: str, config: Any, *, allow_empty: bool = False, include_scanner_targets: bool = True
+) -> str | None:
     """Return a block reason if ``command`` touches a host outside the target
     allowlist, else None.
 
@@ -68,6 +76,11 @@ def _target_lock_block(command: str, config: Any, *, allow_empty: bool = False) 
     for static literal scans (e.g. a Python script body) where the absence of
     literals means no literal pivot -- and where the tool's structured
     ``target_ip`` gate already denies an empty target.
+    ``include_scanner_targets=False`` is only for Python-source scans
+    (``run_python_file``): the scanner-verb argv heuristic is built for shell,
+    and on Python source it misfires (an ``nmap -sV`` mention in a comment
+    plus ``s.settimeout(...)`` extracts ``s.settimeout`` as a "target").
+    Literal-IP / URL / socket.connect gates still apply there.
     """
     exploit_cfg = (config or {}).get("exploit", {})
     if not exploit_cfg.get("require_explicit_allowlist", False):
@@ -82,9 +95,10 @@ def _target_lock_block(command: str, config: Any, *, allow_empty: bool = False) 
     for _ip in extract_ips_from_command(command):
         if _ip not in _dest_tokens:
             _dest_tokens.append(_ip)
-    for _tok in _extract_scanner_targets(command):
-        if _tok not in _dest_tokens:
-            _dest_tokens.append(_tok)
+    if include_scanner_targets:
+        for _tok in _extract_scanner_targets(command):
+            if _tok not in _dest_tokens:
+                _dest_tokens.append(_tok)
     if not _dest_tokens and not allow_empty:
         # Fail closed: a target-touching free-text command that names no
         # destination cannot prove it stays inside the allowlist (bare
@@ -93,12 +107,15 @@ def _target_lock_block(command: str, config: Any, *, allow_empty: bool = False) 
         return (
             "No allowlisted target found in command. Target-touching tools must "
             "name their destination literally so it can be checked against "
-            "exploit.allowed_targets."
+            "exploit.allowed_targets. (For local enumeration, declare scope "
+            "first, e.g. 'echo <target-ip> & whoami & hostname'.)"
         )
     for _tok in _dest_tokens:
         _decoded = _cmd_endpoint_ips(_tok)
         _targets = _decoded if _decoded else [_tok]
         for _t in _targets:
+            if isinstance(_t, str) and _t.strip().lower() in _BIND_ALL_TOKENS:
+                continue
             if not is_target_in_allowlist(_t, allowed_targets):
                 return (
                     f"Target {_t} is not in the explicit allowlist. "
