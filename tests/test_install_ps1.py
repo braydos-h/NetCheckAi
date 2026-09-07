@@ -88,7 +88,6 @@ def test_exit_codes_documented_and_defined(script: str) -> None:
     ):
         assert f"$script:{name}" in script, f"exit code ${name} not defined"
     assert "Exit codes:" in script, "exit codes not documented in help"
-    assert meaning  # keep the mapping table honest (used below)
     for code in EXIT_CODES:
         assert str(code) in script, f"exit code {code} not referenced"
 
