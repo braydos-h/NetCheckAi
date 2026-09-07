@@ -25,6 +25,7 @@ tests monkeypatch the named wrappers in ``tools.sandbox.docker_backend``,
 never ``subprocess``.
 """
 
+from tools.sandbox.docker_lifecycle import DockerLifecycle
 from tools.sandbox.exceptions import (
     SANDBOX_POLICY_FAILED,
     SANDBOX_SCOPE_DENIED,
@@ -53,6 +54,7 @@ from tools.sandbox.models import NetworkPolicy, SandboxConfig, SandboxResult, Sa
 
 __all__ = [
     "SandboxManager",
+    "DockerLifecycle",
     "resolve_manager",
     "resolve_manager_with_fallback",
     "native_fallback_notice",

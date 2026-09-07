@@ -186,6 +186,22 @@ configuration are baked in. Rebuild/upgrade independently:
 docker build -t breachpilot-sandbox:latest docker/sandbox
 ```
 
+### Optional Docker daemon lifecycle
+
+Set `sandbox.auto_manage_docker: true` to keep Docker stopped while BreachPilot
+is idle and have the sandbox session start it on demand. The controller never
+claims or stops a daemon that was already running. On exit it stops Docker only
+when BreachPilot started it and `docker ps` reports no running containers, so
+other local workloads are left alone. On Linux it uses `sudo -n`; run
+`sudo -v` before starting BP if your sudo policy requires a password. If the
+service cannot be started, the existing strict fail-closed or explicit native
+fallback decision applies—there is no mid-session host-execution fallback.
+
+The feature is enabled in the shipped local `config.yaml`, but it is disabled
+by default in the schema for deployments that should never manage a host
+daemon. `bp --doctor` and the WebUI daemon do not start Docker; only an exploit
+MCP sandbox session acquires it.
+
 ## Secrets & environment
 
 The worker never receives the host environment. It gets a fixed set of sandbox

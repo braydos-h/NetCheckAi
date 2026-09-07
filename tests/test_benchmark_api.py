@@ -128,6 +128,75 @@ def test_auth_required(tmp_path, monkeypatch):
     _seed_and_patch_runner(monkeypatch, tmp_path)
     client = _make_client(tmp_path, monkeypatch)
     assert client.get("/api/v1/benchmarks").status_code == 401
+    assert client.get("/api/v1/benchmarks/suites/fake/readiness").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Suite readiness (lab-target preflight)
+# ---------------------------------------------------------------------------
+
+
+def _host_scenario(scenario_id: str, ports: list[int]) -> BenchmarkScenario:
+    return BenchmarkScenario(
+        suite="fake",
+        scenario_id=scenario_id,
+        name=f"Scenario {scenario_id}",
+        target_type="host",
+        target_host="127.0.0.1",
+        target_ports=ports,
+        tags=["web"],
+        oracle={"flags": [{"id": "f1", "check": {}}], "host_owned_when": "any"},
+    )
+
+
+def test_suite_readiness_reports_unreachable_lab(tmp_path, monkeypatch):
+    seed_fake_suite([_host_scenario("s1", [18081]), _host_scenario("s2", [18082])])
+    monkeypatch.setattr("tools.benchmark.targets.target_ports_reachable", lambda *a, **k: False)
+    client = _make_client(tmp_path, monkeypatch)
+    resp = client.get("/api/v1/benchmarks/suites/fake/readiness", headers=_headers())
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["suite"] == "fake"
+    assert data["ready"] is False
+    assert "up -d" in data["lab_command"]
+    assert {t["scenario_id"] for t in data["targets"]} == {"s1", "s2"}
+    assert all(t["reachable"] is False for t in data["targets"])
+
+
+def test_suite_readiness_ready_when_lab_up(tmp_path, monkeypatch):
+    seed_fake_suite([_host_scenario("s1", [18081])])
+    monkeypatch.setattr("tools.benchmark.targets.target_ports_reachable", lambda *a, **k: True)
+    client = _make_client(tmp_path, monkeypatch)
+    resp = client.get("/api/v1/benchmarks/suites/fake/readiness", headers=_headers())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ready"] is True
+
+
+def test_suite_readiness_self_provisioned_and_unknown_suite(tmp_path, monkeypatch):
+    seed_fake_suite(
+        [
+            BenchmarkScenario(
+                suite="fake",
+                scenario_id="dock",
+                name="Docker",
+                target_type="docker",
+                target_image="lab:latest",
+                target_host="127.0.0.1",
+                target_ports=[8080],
+                tags=["web"],
+                oracle={"flags": [{"id": "f1", "check": {}}], "host_owned_when": "any"},
+            )
+        ]
+    )
+    client = _make_client(tmp_path, monkeypatch)
+    resp = client.get("/api/v1/benchmarks/suites/fake/readiness", headers=_headers())
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ready"] is True  # self-provisioned: no lab needed, no probe
+    assert data["targets"][0]["self_provisioned"] is True
+
+    resp = client.get("/api/v1/benchmarks/suites/nope/readiness", headers=_headers())
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

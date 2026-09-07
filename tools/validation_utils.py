@@ -174,6 +174,27 @@ def validate_target_or_ip(s: str) -> bool:
     return validate_target(s)
 
 
+# NTLM hash shapes: 32 hex (NT half) or 64 hex with colon (LM:NT).
+# Single source for the ``[0-9a-fA-F]{32}(:[0-9a-fA-F]{32})?`` check
+# previously inlined in ad.py / credentials.py (x5).
+_NTLM_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}(:[0-9a-fA-F]{32})?$")
+_NT_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+def validate_ntlm_hash(value: str) -> bool:
+    """True when ``value`` is a 32-hex NT hash or ``LM:NT`` pair."""
+    if not value or not isinstance(value, str):
+        return False
+    return bool(_NTLM_HASH_RE.match(value.strip()))
+
+
+def validate_nt_hash(value: str) -> bool:
+    """True when ``value`` is a bare 32-hex NT hash (krbtgt/ticketer shape)."""
+    if not value or not isinstance(value, str):
+        return False
+    return bool(_NT_HASH_RE.match(value.strip()))
+
+
 def resolve_target_to_ip(
     host: str,
     *,

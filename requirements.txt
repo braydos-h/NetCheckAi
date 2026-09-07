@@ -23,6 +23,7 @@ cryptography>=42.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-xdist>=3.0.0
+pytest-timeout>=2.0.0
 coverage>=7.3.0
 ruff>=0.6.0
 mypy>=2.0

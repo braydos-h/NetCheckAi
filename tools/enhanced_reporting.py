@@ -1056,6 +1056,8 @@ class EnhancedReportGenerator:
             )
             sections.append("</div>")
             sections.append(f"<p><strong>Summary:</strong> {_esc(finding.get('summary', ''))}</p>")
+            if finding.get("hitl_status"):
+                sections.append(f"<p><strong>HITL:</strong> {_esc(finding.get('hitl_status', ''))}</p>")
             retest_html = _format_retest_html(finding)
             if retest_html:
                 sections.append(f"<p><strong>Retest:</strong> {retest_html}</p>")
@@ -1152,6 +1154,8 @@ class EnhancedReportGenerator:
             lines.append(f"- **Confidence**: {finding['confidence']:.0%}")
             lines.append(f"- **Asset**: {finding['affected_asset']}")
             lines.append(f"- **Retest**: {_format_retest_md(finding)}")
+            if finding.get("hitl_status"):
+                lines.append(f"- **HITL**: {finding.get('hitl_status')}")
             lines.append("")
             lines.append(f"**Summary**: {finding['summary']}")
             lines.append("")
@@ -1374,6 +1378,24 @@ def _sev_class(severity: str) -> str:
     if s == "low":
         return "low"
     return "none"
+
+
+def approved_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only human-APPROVED findings (the HITL final-report filter).
+
+    Agents propose candidates (``hitl_status=PROPOSED``); a human Approves /
+    Rejects them via the WebUI Evidence tab or ``hitl_decide``. Only
+    ``APPROVED`` findings surface in the final report — PROPOSED, REJECTED,
+    and undecided (missing status) findings are hidden. Never raises: a
+    non-list input yields ``[]`` and non-dict rows are skipped.
+    """
+    if not isinstance(findings, list):
+        return []
+    return [
+        item
+        for item in findings
+        if isinstance(item, dict) and str(item.get("hitl_status") or "").strip().upper() == "APPROVED"
+    ]
 
 
 def _confidence_from_verdict(verdict: str | None) -> float:

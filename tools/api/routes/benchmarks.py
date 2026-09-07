@@ -133,6 +133,78 @@ def create_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"suite": suite_id, "scenarios": registry_scenarios(suite_id)}
 
+    @router.get("/suites/{suite_id}/readiness")
+    async def suite_readiness_route(suite_id: str, auth: str = Depends(_require_auth)) -> dict[str, Any]:
+        """Lab-target readiness for a suite (preflight before pressing Run).
+
+        Host-type scenarios are TCP-probed on their declared ports (same probe
+        the runner uses to fail fast); docker scenarios with an image are
+        self-provisioned by the runner and need no lab. A run started while
+        ``ready`` is false finishes instantly with
+        ``INFRASTRUCTURE_ERROR/TARGET_PROVISION_FAILED`` — this endpoint lets
+        the WebUI say so up front instead of looking like a skipped run.
+        """
+        from tools.benchmark import register_default_providers
+        from tools.benchmark.registry import get_provider
+        from tools.benchmark.targets import target_ports_reachable
+
+        register_default_providers()
+        try:
+            provider = get_provider(suite_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        targets: list[dict[str, Any]] = []
+        for scenario in provider.load_scenarios():
+            if scenario.target_type == "docker" and scenario.target_image:
+                targets.append(
+                    {
+                        "scenario_id": scenario.scenario_id,
+                        "target_type": scenario.target_type,
+                        "target_host": scenario.target_host,
+                        "target_ports": list(scenario.target_ports),
+                        "reachable": True,
+                        "self_provisioned": True,
+                        "detail": "runner provisions the image per trial (no lab needed)",
+                    }
+                )
+                continue
+            if scenario.target_type == "docker":
+                targets.append(
+                    {
+                        "scenario_id": scenario.scenario_id,
+                        "target_type": scenario.target_type,
+                        "target_host": scenario.target_host,
+                        "target_ports": list(scenario.target_ports),
+                        "reachable": False,
+                        "self_provisioned": False,
+                        "detail": "docker target without target_image (provision would fail)",
+                    }
+                )
+                continue
+            reachable = (
+                target_ports_reachable(scenario.target_host, list(scenario.target_ports), timeout=0.5)
+                if scenario.target_ports
+                else True
+            )
+            targets.append(
+                {
+                    "scenario_id": scenario.scenario_id,
+                    "target_type": scenario.target_type,
+                    "target_host": scenario.target_host,
+                    "target_ports": list(scenario.target_ports),
+                    "reachable": reachable,
+                    "self_provisioned": False,
+                    "detail": "" if reachable else "lab target refused all declared ports",
+                }
+            )
+        ready = all(t["reachable"] for t in targets)
+        return {
+            "suite": suite_id,
+            "ready": ready,
+            "lab_command": "docker compose -f eval_targets/docker-compose.yml up -d",
+            "targets": targets,
+        }
+
     # ── runs ────────────────────────────────────────────────────────────────────
 
     @router.get("/runs")

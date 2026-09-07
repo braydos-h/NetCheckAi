@@ -861,6 +861,12 @@ CONFIG_SCHEMA: dict[str, Any] = {
         # execution. Explicit opt-in only (default false = fail closed). The
         # WebUI home screen surfaces the degraded state.
         "fallback_native": False,
+        # When true, a sandbox session may start Docker if it is stopped and
+        # stop it on exit only when BP started it and no containers remain.
+        # Linux uses sudo -n so a background server never hangs for a password.
+        "auto_manage_docker": False,
+        "docker_start_timeout_seconds": 60,
+        "docker_stop_timeout_seconds": 30,
         # Host env vars the worker MAY receive (allowlist; never the whole env).
         "env_passthrough": [],
         "resources": {

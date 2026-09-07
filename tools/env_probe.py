@@ -18,6 +18,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+from functools import lru_cache
 from typing import Any
 
 # Curated tool list the exploit agent commonly relies on. Probed via PATH.
@@ -75,6 +76,7 @@ _PYTHON_FALLBACK: set[str] = {
 _PIP_INSTALLABLE: set[str] = {"impacket-secretsdump", "crackmapexec", "hydra"}
 
 
+@lru_cache(maxsize=1)
 def _can_passwordless_sudo() -> bool:
     """True if `sudo -n true` succeeds (passwordless sudo available)."""
     if platform.system() == "Windows":

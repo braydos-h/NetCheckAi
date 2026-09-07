@@ -185,11 +185,10 @@ def resolve_manager_with_fallback(
     cfg = SandboxConfig.from_config(config)
     if not cfg.enabled:
         return None, ""
-    probe_fn = probe or _db.docker_version
-    try:
-        ok, reason = probe_fn()
-    except Exception as exc:  # noqa: BLE001 -- a probe must never break server boot
-        ok, reason = False, f"docker probe failed: {exc}"
+    from tools.sandbox.docker_lifecycle import DockerLifecycle
+
+    lifecycle = DockerLifecycle.from_config(config, probe=probe)
+    ok, reason = lifecycle.acquire()
     if ok:
         try:
             image_ok = bool(_db.docker_image_exists(cfg.image))
@@ -728,6 +727,7 @@ def status_report(config: dict[str, Any] | None) -> dict[str, Any]:
         "user": cfg.user,
         "read_only_rootfs": cfg.read_only_rootfs,
         "fallback_native": cfg.fallback_native,
+        "auto_manage_docker": cfg.auto_manage_docker,
         "mode": "disabled",
         "fallback_reason": "",
         "docker_available": False,

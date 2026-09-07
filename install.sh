@@ -8,17 +8,18 @@
 #
 # Idempotent: safe to re-run. Run from the repository root:
 #     ./install.sh
-#     ./install.sh --uninstall   # remove the `breachpilot` command + PATH line
+#     ./install.sh --uninstall   # remove the `breachpilot`/`bp` commands + PATH line
 #
 # Env knobs: PYTHON=python3  VENV=.venv  INSTALL_KALI_TOOLS=1  SKIP_MODEL_PULL=1
-#            ADD_TO_PATH=1            # 0 skips installing the `breachpilot` command
+#            ADD_TO_PATH=1            # 0 skips installing the `breachpilot`/`bp` commands
 set -euo pipefail
 
 # --- --uninstall (run before anything else) --------------------------------
 if [[ "${1:-}" == "--uninstall" ]]; then
     BIN_DIR="$HOME/.local/bin"
-    echo "==> Removing the \`breachpilot\` command"
+    echo "==> Removing the \`breachpilot\` and \`bp\` commands"
     rm -f "$BIN_DIR/breachpilot" && echo "  [OK] removed $BIN_DIR/breachpilot" || echo "  [--] $BIN_DIR/breachpilot was not present"
+    rm -f "$BIN_DIR/bp" && echo "  [OK] removed $BIN_DIR/bp" || echo "  [--] $BIN_DIR/bp was not present"
     rm -f "$BIN_DIR/natai" && echo "  [OK] removed deprecated $BIN_DIR/natai" || true
     # Strip the guarded PATH block from any rc file we may have touched.
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
@@ -134,7 +135,7 @@ fi
 # --- 3. Python venv + requirements (resilient) ----------------------------
 # python3 itself is the one true hard requirement: without it nothing works.
 if ! have "$PYTHON"; then
-    echo "  [!] '$PYTHON' not found. Install Python 3.10+ and re-run (or set PYTHON=...)."
+    echo "  [!] '$PYTHON' not found. Install Python 3.11+ and re-run (or set PYTHON=...)."
     exit 1
 fi
 echo "==> Creating venv ($VENV) with $($PYTHON --version)"
@@ -194,6 +195,9 @@ exec "\$PY" "$REPO_ROOT/main.py" "\$@"
 EOF
     chmod +x "$BIN_DIR/breachpilot"
     echo "  [OK] breachpilot -> $BIN_DIR/breachpilot"
+    # Short command for daily use.
+    ln -sf "$BIN_DIR/breachpilot" "$BIN_DIR/bp" 2>/dev/null || cp "$BIN_DIR/breachpilot" "$BIN_DIR/bp"
+    echo "  [OK] bp -> $BIN_DIR/bp"
     # Deprecated alias for backwards compatibility
     ln -sf "$BIN_DIR/breachpilot" "$BIN_DIR/natai" 2>/dev/null || cp "$BIN_DIR/breachpilot" "$BIN_DIR/natai"
     echo "  [OK] natai (deprecated alias) -> $BIN_DIR/natai"
@@ -233,6 +237,7 @@ fi
 
 echo
 echo "Done. Next steps:"
+echo "  bp                               # launch BreachPilot from any directory"
 echo "  breachpilot                      # interactive menu (after \`source ~/.bashrc\` / new terminal)"
 echo "  breachpilot --target 10.0.0.50 --mode attack --goal backdoor"
 echo "  (or, inside the venv)  python main.py ..."

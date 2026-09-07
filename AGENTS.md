@@ -17,31 +17,48 @@ Compact guide for AI coding agents working in this repo. Read this first, then
 
 ## Commands
 
-```powershell
-# Windows (this repo's primary dev platform — Makefile targets don't run here)
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python main.py --doctor          # env check (Python/nmap/Ollama/config)
-python main.py --self-test       # safe localhost smoke test
-python main.py                   # WebUI daemon + browser (default no-args); --menu for the terminal menu
+```bash
+# Linux (primary dev platform)
+python3 -m venv .venv; source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+bp --doctor          # env check (Python/nmap/Ollama/config)
+bp --self-test       # safe localhost smoke test
+bp                   # WebUI daemon + browser (default no-args); --menu for the terminal menu
 
 # Tests (~250 files in tests/, all mock subprocess/network — no live Nmap)
-python -m pytest tests/ -v                                            # full suite
-python -m pytest tests/ -q -n auto                                     # full suite, parallel (needs pytest-xdist from .[dev])
-python -m pytest tests/test_scope_gate.py -v                          # one file
-python -m pytest tests/test_recon_pipeline.py::TestClass::test_method # one test
-python -m pytest tests/ -v -k "scope"                                 # by keyword
-python -m coverage run -m pytest tests/; python -m coverage report    # coverage (CI command; pytest-cov is not installed)
+python3 -m pytest tests/ -v                                              # full suite
+python3 -m pytest tests/ -q -n 2                                         # full suite, bounded parallelism for workstation stability
+python3 -m pytest tests/test_scope_gate.py -v                            # one file
+python3 -m pytest tests/test_recon_pipeline.py::TestClass::test_method   # one test
+python3 -m pytest tests/ -v -k "scope"                                   # by keyword
+python3 -m coverage run -m pytest tests/; python3 -m coverage report     # coverage (CI command; pytest-cov is not installed)
 
 # Lint (repo-wide, CI honest: 0 errors, 0 format diffs)
-python -m pip install -e ".[dev]"   # ruff + pytest + coverage + mypy + build + twine
-ruff check .                        # must pass (0 errors; per-file-ignores document intentional patterns)
-ruff format --check .               # must pass (0 diffs)
-mypy --follow-imports=skip tools    # must pass (256 files; disables documented in pyproject.toml [tool.mypy])
+python3 -m pip install -e ".[dev]"   # ruff + pytest + coverage + mypy + build + twine
+ruff check .                         # must pass (0 errors; per-file-ignores document intentional patterns)
+ruff format --check .                # must pass (0 diffs)
+mypy --follow-imports=skip tools     # must pass (256 files; disables documented in pyproject.toml [tool.mypy])
 ```
 
-On Linux/macOS `make install|test|test-one F=…|run|doctor|mcp-exploit` work.
-`scripts/setup-linux.sh` is a one-shot bootstrap.
+`./install.sh` is the full bootstrap (OS prereqs + Ollama + venv + WebUI +
+models + `--doctor` + `breachpilot`/`bp` launchers on `~/.local/bin`).
+`make install|test|test-one F=…|run|doctor|mcp-exploit` are thin wrappers.
+`scripts/setup-linux.sh` is the lightweight alternative (venv + deps + doctor).
+
+<details>
+<summary>Windows (legacy, secondary)</summary>
+
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py --doctor
+python main.py --self-test
+```
+
+`install.bat` / `START.bat` remain for Windows-only setups. Makefile
+targets don't run there — use the `python`/`python -m` equivalents above.
+
+</details>
 
 ## Non-obvious rules an agent will otherwise break
 
@@ -139,16 +156,6 @@ On Linux/macOS `make install|test|test-one F=…|run|doctor|mcp-exploit` work.
    3.11-3.13, coverage, repo-wide `ruff check .` + `ruff format --check .` + `mypy --follow-imports=skip tools`, package build, WebUI build+tests. Before a PR run the local commands
    listed in README §CI and verify README flags/config still match reality.
 
-9. **Agents must NEVER push to GitHub or create new branches.** Do not run
-   `git push`, `git push --force`, `git branch`, `git checkout -b`,
-   `git switch -c`, `gh repo create`, or any `gh` command that creates/pushes
-   a branch or PR. All work stays on the current local branch only. If a
-   remote update is needed, tell the user what to push and let them do it
-   manually. This is enforced by `permission.bash` deny rules in
-   `opencode.jsonc` / `~/.config/opencode/opencode.json` (`git push*` →
-   `deny`, `git checkout -b*` → `deny`, etc.) and by the `pre-push` git hook
-   — do not bypass or remove those guards.
-
 ## Workspace dirs (all gitignored runtime state)
 
 - `reports/<run_id>/` — per-run artifacts
@@ -166,6 +173,6 @@ On Linux/macOS `make install|test|test-one F=…|run|doctor|mcp-exploit` work.
   Keep security-sensitive diffs readable — don't add heavy lint presets.
 - Linux nmap `-O`/`-sS` need root: set `nmap.sudo: true` (uses `sudo -n`) or
   run as root, else `nmap.priv_fallback` (default true) auto-downgrades.
-- Windows attacker = Python-only exploits; Linux attacker = full Kali arsenal
-  (searchsploit/metasploit/hydra/crackmapexec/impacket). OS-aware instructions
-  live in the exploit agent's system prompt.
+- Linux attacker = full Kali arsenal (searchsploit/metasploit/hydra/
+  crackmapexec/impacket); Windows attacker = Python-only fallback.
+  OS-aware instructions live in the exploit agent's system prompt.

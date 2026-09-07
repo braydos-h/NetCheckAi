@@ -43,6 +43,7 @@ __all__ = [
     "docker_network_gateway",
     "docker_network_list_stale",
     "docker_container_list_stale",
+    "docker_running_containers",
     "docker_inspect_state",
     "docker_rm",
     "docker_network_rm",
@@ -161,6 +162,17 @@ def docker_container_list_stale(*, label: str = "breachpilot=true") -> list[str]
     rc, out, _err = _docker("ps", "-a", "--filter", f"label={label}", "--format", "{{.Names}}", timeout=30)
     if rc != 0:
         return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def docker_running_containers() -> list[str] | None:
+    """Return running container IDs, or ``None`` when Docker is unreachable."""
+    try:
+        rc, out, _err = _docker("ps", "-q", timeout=30)
+    except SandboxUnavailableError:
+        return None
+    if rc != 0:
+        return None
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 

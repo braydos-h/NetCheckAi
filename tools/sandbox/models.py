@@ -66,6 +66,7 @@ class SandboxConfig:
     # documented legacy host-execution mode for the whole session instead of
     # failing every execution closed. The default is false: fail closed.
     fallback_native: bool = False
+    auto_manage_docker: bool = False
     env_passthrough: list[str] = field(default_factory=list)
     memory_mb: int = 4096
     cpus: float = 2.0
@@ -116,6 +117,7 @@ class SandboxConfig:
             user=str(sec.get("user", "sandbox") or "sandbox").strip(),
             read_only_rootfs=_as_bool(sec.get("read_only_rootfs"), True),
             fallback_native=_as_bool(sec.get("fallback_native"), False),
+            auto_manage_docker=_as_bool(sec.get("auto_manage_docker"), False),
             env_passthrough=passthrough,
             memory_mb=_as_int(resources.get("memory_mb"), 4096, minimum=256),
             cpus=_as_float(resources.get("cpus"), 2.0, minimum=0.1),

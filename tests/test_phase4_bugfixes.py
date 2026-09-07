@@ -158,7 +158,7 @@ class _StubExecutor:
 
 
 @pytest.mark.asyncio
-async def test_execute_task_batch_no_deadlock_with_many_retryable(tmp_path: Path) -> None:
+async def test_execute_task_batch_no_deadlock_with_many_retryable(tmp_path: Path, monkeypatch) -> None:
     """≥3 failing retryable tasks must not deadlock the semaphore(3)."""
     from tools.autonomous_orchestrator import (
         AttackPhase,
@@ -178,27 +178,23 @@ async def test_execute_task_batch_no_deadlock_with_many_retryable(tmp_path: Path
     async def _nosleep(*_a: Any, **_k: Any) -> None:
         return None
 
-    orig_sleep = asyncio.sleep
-    asyncio.sleep = _nosleep  # type: ignore[assignment]
-    try:
-        tasks = [
-            AttackTask(
-                task_id=f"t{i}",
-                phase=AttackPhase.EXPLOITATION,
-                module_name=f"m{i}",
-                target="10.0.0.5",
-                max_retries=1,
-            )
-            for i in range(5)
-        ]
-        state = AttackState(target="10.0.0.5")
-        # The old recursive-inside-semaphore code deadlocked here forever.
-        await asyncio.wait_for(
-            orch._execute_task_batch(tasks, state),  # type: ignore[attr-defined]
-            timeout=5.0,
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+    tasks = [
+        AttackTask(
+            task_id=f"t{i}",
+            phase=AttackPhase.EXPLOITATION,
+            module_name=f"m{i}",
+            target="10.0.0.5",
+            max_retries=1,
         )
-    finally:
-        asyncio.sleep = orig_sleep  # type: ignore[assignment]
+        for i in range(5)
+    ]
+    state = AttackState(target="10.0.0.5")
+    # The old recursive-inside-semaphore code deadlocked here forever.
+    await asyncio.wait_for(
+        orch._execute_task_batch(tasks, state),  # type: ignore[attr-defined]
+        timeout=5.0,
+    )
 
     # max_retries=1 -> 1 initial + 1 retry = 2 executions per task.
     assert stub.calls == 10
@@ -557,14 +553,14 @@ def _text(result) -> str:
     return "".join(parts)
 
 
-def _stub_run_ok(*_a: Any, **_k: Any) -> tuple[int, str, str]:
-    return (0, "ok output", "")
+def _stub_run_ok(*_a: Any, **_k: Any) -> tuple[str, int, str, float]:
+    return ("completed", 0, "ok output", 0.0)
 
 
 @pytest.mark.asyncio
 async def test_lateral_exec_accepts_lm_nt_hash(monkeypatch, tmp_path: Path) -> None:
     """Bug #13: a valid LM:NT (64-hex with colon) hash was rejected before."""
-    monkeypatch.setattr("tools.mcp_tools.credentials._run_with_pgrp_timeout", _stub_run_ok)
+    monkeypatch.setattr("tools.mcp_tools.credentials.run_argv_captured", _stub_run_ok)
     mcp = _make_server(tmp_path)
     text = _text(
         await mcp.call_tool(
@@ -584,7 +580,7 @@ async def test_lateral_exec_accepts_lm_nt_hash(monkeypatch, tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_lateral_exec_accepts_nt_only_hash(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("tools.mcp_tools.credentials._run_with_pgrp_timeout", _stub_run_ok)
+    monkeypatch.setattr("tools.mcp_tools.credentials.run_argv_captured", _stub_run_ok)
     mcp = _make_server(tmp_path)
     text = _text(
         await mcp.call_tool(

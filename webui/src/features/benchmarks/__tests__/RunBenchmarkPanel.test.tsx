@@ -12,10 +12,12 @@ import { RunBenchmarkPanel } from "@/features/benchmarks/RunBenchmarkPanel";
 import type { ScenarioInfo } from "@/features/benchmarks/types";
 
 const fetchSuiteScenarios = vi.fn();
+const fetchSuiteReadiness = vi.fn();
 const startBenchmarkRun = vi.fn();
 
 vi.mock("@/features/benchmarks/api", () => ({
   fetchSuiteScenarios: (...args: unknown[]) => fetchSuiteScenarios(...args),
+  fetchSuiteReadiness: (...args: unknown[]) => fetchSuiteReadiness(...args),
   startBenchmarkRun: (...args: unknown[]) => startBenchmarkRun(...args),
 }));
 
@@ -84,6 +86,7 @@ function renderPanel() {
 describe("RunBenchmarkPanel", () => {
   it("auto-loads the scenarios of the initially selected suite", async () => {
     fetchSuiteScenarios.mockResolvedValue({ suite: "xben", scenarios: SCENARIOS });
+    fetchSuiteReadiness.mockResolvedValue({ suite: "xben", ready: true, lab_command: "", targets: [] });
     renderPanel();
     await waitFor(() => {
       expect(screen.getByText("xben-dvwa")).toBeInTheDocument();
@@ -95,6 +98,7 @@ describe("RunBenchmarkPanel", () => {
   it("sends exactly the checked scenario ids and no tags when starting a run", async () => {
     const user = userEvent.setup();
     fetchSuiteScenarios.mockResolvedValue({ suite: "xben", scenarios: SCENARIOS });
+    fetchSuiteReadiness.mockResolvedValue({ suite: "xben", ready: true, lab_command: "", targets: [] });
     startBenchmarkRun.mockResolvedValue({ run_id: "r9", state: "running" });
     renderPanel();
     await waitFor(() => {
@@ -115,6 +119,7 @@ describe("RunBenchmarkPanel", () => {
     const user = userEvent.setup();
     fetchSuiteScenarios.mockRejectedValueOnce(new Error("boom"));
     fetchSuiteScenarios.mockResolvedValue({ suite: "xben", scenarios: SCENARIOS });
+    fetchSuiteReadiness.mockResolvedValue({ suite: "xben", ready: true, lab_command: "", targets: [] });
     renderPanel();
     await waitFor(() => {
       expect(screen.getByText(/Failed to load scenarios/)).toBeInTheDocument();
@@ -125,5 +130,43 @@ describe("RunBenchmarkPanel", () => {
       expect(screen.getByText("xben-dvwa")).toBeInTheDocument();
     });
     expect(screen.queryByText(/Failed to load scenarios/)).not.toBeInTheDocument();
+  });
+
+  it("warns when the lab targets are unreachable, with the lab start command", async () => {
+    fetchSuiteScenarios.mockResolvedValue({ suite: "xben", scenarios: SCENARIOS });
+    fetchSuiteReadiness.mockResolvedValue({
+      suite: "xben",
+      ready: false,
+      lab_command: "docker compose -f eval_targets/docker-compose.yml up -d",
+      targets: [
+        {
+          scenario_id: "xben-dvwa",
+          target_type: "host",
+          target_host: "127.0.0.1",
+          target_ports: [8081],
+          reachable: false,
+          self_provisioned: false,
+          detail: "lab target refused all declared ports",
+        },
+      ],
+    });
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("benchmark-lab-warning")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Lab targets unreachable/)).toBeInTheDocument();
+    expect(screen.getByText(/docker compose -f eval_targets\/docker-compose\.yml up -d/)).toBeInTheDocument();
+    // The warning never blocks starting a run (docker suites self-provision).
+    expect(screen.getByTestId("run-benchmark-button")).toBeEnabled();
+  });
+
+  it("shows no lab warning when the lab is reachable", async () => {
+    fetchSuiteScenarios.mockResolvedValue({ suite: "xben", scenarios: SCENARIOS });
+    fetchSuiteReadiness.mockResolvedValue({ suite: "xben", ready: true, lab_command: "", targets: [] });
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("xben-dvwa")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("benchmark-lab-warning")).not.toBeInTheDocument();
   });
 });

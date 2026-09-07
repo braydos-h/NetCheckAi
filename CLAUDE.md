@@ -20,32 +20,36 @@ The operator must only ever run this against networks they own or are explicitly
 
 ### Install & verify
 ```bash
-# Linux / macOS
+# Linux (primary platform)
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 nmap --version                               # must be on PATH or set nmap.path in config.yaml
 ollama show glm-5.2:cloud                    # default model — verify reachable
 ```
+<details>
+<summary>Windows PowerShell (legacy, secondary)</summary>
+
 ```powershell
-# Windows PowerShell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 nmap --version
 ollama show glm-5.2:cloud
 ```
-On Linux, nmap `-O`/`-sS` need root; set `nmap.sudo: true` in `config.yaml` (uses `sudo -n`) or run as root — otherwise the defensive server auto-downgrades those flags (`nmap.priv_fallback`, default true).
+</details>
 
-### Makefile targets (Linux/macOS convenience)
+On Linux, nmap `-O`/`-sS` need root; set `nmap.sudo: true` in `config.yaml` (uses `sudo -n`) or run as root — otherwise the defensive server auto-downgrades those flags (`nmap.priv_fallback`, default true). The full Kali arsenal (metasploit, searchsploit, hydra, impacket, crackmapexec, tmux, nmap) is expected on Linux — install it with `INSTALL_KALI_TOOLS=1 ./install.sh`; Windows is a Python-only fallback.
+
+### Makefile targets (Linux convenience)
 ```bash
 make install          # venv + pip install -r requirements.txt
 make install-dev      # venv + pip install -e ".[dev]"
-make doctor           # python main.py --doctor
-make self-test        # python main.py --self-test
+make doctor           # python3 main.py --doctor
+make self-test        # python3 main.py --self-test
 make test             # full pytest suite
 make test-one F=tests/test_scope_gate.py  # single file
-make run              # python main.py (WebUI daemon)
+make run              # python3 main.py (WebUI daemon)
 make mcp-defensive    # defensive MCP server
 make mcp-exploit      # exploit MCP server
 make clean            # remove venv + __pycache__ dirs
@@ -53,23 +57,25 @@ make clean            # remove venv + __pycache__ dirs
 
 ### One-shot bootstrap
 ```bash
-./scripts/setup-linux.sh   # venv + deps + doctor check
+./install.sh               # full bootstrap: OS prereqs + Ollama + venv + WebUI + models + --doctor + launchers
+./scripts/setup-linux.sh   # lightweight alternative: venv + deps + doctor
 ```
 
 ### Run
 ```bash
-python main.py                               # WebUI daemon + browser (the DEFAULT no-args behavior)
-python main.py --menu                         # legacy interactive terminal menu, explicit
-python main.py --target 10.0.0.50 --mode attack --goal backdoor
-python main.py --target 10.0.0.50 --mode recon --recon-first
-python main.py --target 10.0.0.50 --mode attack --swarm --critic --reflection --adaptive-exploits
+bp                                                   # WebUI daemon + browser (the DEFAULT no-args behavior)
+bp --menu                                            # legacy interactive terminal menu, explicit
+bp --target 10.0.0.50 --mode attack --goal backdoor
+bp --target 10.0.0.50 --mode recon --recon-first
+bp --target 10.0.0.50 --mode attack --swarm --critic --reflection --adaptive-exploits
+# (equivalent without the launcher: python3 main.py ...)
 ```
 
 ### WebUI API daemon (--daemon (legacy alias: --demon) / --web)
 ```bash
-python main.py --daemon                       # start the local WebUI API on http://127.0.0.1:8765
-python main.py --daemon --api-port 9000       # custom port (legacy alias: --demon)
-python main.py --web                          # build webui/ if needed, serve it at /, open a browser
+bp --daemon                       # start the local WebUI API on http://127.0.0.1:8765
+bp --daemon --api-port 9000       # custom port (legacy alias: --demon)
+bp --web                          # build webui/ if needed, serve it at /, open a browser
 # Interactive docs: http://127.0.0.1:8765/docs
 # OpenAPI schema:  http://127.0.0.1:8765/openapi.json
 # Bearer token: generated into .webui_secret_key (gitignored) or set BREACHPILOT_API_TOKEN
@@ -80,38 +86,38 @@ python main.py --web                          # build webui/ if needed, serve it
 
 ### Legacy research CLI (writes to research_workspace/research.db)
 ```bash
-python cli.py init-mission --config mission.yaml
-python cli.py next-task
-python cli.py run-task T-00001
-python cli.py list-findings
-python cli.py generate-report F-00001
-python cli.py status
+python3 cli.py init-mission --config mission.yaml
+python3 cli.py next-task
+python3 cli.py run-task T-00001
+python3 cli.py list-findings
+python3 cli.py generate-report F-00001
+python3 cli.py status
 ```
 
 ### Tests
 ```bash
-python -m pytest tests/ -v
-python -m pytest tests/test_scope_gate.py -v          # single file
-python -m pytest tests/test_recon_pipeline.py::TestClass::test_method -v   # single test
-python -m pytest tests/ -v -k "scope"                  # by keyword
+python3 -m pytest tests/ -v
+python3 -m pytest tests/test_scope_gate.py -v          # single file
+python3 -m pytest tests/test_recon_pipeline.py::TestClass::test_method -v   # single test
+python3 -m pytest tests/ -v -k "scope"                  # by keyword
 ```
 The test suite covers scope gates, safety review, semantic memory, recon, MCP workspaces, reporting, CVE lookup, the agent loop, reliability, swarm behavior, retry logic, skills, reasoning, long sessions, peer consultation, audit chains, credential storage, Metasploit integration, and more.
 
 ### MCP servers (standalone)
 ```bash
-python mcp_server.py --transport stdio --approved-subnets 192.168.1.0/24
-python mcp_server.py --transport http --host 127.0.0.1 --port 8000 --approved-subnets 192.168.1.0/24
-python mcp_exploit_server.py   # defaults: stdio, port 8001
+python3 mcp_server.py --transport stdio --approved-subnets 192.168.1.0/24
+python3 mcp_server.py --transport http --host 127.0.0.1 --port 8000 --approved-subnets 192.168.1.0/24
+python3 mcp_exploit_server.py   # defaults: stdio, port 8001
 ```
 The HTTP transport refuses to bind to non-loopback interfaces unless `--allow-public-bind` AND `MCP_ALLOW_PUBLIC_BIND=1` are both set.
 
 ### Lint / type-check (CI-enforced, repo-wide)
 ```bash
-python -m pip install -e ".[dev]"   # includes ruff
+python3 -m pip install -e ".[dev]"   # includes ruff
 ruff check .                         # must pass (0 errors)
 ruff format --check .                # must pass (0 diffs)
 mypy --follow-imports=skip tools     # must pass (256 files)
-python -m coverage run -m pytest tests/ && python -m coverage report   # coverage (CI command; pytest-cov is not installed)
+python3 -m coverage run -m pytest tests/ && python3 -m coverage report   # coverage (CI command; pytest-cov is not installed)
 ```
 
 ## Configuration
@@ -344,8 +350,8 @@ paths/sizes/code (absolute paths write anywhere on the operator box);
 Operational guards that remain regardless of mode: command timeouts (default
 300s terminal / 300s python / 600s msf), full JSONL audit trail
 (`exploit_audit.jsonl`) with SHA256 of generated code, OS-aware tooling
-instructions (Windows attacker = Python-only exploits; Linux attacker = full
-Kali arsenal including searchsploit/metasploit/hydra/crackmapexec/impacket).
+instructions (Linux attacker = full Kali arsenal including
+searchsploit/metasploit/hydra/crackmapexec/impacket; Windows attacker = Python-only fallback).
 `tools/command_analyzer.py` is **kept and load-bearing** — the tool-layer target-lock destination extraction (`terminal._target_lock_block`, `registry.py`) plus `exploit_agent/_common.py` and `swarm_bridge.py` import `analyze_command` / `_extract_destinations` / `analysis_payload` from it. It is no longer a *policy* gate on the attack path, but it is not dormant.
 
 ## Workspace Layout
@@ -357,9 +363,9 @@ Kali arsenal including searchsploit/metasploit/hydra/crackmapexec/impacket).
 
 ## Testing Notes
 
-- **~250** test files in `tests/` (verify via `python -c "import pathlib; print(len(list(pathlib.Path('tests').glob('test_*.py'))))"`, all mock subprocess/network). No fixtures for live Nmap; everything mocks subprocess / network.
+- **~250** test files in `tests/` (verify via `python3 -c "import pathlib; print(len(list(pathlib.Path('tests').glob('test_*.py'))))"`, all mock subprocess/network). No fixtures for live Nmap; everything mocks subprocess / network.
 - New safety-relevant code needs regression tests in `test_scope_gate.py`, `test_safety_reviewer.py`, `test_validate_target.py` (or a new file if the surface is new).
-- `pyproject.toml` configures pytest with `asyncio_mode = "auto"` and `testpaths = ["tests"]`. Coverage is configured in `[tool.coverage.run]` with `source = ["tools", "main", "cli"]`; run it the way CI does — `python -m coverage run -m pytest tests/` then `python -m coverage report` (pytest-cov is NOT a dependency, so `pytest --cov` fails).
+- `pyproject.toml` configures pytest with `asyncio_mode = "auto"` and `testpaths = ["tests"]`. Coverage is configured in `[tool.coverage.run]` with `source = ["tools", "main", "cli"]`; run it the way CI does — `python3 -m coverage run -m pytest tests/` then `python3 -m coverage report` (pytest-cov is NOT a dependency, so `pytest --cov` fails).
 - Lint / type-check are CI-enforced repo-wide: `ruff check .` (0 errors) + `ruff format --check .` (0 diffs) and `mypy --follow-imports=skip tools` (256 files, 0 errors with current `disable_error_code` masks; see `.github/workflows/ci.yml`). `pyproject.toml` has `ruff` line-length 120 `select = ["E","F","W","I"]` `ignore = ["E501"]` (`pyproject.toml:102-106`) and `mypy` configs. Keep security-sensitive diffs readable.
 
 ## Things To Watch Out For
@@ -372,7 +378,7 @@ Kali arsenal including searchsploit/metasploit/hydra/crackmapexec/impacket).
 - **The model backend is Ollama Cloud by default** (`ollama.host: https://api.ollama.com` + `OLLAMA_API_KEY`; the ollama client attaches the bearer token automatically). A local daemon works by pointing `ollama.host` at it (`http://localhost:11434`) — no code change; embeddings always use `ollama.embed_host` (local by default). An unreachable/unauthenticated model backend surfaces as a `[WARN]` on the recon path or a hard fail on the attack path.
 - **ChatGPT provider is opt-in and provider-agnostic by design.** `models.provider: chatgpt` swaps the chat/generate client at the single seam `tools/model_router.py::_build_model_client` (injects a `ChatGptProxyClient` from `tools/providers/chatgpt_provider.py` instead of `ollama.Client`); every consumer already receives a `ModelClient` and is untouched. **OAuth tokens live in `~/.codex/auth.json` — never copy them into `config.yaml` or logs; `is_authenticated()` checks file existence only, never reads it.** The proxy is loopback-only (`127.0.0.1:10531`); lifecycle uses openai-oauth's own `--detach`/`stop` CLI — never Popen+kill `serve`, and never stop a proxy we didn't start (`_we_started`). **This is a provider integration, not an auth-scope change: do not weaken the target-IP allowlist, permission model, MCP target locks, or recon restrictions.** Embeddings stay on Ollama under either provider. Default `provider: ollama` behavior is byte-identical to pre-provider code (the `raw_client is None` branch), so `monkeypatch.setattr(model_router, "OllamaClient", ...)` tests stay green.
 - **Kill-chain and snapshot MCP families are conditional** (the `replay_simulate`/`peer_models` precedent): `tools/mcp_tools/killchain.py` registers nothing unless `killchain.enabled`, `tools/mcp_tools/snapshots.py` unless `snapshots.enabled` (both default OFF in schema + `config.yaml`). The loop's snapshot/counterfactual helpers (`_should_snapshot_for_action`, `_build_snapshot_manager`, `_counterfactual_enabled` in `runner/_impl.py`) are package-root patchables — extend `_sync_patchable_symbols` if you add more (see the exploit-agent patch seam rule) — and every snapshot consumer is **fail-open by contract**: a snapshot/revert failure logs a warning and the attack path proceeds. `PROXMOX_API_TOKEN` and other provider credentials are env-only, never in `config.yaml`, never logged.
-- **CI runs on every push/PR** (`.github/workflows/ci.yml` + codeql + dependency-review, `.github/dependabot.yml`): mocked test suite on Python 3.11-3.13 (`tests/`: ~250 files), coverage (`python -m coverage run -m pytest tests/` on Python 3.12), repo-wide `ruff check .` + `ruff format --check .` + `mypy --follow-imports=skip tools` (see README §CI), package build (`python -m build` + `twine check`), WebUI build+tests (`npm ci` + `tsc -b && vite build` + `vitest`), and the mocked eval suite (`.github/workflows/eval.yml`). Before a PR run `python -m pytest tests/ -v`, `ruff check .`, `ruff format --check .`, and `mypy --follow-imports=skip tools`, and verify README flags/config still match reality.
+- **CI runs on every push/PR** (`.github/workflows/ci.yml` + codeql + dependency-review, `.github/dependabot.yml`): mocked test suite on Python 3.11-3.13 (`tests/`: ~250 files), coverage (`python3 -m coverage run -m pytest tests/` on Python 3.12), repo-wide `ruff check .` + `ruff format --check .` + `mypy --follow-imports=skip tools` (see README §CI), package build (`python3 -m build` + `twine check`), WebUI build+tests (`npm ci` + `tsc -b && vite build` + `vitest`), and the mocked eval suite (`.github/workflows/eval.yml`). Before a PR run `python3 -m pytest tests/ -v`, `ruff check .`, `ruff format --check .`, and `mypy --follow-imports=skip tools`, and verify README flags/config still match reality.
 - **The README is the canonical user-facing doc**. When adding a CLI flag, MCP tool, or config key, update the relevant section there. There is no `CHANGELOG.md`; release history is the git history plus the version in `pyproject.toml` / `main.__version__`.
 - **`pyproject.toml` and `requirements.txt` are synced** — both list runtime + dev (`pip install -e ".[dev]" == pip install -r requirements.txt`). `requirements.txt` header says “Synced from pyproject.toml”. The `opencode.jsonc` file configures an Ollama Cloud provider for the opencode.ai editor, not for the app itself.
 - **`tools/mcp_tools/registry.py` is the central wiring point** for all exploit MCP tools — add tools there with the `@audit_tool` / `@require_allowlist()` decorators; `mcp_exploit_server.py` auto-discovers every `register_*_tools` via `collect_tools()` (pkgutil + AST validation, fails CI if a decorator is missing), so no manual list edit is needed.

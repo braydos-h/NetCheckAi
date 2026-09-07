@@ -13,6 +13,7 @@ into a fake exploitation failure.
 
 from __future__ import annotations
 
+import socket
 import subprocess
 from typing import Any
 
@@ -22,6 +23,7 @@ __all__ = [
     "TargetProvisionError",
     "TargetManager",
     "_docker_run",
+    "target_ports_reachable",
 ]
 
 
@@ -37,6 +39,27 @@ def _docker_run(*args: str, timeout: int = 180) -> subprocess.CompletedProcess[s
         text=True,
         timeout=timeout,
     )
+
+
+def target_ports_reachable(host: str, ports: list[int], timeout: float = 1.0) -> bool:
+    """True when at least one declared target port accepts TCP.
+
+    Stdlib connect probe so a down lab (``eval_targets/docker-compose`` not
+    up) fails fast as infrastructure error instead of burning the whole
+    mission budget on recon rounds against refused ports. Shared by the
+    runner preflight and the ``/suites/{id}/readiness`` endpoint.
+    """
+    for port in ports or []:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class TargetManager:

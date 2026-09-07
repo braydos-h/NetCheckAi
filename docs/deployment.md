@@ -16,8 +16,8 @@ guidance, and a production hardening checklist.
 
 | Platform | Status | Notes |
 |---|---|---|
-| **Windows** | **Primary** | `install.bat` one-shot bootstrap; Python-only exploit tooling (no Kali arsenal) |
-| **Linux** | Supported | `make install` / `scripts/setup-linux.sh`; full Kali arsenal (searchsploit, Metasploit, hydra, impacket) |
+| **Linux** | **Primary** | `./install.sh` one-shot bootstrap; full Kali arsenal (searchsploit, Metasploit, hydra, impacket) |
+| Windows | Legacy / secondary | `install.bat` one-shot bootstrap; Python-only exploit tooling (no Kali arsenal) |
 | macOS | Best-effort | `scripts/setup-linux.sh` covers it; untested as a primary platform |
 
 The exploit agent's system prompt is OS-aware: Windows attackers get
@@ -26,8 +26,8 @@ Python-only exploits, Linux attackers get the full Kali toolkit
 
 ## Prerequisites
 
-- **Python 3.10+** — `pyproject.toml:11` (`requires-python = ">=3.10"`);
-  3.11+ recommended. Note `main.py --doctor` rejects 3.10 (README.md:113).
+- **Python 3.11+** — `pyproject.toml:11` (`requires-python = ">=3.11"`).
+  Note `main.py --doctor` rejects 3.10 and below (README.md:113).
 - **`nmap`** on `PATH` (or set `nmap.path` in `config.yaml:63`).
 - **Ollama** — cloud default, or a local daemon (see [Ollama model
   availability](#ollama-model-availability)).
@@ -65,9 +65,18 @@ installs a `breachpilot` command to `%USERPROFILE%\.local\bin` that always runs 
 the repo root. Uninstall with `install.bat --uninstall`. `START.bat` is a
 double-click launcher that passes args through (e.g. `START.bat --menu`).
 
-### Linux (make targets / setup-linux.sh)
+### Linux (./install.sh one-shot)
 
 ```bash
+# Option 0: one-shot bootstrap (recommended — OS prereqs + Ollama + venv +
+#           WebUI + models + --doctor + `bp` launchers).
+#           See README "Quick start in 60 seconds" for the short version.
+./install.sh
+bp                        # launch from any directory; opens http://127.0.0.1:8765
+
+# Full Kali arsenal (metasploit/searchsploit/hydra/impacket):
+INSTALL_KALI_TOOLS=1 ./install.sh
+
 # Option A: make (thin wrappers, Makefile)
 make install         # venv + pip install -r requirements.txt (Makefile:14-16)
 make install-dev     # venv + pip install -e ".[dev]" (Makefile:18-20)
@@ -77,7 +86,7 @@ make run             # python main.py (Makefile:38-39)
 make test-one F=tests/test_scope_gate.py   # focused test (Makefile:35-36)
 make clean           # rm -rf .venv + caches (Makefile:50-53)
 
-# Option B: one-shot bootstrap (venv + deps + external-tool checks +
+# Option B: lightweight alternative (venv + deps + external-tool checks +
 #           best-effort `ollama pull` + --doctor)
 ./scripts/setup-linux.sh
 
@@ -87,7 +96,10 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-`scripts/setup-linux.sh` checks for `nmap`, `ollama`, `tmux`, `searchsploit`,
+`./install.sh` is the primary path (OS prereqs + Ollama + venv + WebUI +
+models + `--doctor` + `bp` launchers; `INSTALL_KALI_TOOLS=1 ./install.sh`
+for the full Kali arsenal). `scripts/setup-linux.sh` is the lightweight
+alternative: it checks for `nmap`, `ollama`, `tmux`, `searchsploit`,
 `msfconsole`, `hydra`, and `impacket` and prints install hints for anything
 missing (setup-linux.sh:42-48). It never installs or runs anything against a
 target — host prep only.
@@ -149,6 +161,16 @@ There is no `.env` auto-load — keys come from process environment variables or
   `sudo -n`), run as root, or leave `nmap.priv_fallback: true` (default) to
   auto-downgrade those flags instead of failing when unprivileged
   (config.yaml:58-65, README.md:138-139).
+  `nmap.sudo` uses `sudo -n` (non-interactive), so it needs a NOPASSWD rule
+  for nmap — enabling `nmap.sudo: true` without one fails every `-O`/`-sS`
+  scan. Add a sudoers.d exception, e.g.:
+
+  ```bash
+  echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/nmap" | sudo tee /etc/sudoers.d/breachpilot-nmap
+  ```
+
+  Verify the path first with `command -v nmap` and keep `nmap.priv_fallback:
+  true` unless privileged scans must hard-fail instead of downgrading.
 
 ## WebUI build
 
@@ -330,7 +352,7 @@ Deployment-time verification for a box you intend to run for a while:
 | Scenario | Recommendation |
 |---|---|
 | Windows operator, no Kali tools | `install.bat` (or venv + `requirements.txt`); Python-only exploits; embed host `http://localhost:11434` |
-| Linux operator, full Kali arsenal | `./scripts/setup-linux.sh`; install searchsploit/Metasploit/hydra/impacket; decide `nmap.sudo` |
+| Linux operator, full Kali arsenal | `./install.sh` (primary; `INSTALL_KALI_TOOLS=1 ./install.sh` for searchsploit/Metasploit/hydra/impacket; `scripts/setup-linux.sh` is the lightweight alternative); decide `nmap.sudo` |
 | Cloud-first LLM (default) | `ollama.host: https://api.ollama.com` + `OLLAMA_API_KEY`; embeddings stay local via `embed_host` |
 | Air-gapped / local LLM | `ollama.host: http://localhost:11434`, `ollama pull glm-5.2:cloud` + `nomic-embed-text`; no API key needed |
 | Headless service (API only) | `--daemon` (optionally `--api-port`), daemonized via systemd/NSSM; skip the SPA |

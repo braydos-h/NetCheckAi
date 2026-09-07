@@ -272,13 +272,24 @@ export function BenchmarkRunPage() {
   const onSaveBaseline = () => baselineMutation.mutate();
 
   const totalTrials = data.config.trials * Math.max(1, data.scenario_ids.length || displayTrials.length || 1);
-  const completedTrials = displayTrials.filter((t) => t.ended_at).length;
-  const progressPct = totalTrials > 0 ? Math.min(100, Math.round((completedTrials / totalTrials) * 100)) : 0;
+  const completedTrials = displayTrials.filter((t) => t.ended_at).length;  const progressPct = totalTrials > 0 ? Math.min(100, Math.round((completedTrials / totalTrials) * 100)) : 0;
   const eventList = events.data?.events ?? [];
   const elapsedSec = eventList.length > 0 ? (eventList[eventList.length - 1]?.elapsed_seconds ?? 0) : 0;
   const eventCount = eventList.length;
   const trialIds = [...new Set(displayTrials.map((t) => t.trial_id))];
   const headerBadge = orphaned ? "INTERRUPTED" : isActiveRun ? "RUNNING" : runStatusToBadge(data.status);
+
+  // Instant-finish diagnosis: a completed run whose trials all failed in the
+  // provision/sandbox preflight never attempted exploitation — surface the
+  // remediation at the top instead of burying it in the Evidence tab.
+  const provisionFailed = summary?.failure_categories?.["TARGET_PROVISION_FAILED"] ?? 0;
+  const sandboxFailed = summary?.failure_categories?.["SANDBOX_FAILED"] ?? 0;
+  const infraDetail =
+    displayTrials.find(
+      (t) => t.failure_detail && (t.failure_category === "TARGET_PROVISION_FAILED" || t.failure_category === "SANDBOX_FAILED"),
+    )?.failure_detail ?? "";
+  const showProvisionBanner = !isActiveRun && !orphaned && data.status === "completed" && provisionFailed > 0;
+  const showSandboxBanner = !isActiveRun && !orphaned && data.status === "completed" && sandboxFailed > 0;
 
   return (
     <div className="flex min-h-0 flex-col gap-2 p-2 xl:h-full xl:flex-1 xl:overflow-hidden">
@@ -355,6 +366,42 @@ export function BenchmarkRunPage() {
               The run's status stayed “running”, but no benchmark runner currently owns it — the daemon was most
               likely restarted mid-run. Trials completed before the interruption are kept below; the run cannot be
               resumed or cancelled.
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Lab down: the run finished in seconds without attempting exploitation */}
+      {showProvisionBanner && (
+        <Card className="border-amber-500/30 bg-amber-500/5" data-testid="benchmark-infra-banner">
+          <CardContent className="flex flex-wrap items-center gap-3 py-3">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+            <span className="text-sm font-medium text-amber-400">Lab targets were unreachable</span>
+            <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+              This run finished in seconds without attempting any exploitation — {provisionFailed} of {summary?.trials_total ?? displayTrials.length} trial(s)
+              failed as INFRASTRUCTURE_ERROR / TARGET_PROVISION_FAILED. That says the lab was down, nothing about
+              exploitation ability. Start the lab suite, then run the benchmark again:
+              <span className="mt-1 block rounded bg-black/30 p-1.5 font-mono text-[11px] break-all">
+                docker compose -f eval_targets/docker-compose.yml up -d
+              </span>
+              {infraDetail && <span className="mt-1 block font-mono text-[11px] break-all">{infraDetail}</span>}
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Sandbox gate: required-but-unavailable also finishes without exploitation */}
+      {showSandboxBanner && (
+        <Card className="border-amber-500/30 bg-amber-500/5" data-testid="benchmark-sandbox-banner">
+          <CardContent className="flex flex-wrap items-center gap-3 py-3">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+            <span className="text-sm font-medium text-amber-400">Sandbox unavailable</span>
+            <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+              {sandboxFailed} of {summary?.trials_total ?? displayTrials.length} trial(s) failed as INFRASTRUCTURE_ERROR
+              / SANDBOX_FAILED — the sandbox was required but unreachable, so no exploitation was attempted (there is
+              no host-execution fallback). Check <span className="font-mono">sandbox.enabled</span> and the worker
+              image, then run again.
+              {infraDetail && <span className="mt-1 block font-mono text-[11px] break-all">{infraDetail}</span>}
             </span>
           </CardContent>
         </Card>

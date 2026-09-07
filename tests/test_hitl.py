@@ -360,9 +360,7 @@ def _make_client(tmp_path: Path, monkeypatch, token: str = "test-token-012345678
     async def _fake_run_session(**kwargs):
         return {"total_actions": 0, "workspace": str(tmp_path), "audit_path": ""}
 
-    callables = Callables(
-        build_router=lambda *a, **kw: _FakeRouter(), run_session=_fake_run_session
-    )
+    callables = Callables(build_router=lambda *a, **kw: _FakeRouter(), run_session=_fake_run_session)
     from app import create_app
 
     return TestClient(create_app(config_path=config_path, callables=callables)), token

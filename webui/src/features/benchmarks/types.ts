@@ -290,6 +290,23 @@ export interface BenchmarkRunRequest {
   check_regression?: boolean;
 }
 
+export interface ReadinessTarget {
+  scenario_id: string;
+  target_type: string;
+  target_host: string;
+  target_ports: number[];
+  reachable: boolean;
+  self_provisioned: boolean;
+  detail: string;
+}
+
+export interface SuiteReadiness {
+  suite: string;
+  ready: boolean;
+  lab_command: string;
+  targets: ReadinessTarget[];
+}
+
 export interface ActiveRunStatus {
   run_id: string | null;
   state: string;

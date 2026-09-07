@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
-import time
 from typing import Any
 
 from tools.mcp_shared import _attempt_dir
-from tools.mcp_tools.attack_modules import _identify_hash_modes
-from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout
+from tools.mcp_tools.modules.hash import _identify_hash_modes
+from tools.mcp_tools.registry import ToolContext, run_argv_captured
 
 
 def register_cracking_tools(mcp: Any, *, ctx: ToolContext) -> None:
@@ -57,7 +55,14 @@ def register_cracking_tools(mcp: Any, *, ctx: ToolContext) -> None:
         hash_name = ""
         if not mode:
             ids = _identify_hash_modes(h)
+            # Drop non-hashcat modes (e.g. Argon2 "N/A" -- john-only) before exec.
+            ids = [(name, m, cmd) for name, m, cmd in ids if m != "N/A" and m.isdigit()]
             if not ids:
+                if any(m == "N/A" for _, m, _ in _identify_hash_modes(h)):
+                    return (
+                        "BLOCKED: identified hash type is not supported by hashcat "
+                        "(e.g. Argon2); retry with tool='john'."
+                    )
                 return (
                     "BLOCKED: could not identify hash type; pass hash_mode=<hashcat mode> "
                     "explicitly (e.g. 1000 for NTLM, 3200 for bcrypt)."
@@ -97,41 +102,12 @@ def register_cracking_tools(mcp: Any, *, ctx: ToolContext) -> None:
             show_argv = ["john", "--show", str(hashfile)]
 
         cmd = " ".join(crack_argv)
-        start = time.monotonic()
-        try:
-            returncode, out, err = _run_with_pgrp_timeout(
-                crack_argv,
-                timeout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            crack_status = "completed" if returncode == 0 else "failed"
-            crack_out = (out + "\n" + err)[-3000:]
-        except subprocess.TimeoutExpired:
-            crack_status = "timed_out"
-            crack_out = f"{t} timed out after {timeout}s"
-            returncode = None
-        except Exception as exc:  # ponytail: bare except intentional
-            crack_status = "error"
-            crack_out = str(exc)
-            returncode = None
-        elapsed = time.monotonic() - start
+        crack_status, returncode, crack_out, elapsed = run_argv_captured(crack_argv, timeout, max_chars=3000)
 
         # Retrieve recovered plaintext via the cracker's --show view.
         show_out = ""
         if crack_status != "error" and shutil.which(t):
-            try:
-                _rc, so, se = _run_with_pgrp_timeout(
-                    show_argv,
-                    60,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                show_out = (so + "\n" + se)[-2000:]
-            except Exception:  # ponytail: bare except intentional
-                show_out = ""
+            _, _, show_out, _ = run_argv_captured(show_argv, 60, max_chars=2000)
 
         # Parse --show output. hashcat: "hash:plain" (or "hash:salt:plain");
         # john: "username:password" lines plus a "Ng 0:00:..." summary line.

@@ -48,8 +48,8 @@ python -m pip install -r requirements.txt
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-# one-shot bootstraps (pick one):
-./install.sh               # full bootstrap (OS prereqs + Ollama + venv + breachpilot)
+# one-shot bootstrap (installs the `breachpilot` and `bp` launchers):
+./install.sh               # full bootstrap (OS prereqs + Ollama + venv + launchers)
 ./scripts/setup-linux.sh   # lightweight: venv + deps + doctor
 ```
 
@@ -80,8 +80,12 @@ Launch the WebUI daemon (the default with no arguments — builds the SPA if
 needed, serves it at http://127.0.0.1:8765, and opens a browser):
 
 ```bash
-python main.py
+bp
 ```
+
+`bp` can be run from any directory; it switches to the project root and uses
+the project virtual environment automatically. It accepts the same arguments
+as `python main.py` (for example, `bp --doctor`).
 
 Prefer the terminal? The legacy interactive questionary menu is still available:
 

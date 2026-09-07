@@ -726,6 +726,8 @@ never an automatic fallback. Full architecture + threat model:
 | `backend` | str | `docker` | Execution backend | `tools/sandbox/models.py` |
 | `image` | str | `breachpilot-sandbox:latest` | Worker image (build: `docker build -t <image> docker/sandbox`) | `tools/sandbox/docker_backend.py` |
 | `fallback_native` | bool | `true` | Boot-time degrade: unusable Docker (CLI missing, daemon down, image not built) degrades the whole session to legacy uncontained native mode with warning + WebUI banner + `SANDBOX_FALLBACK:` lines; `false` = strict fail-closed (executions denied until Docker works) | `tools/sandbox/manager.py:resolve_manager_with_fallback`, docs/sandbox.md |
+| `auto_manage_docker` | bool | `false` | When true, start Docker for a sandbox session if it is stopped, then stop it on exit only when BP started it and no containers remain; Linux requires cached/non-interactive sudo authorization | `tools/sandbox/docker_lifecycle.py` |
+| `docker_start_timeout_seconds` / `docker_stop_timeout_seconds` | int | `60` / `30` | Bounds automatic daemon startup/shutdown polling and service calls | `tools/sandbox/docker_lifecycle.py` |
 | `user` | str | `sandbox` | Container user (non-root default) | `tools/sandbox/docker_backend.py:_build_create_args` |
 | `read_only_rootfs` | bool | `true` | Read-only container rootfs; `/workspace` + tmpfs stay writable | `_build_create_args` |
 | `env_passthrough` | list[str] | `[]` | Extra host env var names the worker may receive (allowlist; never the whole env) | `tools/sandbox/manager.py:_build_env` |

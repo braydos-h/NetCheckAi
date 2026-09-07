@@ -11,6 +11,7 @@ import type {
   RunIndexRow,
   ScenarioInfo,
   SuiteInfo,
+  SuiteReadiness,
   Trial,
 } from "@/features/benchmarks/types";
 
@@ -25,6 +26,10 @@ export async function fetchOverview(): Promise<{
 
 export async function fetchSuiteScenarios(suite: string): Promise<{ suite: string; scenarios: ScenarioInfo[] }> {
   return apiFetch(`/api/v1/benchmarks/suites/${encodeURIComponent(suite)}/scenarios`);
+}
+
+export async function fetchSuiteReadiness(suite: string): Promise<SuiteReadiness> {
+  return apiFetch(`/api/v1/benchmarks/suites/${encodeURIComponent(suite)}/readiness`);
 }
 
 export async function fetchRuns(suite?: string, limit = 50): Promise<{ runs: RunIndexRow[] }> {

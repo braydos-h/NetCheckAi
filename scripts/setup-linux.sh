@@ -14,7 +14,7 @@ PYTHON="${PYTHON:-python3}"
 VENV="${VENV:-.venv}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
-    echo "  [!] '$PYTHON' not found. Install Python 3.10+ (apt install python3 / brew install python) or set PYTHON=..."
+    echo "  [!] '$PYTHON' not found. Install Python 3.11+ (apt install python3 / brew install python) or set PYTHON=..."
     exit 1
 fi
 

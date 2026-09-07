@@ -226,6 +226,75 @@ def _truncate_text(value: str, max_chars: int) -> str:
     return text[:max_chars] + "\n[truncated]"
 
 
+def tool_slug(value: Any, default: str = "unknown", limit: int = 40) -> str:
+    """Filesystem/id-safe slug (empty -> ``default``).
+
+    Single source for the ``_slug`` helper previously duplicated in
+    ``web_scan.py`` and ``hitl.py`` (different signatures, same intent).
+    """
+    import re as _re
+
+    text = _re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
+    return (text or default)[:limit].strip("-") or default
+
+
+def parse_extra_options(options: str) -> tuple[list[str], str | None]:
+    """Split free-form ``options`` into argv tokens (no shell).
+
+    Returns ``(argv, error)`` -- ``error`` is None on success (empty options
+    yields ``([], None)``). Rejects shell metacharacters with one shared
+    regex so ``web_scan`` / ``payloads`` / ``metasploit`` stop drifting
+    (``<|>`` vs ``<|> |\\\\`` variants).
+    """
+    import re as _re
+    import shlex as _shlex
+
+    opts = (options or "").strip()
+    if not opts:
+        return [], None
+    if _re.search(r"[;|&$`()]|<|>|\n", opts):
+        return [], "BLOCKED: options contains forbidden shell metacharacters."
+    try:
+        return _shlex.split(opts), None
+    except ValueError:
+        return [], "BLOCKED: options string could not be parsed (unbalanced quotes)."
+
+
+def run_argv_captured(
+    argv: list[str],
+    timeout: int,
+    *,
+    max_chars: int = 4000,
+) -> tuple[str, int | None, str, float]:
+    """Run ``argv`` via ``_run_with_pgrp_timeout``; return (status, rc, output, elapsed).
+
+    Shared replacement for the copy-pasted ``try: _run_with_pgrp_timeout /
+    TimeoutExpired / broad-except`` blocks in ``cracking.py``,
+    ``payloads.py``, ``web_scan.py``, ``credentials.py`` and ``ad.py``.
+    Output is truncated to ``max_chars`` (tail) to bound result blocks.
+    """
+    import time as _time
+
+    start = _time.monotonic()
+    try:
+        returncode, out, err = _run_with_pgrp_timeout(
+            argv,
+            timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        output = ((out or "") + "\n" + (err or ""))[-max_chars:]
+        return ("completed" if returncode == 0 else "failed"), returncode, output, _time.monotonic() - start
+    except subprocess.TimeoutExpired:
+        elapsed = _time.monotonic() - start
+        name = argv[0] if argv else "command"
+        return "timed_out", None, f"{name} timed out after {timeout}s", elapsed
+    except _EXC_GROUP_CATCH as exc:
+        _log_nested_exceptions(exc)
+        return "error", None, str(exc), _time.monotonic() - start
+
+
 def _skills_config(config: dict[str, Any] | None) -> dict[str, Any]:
     base = dict(CONFIG_SCHEMA.get("skills", {}) or {})
     overlay = (config or {}).get("skills", {}) or {}
@@ -442,6 +511,9 @@ __all__ = [
     "get_default_db",
     "make_audit_tool",
     "make_require_allowlist",
+    "parse_extra_options",
     "read_workspace",
     "register_tool_family",
+    "run_argv_captured",
+    "tool_slug",
 ]

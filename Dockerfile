@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nmap ca-certificates \
+    # NOTE: metasploit intentionally omitted (image too large); install via INSTALL_KALI_TOOLS=1 ./install.sh on a full host
+    && apt-get install -y --no-install-recommends nmap ca-certificates tmux git curl sqlmap nikto gobuster \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -18,6 +19,6 @@ COPY . .
 
 RUN mkdir -p reports research_workspace exploit_workspace
 
-EXPOSE 8001 8080
+EXPOSE 8001 8765
 
 CMD ["python", "main.py", "--doctor"]

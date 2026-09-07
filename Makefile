@@ -37,7 +37,7 @@ test:
 
 # Parallel suite (~4x faster locally; needs pip install -e ".[dev]" for pytest-xdist)
 test-fast:
-	$(BIN)/python -m pytest tests/ -q -n auto
+	$(BIN)/python -m pytest tests/ -q -n 2
 
 # Run a focused file, e.g. `make test-one F=tests/test_scope_gate.py`
 test-one:

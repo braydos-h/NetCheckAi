@@ -161,16 +161,20 @@ def test_clean_asset_preserves_ip():
 # ── Rate limit ────────────────────────────────────────────────────────────
 
 
-def test_rate_limit_enforced(scope_gate):
-    # Call many times in sequence — should hit the rate limit
+def test_rate_limit_enforced(scope_gate, monkeypatch):
+    # Deterministic: fake monotonic clock, 20 calls spaced 10ms apart in a
+    # 0.2s window with default 2 req/s -> exactly the first 2 pass.
+    import scope_gate as _sg
+
+    now = [1000.0]
+    monkeypatch.setattr(_sg.time, "monotonic", lambda: now[0])
     allowed_count = 0
     for _ in range(20):
         result = scope_gate.check_scope("example.com", "recon", "nmap_scan", "low")
         if result.allowed:
             allowed_count += 1
-        time.sleep(0.01)
-    # Should allow some, but not all — rate limiter will gate after ~2 per second
-    assert 2 <= allowed_count <= 4  # first few go through, others throttled
+        now[0] += 0.01
+    assert allowed_count == 2
 
 
 def test_rate_limit_resets_after_window(tmp_path):

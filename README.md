@@ -247,6 +247,12 @@ work via Docker Desktop):
 docker build -t breachpilot-sandbox:latest docker/sandbox
 ```
 
+To save laptop battery, set `sandbox.auto_manage_docker: true` (enabled in the
+shipped local config). BreachPilot starts Docker only when a sandboxed exploit
+session needs it and stops it afterward only if BP started it and no containers
+remain. Linux uses non-interactive `sudo -n`; run `sudo -v` before `bp` when
+needed. The WebUI, doctor, and recon paths do not start Docker.
+
 `python main.py --doctor` verifies Docker and the worker image when the sandbox
 is enabled. Full architecture, threat model, and residual risks:
 [docs/sandbox.md](docs/sandbox.md).
@@ -260,7 +266,28 @@ Full model: [docs/safety-model.md](docs/safety-model.md)
 
 ## Quick start in 60 seconds
 
-### Windows: double-click install
+### Linux (primary platform)
+
+```bash
+./install.sh              # full bootstrap: OS prereqs + Ollama + venv + WebUI + models + --doctor + launchers
+bp                        # launch from any directory; opens http://127.0.0.1:8765
+```
+
+Or step by step with make targets:
+
+```bash
+make install            # venv + deps
+make doctor             # env check (Python/nmap/Ollama/config)
+make run                # WebUI daemon + browser (http://127.0.0.1:8765)
+```
+
+That is the whole app. No CLI flags to memorize: everything happens in the WebUI.
+
+<details>
+<summary><strong>Windows (legacy, secondary)</strong></summary>
+
+Windows still works where cheap, but it is no longer the primary dev
+platform — the Kali arsenal is unavailable there (Python-only exploits).
 
 ```powershell
 .\install.bat    # checks Python/Node/Nmap/Ollama, creates .venv, builds WebUI, pulls models, runs --doctor
@@ -273,25 +300,18 @@ Or after install, from any terminal:
 python main.py   # opens the WebUI in your browser
 ```
 
-### Linux / macOS
-
-```bash
-./install.sh              # or: ./scripts/setup-linux.sh
-python3 main.py           # opens http://127.0.0.1:8765
-```
-
-That is the whole app. No CLI flags to memorize: everything happens in the WebUI.
+</details>
 
 ### Set your API key
 
 The default model is Ollama Cloud (`glm-5.2:cloud`). You need one key:
 
 ```bash
-python main.py --setup-api-keys   # prompts and saves to secr.json (gitignored)
+bp --setup-api-keys   # prompts and saves to secr.json (gitignored)
 # or set env:  OLLAMA_API_KEY=your_key_here
 ```
 
-Get a free key at https://ollama.com/settings/keys. Then `python main.py --doctor` should be all green.
+Get a free key at https://ollama.com/settings/keys. Then `bp --doctor` should be all green.
 
 > Prefer a different AI provider? The engine is provider-pluggable: Ollama is
 > one optional provider (OpenCode Go and ChatGPT ship built-in; the WebUI
@@ -308,14 +328,14 @@ Get a free key at https://ollama.com/settings/keys. Then `python main.py --docto
 
 | Need | Notes |
 |------|-------|
-| Python 3.11+ | `python --version`; `--doctor` rejects 3.10 |
-| Docker | Recommended (default-on sandbox). Build the worker image: `docker build -t breachpilot-sandbox:latest docker/sandbox` |
-| nmap | On `PATH` or set `nmap.path` in `config.yaml` |
+| Python 3.11+ | `python3 --version`; `--doctor` rejects 3.10 |
+| Docker Engine | Expected on Linux (default-on sandbox). Build the worker image: `docker build -t breachpilot-sandbox:latest docker/sandbox` |
+| nmap | On `PATH` or set `nmap.path` in `config.yaml`. Linux `-O`/`-sS` need root: `nmap.sudo: true` (uses `sudo -n`) or `nmap.priv_fallback` (default `true`) auto-downgrades |
 | Ollama | Cloud default (`https://api.ollama.com` + `OLLAMA_API_KEY`) or local daemon |
 | Node.js + npm | Only for the first WebUI build; auto-built on first launch if present |
-| Linux extras | Metasploit/searchsploit/impacket/hydra only on Linux. Windows runs Python-only exploits. |
+| Kali arsenal | Expected on Linux: Metasploit, searchsploit/exploitdb, hydra, impacket, crackmapexec, tmux (`INSTALL_KALI_TOOLS=1 ./install.sh`). Windows = Python-only fallback, no Kali tooling. |
 
-`python main.py --doctor` checks all of this. `python main.py --self-test` runs a safe localhost smoke test.
+`bp --doctor` checks all of this. `bp --self-test` runs a safe localhost smoke test.
 
 ---
 
@@ -324,7 +344,7 @@ Get a free key at https://ollama.com/settings/keys. Then `python main.py --docto
 One command handles everything:
 
 ```bash
-python main.py --setup-api-keys
+bp --setup-api-keys
 ```
 
 | Variable | Purpose |
@@ -415,13 +435,13 @@ Full index (36 guides): [docs/README.md](docs/README.md).
 - CI on every push and PR: Python 3.11-3.13 matrix, coverage (`coverage run -m pytest`), CodeQL, dependency-review.
 - Lint is law: `ruff check .` (0 errors), `ruff format --check .` (0 diffs), and `mypy --follow-imports=skip tools` (216 files), all CI-enforced.
 - WebUI tested: `tsc -b && vite build` plus `vitest` on every PR.
-- Graded eval loop: `python main.py --eval` scores the agent against the `eval_targets/` oracle targets (declarative flags verified independently — agent claims never decide a flag). `--save-baseline` persists a baseline and `--eval --check-regression` exits non-zero when a target's score drops beyond `eval.regression_tolerance`. A nightly workflow (`.github/workflows/eval.yml`) runs the mocked eval tests on push/PR and the live graded suite on schedule, skipping gracefully without `OLLAMA_API_KEY`.
-- Reproducible benchmark suite: `python main.py --benchmark xben [--scenario id | --tag web | --trials N]` runs sandboxed, oracle-verified benchmark trials with recorded model/git/sandbox metadata; `--save-baseline` / `--benchmark xben --check-regression` gate regressions in CI (exit 1 on hard findings). Results persist under `reports/benchmarks/<suite>/<run_id>/` with a public Markdown/HTML report, and the WebUI **Benchmarks** page shows live progress, verified-vs-claimed results, false positives, timelines, run comparison and history. See [docs/benchmarks.md](docs/benchmarks.md).
+- Graded eval loop: `bp --eval` scores the agent against the `eval_targets/` oracle targets (declarative flags verified independently — agent claims never decide a flag). `--save-baseline` persists a baseline and `--eval --check-regression` exits non-zero when a target's score drops beyond `eval.regression_tolerance`. A nightly workflow (`.github/workflows/eval.yml`) runs the mocked eval tests on push/PR and the live graded suite on schedule, skipping gracefully without `OLLAMA_API_KEY`.
+- Reproducible benchmark suite: `bp --benchmark xben [--scenario id | --tag web | --trials N]` runs sandboxed, oracle-verified benchmark trials with recorded model/git/sandbox metadata; `--save-baseline` / `--benchmark xben --check-regression` gate regressions in CI (exit 1 on hard findings). Results persist under `reports/benchmarks/<suite>/<run_id>/` with a public Markdown/HTML report, and the WebUI **Benchmarks** page shows live progress, verified-vs-claimed results, false positives, timelines, run comparison and history. See [docs/benchmarks.md](docs/benchmarks.md).
 - Kill-chain state machine (opt-in, `killchain.enabled`): a per-target stage machine tracks recon → initial access → escalation → objective; `killchain_attempt` only advances state after independent verification probes pass (agent claims can't move the chain), and a BFS plan + system-prompt briefing steer the agent toward the configured `goal_state`.
 - Snapshot + rollback (opt-in, `snapshots.enabled`): automatic snapshots before destructive actions across all three dispatch funnels (exploit loop, swarm bridge, campaign executor), backed by pluggable providers (Docker commit/rollback is the implemented path; Proxmox/libvirt/Hyper-V/VMware best-effort) and exposed as `snapshot_*` MCP tools. With `replay_simulator.counterfactual`, a failed exploit auto-reverts its snapshot and retries the mutated payload against the clean state, recording both outcomes in the final result. Fail-open by contract: a snapshot failure never blocks the attack path; provider tokens (`PROXMOX_API_TOKEN`) live in env vars only.
 
 ```bash
-python -m pytest tests/ -v
+python3 -m pytest tests/ -v
 ruff check . && ruff format --check .
 mypy --follow-imports=skip tools
 cd webui && npm ci && npm run build && npm run test
@@ -430,7 +450,7 @@ cd webui && npm ci && npm run build && npm run test
 Coverage (matches CI; uses `coverage`, not `pytest-cov`):
 
 ```bash
-python -m coverage run -m pytest tests/ && python -m coverage report
+python3 -m coverage run -m pytest tests/ && python3 -m coverage report
 ```
 
 See [docs/testing-guide.md](docs/testing-guide.md).
@@ -464,11 +484,11 @@ Two flows: Flow A (modern: `main.py` → `tools/exploit_agent`, `tools/mcp_tools
 ## Contributing
 
 1. Read [AGENTS.md](AGENTS.md): non-obvious rules you will otherwise break.
-2. Run `python main.py --doctor && python main.py --self-test` after safety changes.
+2. Run `bp --doctor && bp --self-test` after safety changes.
 3. Before a PR:
    ```bash
-   python -m pip install -e ".[dev]"
-   python -m pytest tests/ -v
+   python3 -m pip install -e ".[dev]"
+   python3 -m pytest tests/ -v
    ruff check . && ruff format --check .
    mypy --follow-imports=skip tools
    cd webui && npm ci && npm run build && npm run test
@@ -488,26 +508,26 @@ Apache 2.0. See [LICENSE](LICENSE).
 <details>
 <summary><strong>Advanced: CLI & headless use</strong> (most users do not need this)</summary>
 
-The CLI still works for scripting and headless runs. The WebUI is the default (`python main.py` opens it); add flags only if you need them.
+The CLI still works for scripting and headless runs. The WebUI is the default (`bp` opens it); add flags only if you need them.
 
 ```bash
 # Wheel installs work from any directory (no repo checkout needed):
 #   pip install dist/*.whl
 #   mkdir /tmp/clean && cd /tmp/clean && breachpilot --doctor --json  # uses packaged skills + defaults
 
-python main.py --help                              # full flag list
-python main.py --target 10.0.0.50 --mode recon      # recon only
-python main.py --target 10.0.0.50 --mode attack --goal backdoor
-python main.py --target example.com --mode attack   # domain targeting
-python main.py --demon                              # API only, no browser
-python main.py --menu                               # legacy terminal menu
+bp --help                              # full flag list
+bp --target 10.0.0.50 --mode recon      # recon only
+bp --target 10.0.0.50 --mode attack --goal backdoor
+bp --target example.com --mode attack   # domain targeting
+bp --demon                              # API only, no browser
+bp --menu                               # legacy terminal menu
 ```
 
 Legacy SQLite research loop (Flow B, frozen in `legacy/`):
 
 ```bash
-python -m legacy.cli init-mission --config mission.yaml
-python -m legacy.cli next-task
+python3 -m legacy.cli init-mission --config mission.yaml
+python3 -m legacy.cli next-task
 ```
 
 See `docs/runtime-flows.md` and `legacy/README.md`.

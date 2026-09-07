@@ -21,7 +21,6 @@ INFRASTRUCTURE_ERROR, never as exploitation failures.
 from __future__ import annotations
 
 import asyncio
-import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,21 +65,13 @@ def mint_run_id() -> str:
 def _target_ports_reachable(host: str, ports: list[int], timeout: float = 1.0) -> bool:
     """True when at least one declared target port accepts TCP.
 
-    ponytail: stdlib connect probe so a down lab (eval_targets/docker-compose
-    not up) fails fast as INFRASTRUCTURE_ERROR instead of burning the whole
-    mission budget on 50 recon rounds against refused ports.
+    Thin alias over :func:`tools.benchmark.targets.target_ports_reachable`
+    (kept under this name for the runner preflight call-site and existing
+    tests). See that function for the fail-fast rationale.
     """
-    for port in ports or []:
-        try:
-            port = int(port)
-        except (TypeError, ValueError):
-            continue
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except OSError:
-            continue
-    return False
+    from tools.benchmark.targets import target_ports_reachable
+
+    return target_ports_reachable(host, ports, timeout=timeout)
 
 
 def _is_loopback_host(host: str) -> bool:

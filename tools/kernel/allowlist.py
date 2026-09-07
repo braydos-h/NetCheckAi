@@ -25,6 +25,14 @@ _MSF_RHOSTS_RE = re.compile(
     r"\bset(?:g)?\s+(?:RHOSTS|RHOST)\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))",
     re.IGNORECASE,
 )
+# LHOST / callback hosts: a reverse payload or handler that calls back to an
+# out-of-scope host is an egress path the allowlist must gate — the same lock
+# as RHOSTS, mirrored from generate_payload / msf_generate_payload which gate
+# their structured ``lhost`` param via check_targets_allowlist([lhost]).
+_MSF_LHOST_RE = re.compile(
+    r"\bset(?:g)?\s+(?:LHOST)\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))",
+    re.IGNORECASE,
+)
 _MSF_PIVOT_RE = re.compile(
     r"(?i:\bportfwd\b)[^\n]*?(?:\s-r\s+)(\S+)"
     r"|(?i:\broute\s+add\s+)(\S+)"
@@ -177,12 +185,39 @@ def _check_allowlist(target_ip: str, config: dict[str, Any] | None) -> tuple[boo
     )
 
 
+def _extract_msf_lhosts(text: str) -> list[str]:
+    """Extract LHOST callback hosts from msfconsole text.
+
+    ``set LHOST <host>`` / ``setg LHOST <host>`` stage a reverse handler that
+    calls back to ``<host>`` — an egress path the target-IP lock must gate the
+    same way it gates RHOSTS. Comma/whitespace-separated lists are split;
+    ``file:`` indirection is denied outright (never expanded, never returned).
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    for m in _MSF_LHOST_RE.findall(text):
+        tok = next((g for g in m if g), "").strip().strip("\"';")
+        if not tok or tok.lower().startswith("file:"):
+            continue
+        for part in re.split(r"[,\s]+", tok):
+            part = part.strip().strip("\"';")
+            if not part or part.lower().startswith("file:"):
+                continue
+            if part not in out:
+                out.append(part)
+    return out
+
+
 def _extract_msf_rhosts(text: str) -> list[str]:
-    """Extract RHOSTS/RHOST + pivot hosts from msfconsole text (verbatim move).
+    """Extract RHOSTS/RHOST + LHOST + pivot hosts from msfconsole text.
 
     Comma/whitespace-separated lists (``RHOSTS a,b`` / ``RHOSTS a b``) are
     split into individual hosts; ``file:`` indirection (``RHOSTS file:/tmp/h``)
-    is denied outright (never expanded, never returned).
+    is denied outright (never expanded, never returned). LHOST callback hosts
+    are included: a reverse payload calling back to an out-of-scope host is an
+    egress path the allowlist must gate (mirrors the generate_payload lhost
+    gate).
     """
     if not text:
         return []
@@ -197,6 +232,12 @@ def _extract_msf_rhosts(text: str) -> list[str]:
                 continue
             if part not in out:
                 out.append(part)
+    # LHOST callbacks are an egress path the lock must gate (P0: ``set LHOST
+    # evil.com`` previously extracted to [] and check_targets_allowlist([])
+    # returns True on empty input, so the callback sailed through).
+    for host in _extract_msf_lhosts(text):
+        if host not in out:
+            out.append(host)
     for m in _MSF_PIVOT_RE.finditer(text):
         for g in m.groups():
             if g:

@@ -179,8 +179,7 @@ describe("BenchmarkRunPage", () => {
       expect(screen.getByText("1/2")).toBeInTheDocument();
     });
   });
-  it("renders a completed run with its summary and no interruption banner", async () => {
-    fetchRun.mockResolvedValue({
+  it("renders a completed run with its summary and no interruption banner", async () => {    fetchRun.mockResolvedValue({
       ...BASE_RUN,
       status: "completed",
       trials: [makeTrial({})],
@@ -223,6 +222,60 @@ describe("BenchmarkRunPage", () => {
       expect(screen.getByTestId("benchmark-metric-cards")).toBeInTheDocument();
     });
     expect(screen.getAllByText("50.0%").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("benchmark-interrupted-banner")).not.toBeInTheDocument();
+  });
+  it("surfaces an unreachable-lab banner on instant-finish provision failures", async () => {
+    const provisionTrial = makeTrial({
+      status: "INFRASTRUCTURE_ERROR",
+      agent_claimed_success: false,
+      oracle_verified_success: false,
+      failure_category: "TARGET_PROVISION_FAILED",
+      failure_detail: "target 127.0.0.1 refused all declared ports [8080] -- is the lab suite up?",
+    });
+    fetchRun.mockResolvedValue({
+      ...BASE_RUN,
+      status: "completed",
+      trials: [provisionTrial, { ...provisionTrial, trial_id: "xben-juice-shop#t1", scenario_id: "xben-juice-shop" }],
+      summary: {
+        run_id: "r1",
+        suite: "xben",
+        timestamp: "2026-08-30T01:00:00Z",
+        trials_total: 2,
+        trials_completed: 0,
+        verified_success_rate: 0,
+        solved: 0,
+        false_positive_rate: 0,
+        false_negative_rate: 0,
+        median_solve_time: null,
+        mean_solve_time: null,
+        median_tool_actions: null,
+        mean_tool_actions: null,
+        median_model_calls: null,
+        total_tokens: 0,
+        estimated_cost: null,
+        time_to_first_verified_success: null,
+        sandbox_blocked_actions: 0,
+        infra_error_count: 2,
+        timeout_count: 0,
+        failure_categories: { TARGET_PROVISION_FAILED: 2 },
+        scenarios: [],
+      },
+    });
+    fetchOverview.mockResolvedValue({
+      suites: [],
+      runs: [],
+      active: { run_id: null, state: "idle", error: "" },
+      baseline: { exists: false, path: "reports/benchmarks/baseline.json" },
+    });
+    fetchRunEvents.mockResolvedValue({ run_id: "r1", events: [], latest_sequence: 0 });
+
+    renderRunPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("benchmark-infra-banner")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Lab targets were unreachable")).toBeInTheDocument();
+    expect(screen.getByText(/docker compose -f eval_targets\/docker-compose\.yml up -d/)).toBeInTheDocument();
     expect(screen.queryByTestId("benchmark-interrupted-banner")).not.toBeInTheDocument();
   });
 });

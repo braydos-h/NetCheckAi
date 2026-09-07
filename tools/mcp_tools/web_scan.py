@@ -28,7 +28,7 @@ import yaml
 
 from tools.enhanced_reporting import CVSSScore, TechnicalFinding
 from tools.mcp_shared import _attempt_dir
-from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout
+from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout, parse_extra_options, tool_slug
 from tools.validation_utils import validate_target_or_ip
 
 _NUCLEI_JSONL_NAME = "nuclei.jsonl"
@@ -55,9 +55,8 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,128}$")
 
 
 def _slug(value: Any, default: str = "unknown", limit: int = 40) -> str:
-    """Filesystem/id-safe slug (empty -> ``default``)."""
-    text = re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
-    return (text or default)[:limit].strip("-") or default
+    """Filesystem/id-safe slug (empty -> ``default``). Delegates to registry.tool_slug."""
+    return tool_slug(value, default=default, limit=limit)
 
 
 def _normalize_nuclei_severity(value: Any) -> str:
@@ -77,7 +76,7 @@ def _mitre_technique_for_template(template_id: str) -> str:
         from tools.mitre_export import load_technique_map
 
         technique_map = load_technique_map(Path(__file__).resolve().parent.parent / "mitre_technique_map.json")
-    except Exception:  # ponytail: map failure never breaks parsing
+    except Exception:  # ponytail: bare except intentional — map failure never breaks parsing
         technique_map = {}
     return technique_map.get(template_id) or technique_map.get("run_web_scan") or "T1595"
 
@@ -247,7 +246,7 @@ def _validate_nuclei_template(path: Path, text: str) -> tuple[str, str]:
     """Validate template YAML (parse-back + schema, plus ``nuclei -validate`` when on PATH)."""
     try:
         parsed = yaml.safe_load(text)
-    except Exception as exc:  # ponytail: invalid YAML is a finding, not a crash
+    except Exception as exc:  # ponytail: bare except intentional — invalid YAML is a finding, not a crash
         return "INVALID", f"YAML parse failed: {exc}"[:500]
     schema_err = _check_nuclei_template_schema(parsed)
     if schema_err:
@@ -264,7 +263,7 @@ def _validate_nuclei_template(path: Path, text: str) -> tuple[str, str]:
         )
     except subprocess.TimeoutExpired:
         return "INVALID", "nuclei -validate timed out after 60s"
-    except Exception as exc:  # ponytail: validator failure is INVALID, not a crash
+    except Exception as exc:  # ponytail: bare except intentional — validator failure is INVALID, not a crash
         return "INVALID", f"nuclei -validate failed: {exc}"[:500]
     combined = f"{out or ''}\n{err or ''}".strip()[-1000:]
     if returncode == 0:
@@ -291,8 +290,14 @@ def register_web_scan_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return ["nuclei", "-u", url]
         if scanner == "sqlmap":
             return ["sqlmap", "-u", url, "--batch"]
-        if scanner in {"gobuster", "feroxbuster", "dirb", "dirbuster"}:
+        if scanner in {"gobuster", "feroxbuster"}:
             return [scanner, "dir", "-u", url, "-w", _DEFAULT_WORDLIST]
+        if scanner == "dirb":
+            # dirb has no `dir` subcommand: dirb <url> <wordlist>.
+            return ["dirb", url, _DEFAULT_WORDLIST]
+        if scanner == "dirbuster":
+            # dirbuster is GUI-first; run headless via its CLI flags.
+            return ["dirbuster", "-u", url, "-l", _DEFAULT_WORDLIST]
         if scanner == "whatweb":
             return ["whatweb", url]
         if scanner == "wpscan":

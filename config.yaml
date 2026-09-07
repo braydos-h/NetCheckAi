@@ -529,6 +529,9 @@ sandbox:
   backend: docker
   image: breachpilot-sandbox:latest
   fallback_native: false
+  auto_manage_docker: true
+  docker_start_timeout_seconds: 60
+  docker_stop_timeout_seconds: 30
   user: sandbox
   read_only_rootfs: true
   env_passthrough: []

@@ -19,6 +19,7 @@ const fetchOverview = vi.fn();
 vi.mock("@/features/benchmarks/api", () => ({
   fetchOverview: (...args: unknown[]) => fetchOverview(...args),
   fetchSuiteScenarios: vi.fn().mockResolvedValue({ suite: "xben", scenarios: [] }),
+  fetchSuiteReadiness: vi.fn().mockResolvedValue({ suite: "xben", ready: true, lab_command: "", targets: [] }),
   startBenchmarkRun: vi.fn(),
 }));
 

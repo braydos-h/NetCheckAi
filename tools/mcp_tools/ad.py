@@ -13,15 +13,12 @@ one exception is ``smb_signing_check`` (detection-only), which defaults ON.
 
 from __future__ import annotations
 
-import re
 import shutil
-import subprocess
 from typing import Any
 
-from tools.exceptions import _EXC_GROUP_CATCH, _log_nested_exceptions
 from tools.mcp_shared import _allowed_target_list, _attempt_dir, check_targets_allowlist
-from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout
-from tools.validation_utils import validate_ipv4, validate_target_or_ip
+from tools.mcp_tools.registry import ToolContext, run_argv_captured
+from tools.validation_utils import validate_ipv4, validate_nt_hash, validate_ntlm_hash, validate_target_or_ip
 
 
 def _ad_cfg(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -71,28 +68,15 @@ def _nt_hash_arg(ntlm_hash: str) -> list[str]:
     h = (ntlm_hash or "").strip()
     if not h:
         return []
-    if not re.fullmatch(r"[0-9a-fA-F]{32}(:[0-9a-fA-F]{32})?", h):
+    if not validate_ntlm_hash(h):
         return ["__INVALID_HASH__"]  # caller checks for this sentinel
     return ["-hashes", f":{h.split(':')[-1]}"]
 
 
 def _run(argv: list[str], timeout: int) -> tuple[str, int | None, str]:
-    """Run argv via _run_with_pgrp_timeout; return (status, returncode, output)."""
-    try:
-        returncode, out, err = _run_with_pgrp_timeout(
-            argv,
-            timeout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        output = (out + "\n" + err)[-4000:]
-        return ("completed" if returncode == 0 else "failed"), returncode, output
-    except subprocess.TimeoutExpired:
-        return "timed_out", None, f"{argv[0]} timed out after {timeout}s"
-    except _EXC_GROUP_CATCH as exc:
-        _log_nested_exceptions(exc)
-        return "error", None, str(exc)
+    """Run argv via the shared captured-run helper; return (status, returncode, output)."""
+    status, returncode, output, _ = run_argv_captured(argv, timeout, max_chars=4000)
+    return status, returncode, output
 
 
 def register_ad_tools(mcp: Any, *, ctx: ToolContext) -> None:
@@ -169,13 +153,12 @@ def register_ad_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return "ERROR: Invalid target_ip (must be an IP or domain)."
         if not (username or "").strip():
             return "BLOCKED: username is required."
-        h = (ntlm_hash or "").strip()
-        if not re.fullmatch(r"[0-9a-fA-F]{32}(:[0-9a-fA-F]{32})?", h):
+        if not validate_ntlm_hash((ntlm_hash or "").strip()):
             return "BLOCKED: ntlm_hash must be 32 hex chars (NT) or 64 hex chars with colon (LM:NT)."
         svc = (service or "smb").strip().lower()
         if svc not in {"smb", "winrm"}:
             return f"BLOCKED: unsupported service '{svc}'. Allowed: smb, winrm."
-        nt = h.split(":")[-1]
+        nt = (ntlm_hash or "").strip().split(":")[-1]
 
         nxc = shutil.which("nxc") or shutil.which("crackmapexec")
         attempt_dir, attempt_id = _attempt_dir(workspace)
@@ -349,7 +332,7 @@ def register_ad_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if not (domain or "").strip() or not (username or "").strip():
             return "BLOCKED: domain and username are required."
         h = (krbtgt_hash or "").strip()
-        if not re.fullmatch(r"[0-9a-fA-F]{32}", h):
+        if not validate_nt_hash(h):
             return "BLOCKED: krbtgt_hash must be 32 hex chars (NT half)."
         if not (sid or "").strip():
             return "BLOCKED: sid (domain SID) is required."

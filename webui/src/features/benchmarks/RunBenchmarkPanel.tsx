@@ -14,9 +14,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchSuiteScenarios, startBenchmarkRun } from "@/features/benchmarks/api";
+import { fetchSuiteReadiness, fetchSuiteScenarios, startBenchmarkRun } from "@/features/benchmarks/api";
 import { isActiveState } from "@/features/benchmarks/format";
-import type { ScenarioInfo, SuiteInfo } from "@/features/benchmarks/types";
+import type { ScenarioInfo, SuiteInfo, SuiteReadiness } from "@/features/benchmarks/types";
 import { useDefaultModel, useModelOptions } from "@/components/ProviderSetup";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +39,8 @@ export function RunBenchmarkPanel({ suites, active, defaultModel: defaultModelPr
   const [scenariosError, setScenariosError] = useState("");
   const [scenariosReloading, setScenariosReloading] = useState(false);
   const [scenariosRetryTick, setScenariosRetryTick] = useState(0);
+  const [readiness, setReadiness] = useState<SuiteReadiness | null>(null);
+  const [readinessChecking, setReadinessChecking] = useState(false);
   const [selectedScenarios, setSelectedScenarios] = useState<Set<string>>(new Set());
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [trials, setTrials] = useState(1);
@@ -88,11 +90,38 @@ export function RunBenchmarkPanel({ suites, active, defaultModel: defaultModelPr
     };
   }, [suite, scenariosRetryTick]);
 
+  // Lab-target readiness: host-type scenarios need the loopback lab suite up
+  // or the run finishes instantly with TARGET_PROVISION_FAILED (which reads
+  // as "skipped to the finished page"). Best-effort — a probe failure never
+  // blocks starting a run (docker scenarios self-provision anyway).
+  useEffect(() => {
+    if (!suite) {
+      setReadiness(null);
+      return;
+    }
+    let cancelled = false;
+    setReadinessChecking(true);
+    fetchSuiteReadiness(suite)
+      .then((data) => {
+        if (!cancelled) setReadiness(data);
+      })
+      .catch(() => {
+        if (!cancelled) setReadiness(null);
+      })
+      .finally(() => {
+        if (!cancelled) setReadinessChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [suite]);
+
   const onSuiteChange = (suiteId: string) => {
     setSuite(suiteId);
     setSelectedScenarios(new Set());
     setSelectedTags(new Set());
     setScenarios([]);
+    setReadiness(null);
   };
 
   const allTags = useMemo(() => {
@@ -125,6 +154,7 @@ export function RunBenchmarkPanel({ suites, active, defaultModel: defaultModelPr
 
   const suiteInfo = suites.find((s) => s.suite_id === suite);
   const willRunCount = selectedScenarios.size > 0 ? selectedScenarios.size : (suiteInfo?.scenarios ?? 0);
+  const unreachable = (readiness?.targets ?? []).filter((t) => !t.reachable && !t.self_provisioned);
 
   return (
     <Card data-testid="run-benchmark-panel">
@@ -224,6 +254,21 @@ export function RunBenchmarkPanel({ suites, active, defaultModel: defaultModelPr
         </div>
 
         {scenariosReloading && <div className="text-sm text-muted-foreground">Loading scenarios…</div>}
+        {readinessChecking && !readiness && <div className="text-sm text-muted-foreground">Checking lab targets…</div>}
+        {readiness && !readiness.ready && unreachable.length > 0 && (
+          <div
+            data-testid="benchmark-lab-warning"
+            className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+          >
+            <div className="font-medium">Lab targets unreachable — a run now would finish instantly with no results.</div>
+            <div className="text-xs text-amber-200/80">
+              {unreachable.length} scenario target{unreachable.length === 1 ? "" : "s"} refusing connections
+              {unreachable.length <= 4 ? `: ${unreachable.map((t) => t.scenario_id).join(", ")}` : ""}. Start the lab
+              suite, then run again:
+            </div>
+            <div className="rounded bg-black/30 p-1.5 font-mono text-xs break-all">{readiness.lab_command}</div>
+          </div>
+        )}
         {scenariosError && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             <span>Failed to load scenarios: {scenariosError}</span>

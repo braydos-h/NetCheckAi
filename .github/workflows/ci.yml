@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run test suite (offline/mocked)
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -q -n 2 -m "not integration"
 
   sandbox:
     name: Sandbox integration (Docker)
@@ -127,7 +127,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run tests with coverage
-        run: python -m coverage run -m pytest tests/
+        run: python -m coverage run -m pytest tests/ -q -m "not integration"
       - name: Terminal coverage report
         run: python -m coverage report --fail-under=80
       - name: XML coverage report
@@ -175,12 +175,13 @@ jobs:
           # raise BaseExceptionGroup on subprocess death — bare `except Exception` misses it.
           # Use `_EXC_GROUP_CATCH` + `_log_nested_exceptions` (tools/exceptions.py) instead.
           # Non-MCP bare excepts are allowed but must be explicit: `# ponytail: bare except intentional`
-          if grep -R --include="*.py" -n "except Exception" tools/mcp_tools tools/exploit_agent tools/mcp_session.py | grep -v "_EXC_GROUP_CATCH" | grep -v "ponytail: bare except intentional" | grep -q .; then
+          # or `# noqa: BLE001` (repo convention for intentional broad-except, 250+ sites).
+          if grep -R --include="*.py" -n "except Exception" tools/mcp_tools tools/exploit_agent tools/mcp_session.py | grep -v "_EXC_GROUP_CATCH" | grep -v "ponytail: bare except intentional" | grep -v "noqa: BLE001" | grep -q .; then
             echo "ERROR: bare 'except Exception' found in MCP-adjacent code without _EXC_GROUP_CATCH."
             echo "Use 'except _EXC_GROUP_CATCH as exc:' + '_log_nested_exceptions(exc)' (see tools/exceptions.py)."
-            echo "If this is intentionally non-MCP, annotate with '# ponytail: bare except intentional'."
+            echo "If this is intentionally non-MCP, annotate with '# ponytail: bare except intentional' or '# noqa: BLE001'."
             echo "--- offenders ---"
-            grep -R --include="*.py" -n "except Exception" tools/mcp_tools tools/exploit_agent tools/mcp_session.py | grep -v "_EXC_GROUP_CATCH" | grep -v "ponytail: bare except intentional" || true
+            grep -R --include="*.py" -n "except Exception" tools/mcp_tools tools/exploit_agent tools/mcp_session.py | grep -v "_EXC_GROUP_CATCH" | grep -v "ponytail: bare except intentional" | grep -v "noqa: BLE001" || true
             exit 1
           fi
           echo "MCP bare-except guard: OK"
@@ -215,6 +216,27 @@ jobs:
           from tools.config_manager import CONFIG_SCHEMA
           cfg = yaml.safe_load(open('config.yaml'))
           assert set(cfg) == set(CONFIG_SCHEMA), f'config.yaml and CONFIG_SCHEMA drift: extra in yaml {sorted(set(cfg)-set(CONFIG_SCHEMA))}, missing in yaml {sorted(set(CONFIG_SCHEMA)-set(cfg))}'
+          "
+      - name: Requirements / pyproject sync check
+        run: |
+          python -c "
+          import pathlib, re, tomllib
+          py = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+          deps = set()
+          for d in py['project']['dependencies']:
+              deps.add(re.split('[<>=; ]', d.strip())[0].lower())
+          for extra in ('dev',):
+              for d in py['project']['optional-dependencies'][extra]:
+                  deps.add(re.split('[<>=; ]', d.strip())[0].lower())
+          # browser extra is intentionally NOT in requirements.txt
+          for d in py['project']['optional-dependencies'].get('browser', []):
+              deps.discard(re.split('[<>=; ]', d.strip())[0].lower())
+          # ollama extra is included via dev already
+          req_lines = [l.strip() for l in pathlib.Path('requirements.txt').read_text().splitlines() if l.strip() and not l.strip().startswith('#')]
+          reqs = set(re.split('[<>=; ]', l)[0].lower() for l in req_lines)
+          missing = sorted(deps - reqs)
+          assert not missing, f'requirements.txt missing deps from pyproject.toml: {missing}'
+          print(f'requirements sync ok: {len(reqs)} reqs cover {len(deps)} pyproject deps')
           "
       - name: Doctor --json machine-readable output check
         run: |
