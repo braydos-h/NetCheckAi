@@ -3,7 +3,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { Layout } from "@/components/Layout";
+import { Layout, platformLabel } from "@/components/Layout";
+import type { HostPlatform } from "@/api/types";
 
 // ── module mocks ────────────────────────────────────────────────────────────
 
@@ -438,4 +439,52 @@ describe("Layout provider status (provider-aware)", () => {
     // Navigation updates the active nav item
     expect(screen.getByRole("link", { name: /^Settings/ })).toHaveAttribute("aria-current", "page");
   });
+});
+describe("Layout platform console label", () => {
+  it.each([
+    ["linux", "Linux"],
+    ["windows", "Windows"],
+    ["darwin", "Local"],
+    ["unknown", "Local"],
+  ] as Array<[HostPlatform, string]>)("maps %s to %s", (platform, label) => {
+    expect(platformLabel(platform)).toBe(label);
+  });
+
+  it("falls back to Local when platform is undefined", () => {
+    expect(platformLabel(undefined)).toBe("Local");
+  });
+
+  it.each(["linux", "windows", "darwin", "unknown"] as Array<HostPlatform>)(
+    "renders %s console in the sidebar",
+    (platform) => {
+      runsMock.mockReturnValue({ data: { runs: [], total: 0 }, isLoading: false, error: null } as never);
+      connectionsMock.mockReturnValue({ data: { active: 0, connections: [], total: 0, stale: 0, removed: 0, error: 0 } } as never);
+      modelsMock.mockReturnValue({ data: { provider: "ollama" }, isLoading: false, error: null } as never);
+      hostPlatformMock.mockReturnValue({
+        data: { platform },
+        isLoading: false,
+        isError: false,
+      } as never);
+      providerStatusMock.mockReturnValue({
+        provider: "ollama",
+        label: "Ollama",
+        online: true,
+        source: "ollama",
+        liveCount: 1,
+        error: undefined,
+        status: "online",
+        statusText: "Online",
+        isChecking: false,
+      } as never);
+      sessionTokensMock.mockReturnValue({ sessionTokens: 0, totalTokens: 0, baseline: 0, isLoading: false, error: null } as never);
+      render(
+        <MemoryRouter initialEntries={["/"]}>
+          <Layout />
+        </MemoryRouter>,
+      );
+      // Desktop aside + mobile drawer both render the label.
+      const matches = screen.getAllByText(new RegExp(`${platformLabel(platform)} console`, "i"));
+      expect(matches.length).toBeGreaterThan(0);
+    },
+  );
 });
