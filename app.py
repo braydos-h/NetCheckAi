@@ -103,14 +103,14 @@ def create_app(
 
     # Benchmark suite (tools/benchmark/): service owns the active benchmark
     # run; storage reads/writes reports/benchmarks/<suite>/<run_id>/.
+    # ponytail: single global cap — runs + benchmarks share max_concurrent_runs,
+    # wired via explicit constructor injection (no private cross-link pokes).
     benchmark_cfg = config.get("benchmark", {}) or {}
     benchmark_storage = BenchmarkStorage(
         str(benchmark_cfg.get("output_dir", "reports/benchmarks") or "reports/benchmarks")
     )
-    benchmark_service = BenchmarkService(config, config_path)
-    # ponytail: single global cap — runs + benchmarks share max_concurrent_runs.
-    run_manager._benchmark_service = benchmark_service
-    benchmark_service._run_manager = run_manager
+    benchmark_service = BenchmarkService(config, config_path, run_manager=run_manager)
+    run_manager.benchmark_service = benchmark_service
 
     # Lifespan: recover interrupted runs on startup; cancel active run on shutdown.
     @asynccontextmanager

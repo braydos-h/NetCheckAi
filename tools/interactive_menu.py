@@ -572,6 +572,7 @@ def _create_default_config(path: Path) -> None:
                 "deepseek_flash": "deepseek-v4-flash:cloud",
                 "glm": "glm-5.2:cloud",
                 "minimax": "minimax-m3:cloud",
+                "glm3": "glm-5.3-flash",
             },
             "default_alias": "glm",
             "info": {
@@ -599,6 +600,11 @@ def _create_default_config(path: Path) -> None:
                     "label": "Minimax M3",
                     "context_window": 512000,
                     "description": "Minimax M3 (cloud) — 512K context, balanced coding + reasoning.",
+                },
+                "glm3": {
+                    "label": "GLM-5.3 Flash",
+                    "context_window": 128000,
+                    "description": "Zhipu GLM-5.3 Flash — fast low-latency GLM option (128K context).",
                 },
             },
         },

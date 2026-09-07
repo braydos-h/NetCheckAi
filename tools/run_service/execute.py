@@ -361,7 +361,7 @@ class ExecuteMixin:
 
         async def _checkpoint_hook(ctx: Any) -> Any:
             """Build a CAMPAIGN_NEXT_STEP Decision from ``ctx`` and ask the operator."""
-            from tools.exploit_agent.loop import CheckpointOutcome
+            from tools.exploit_agent.runner import CheckpointOutcome
 
             if not _checkpoint_enabled:
                 return None

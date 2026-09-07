@@ -107,8 +107,28 @@ from tools.mcp_session import (
 from tools.mcp_session import (
     mcp_tools_to_ollama,
 )
+from tools.runtime_context import RuntimeContext
 
 MCP_BOOT_TIMEOUT_SECONDS: float = _DEFAULT_MCP_BOOT_TIMEOUT_SECONDS
+
+
+def get_runtime_context() -> RuntimeContext:
+    """Build this process's runtime context from main.py's locals.
+
+    The single place where CLI runtime dependencies are bundled — passed
+    explicitly into ``tools.*`` via ``ctx=`` instead of mutating imported
+    module globals per call (which broke concurrent runs sharing the
+    process). Tests keep patching ``main.*`` symbols; the context reads
+    them lazily here so patched values flow through.
+    """
+    return RuntimeContext(
+        ui=ui,
+        config_loader=load_config,
+        mcp_boot_timeout_seconds=MCP_BOOT_TIMEOUT_SECONDS,
+        open_mcp_session=open_exploit_mcp_session,
+        run_exploit_agent_fn=run_exploit_agent,
+        build_router_fn=build_router,
+    )
 
 
 @contextlib.asynccontextmanager
@@ -125,8 +145,6 @@ async def open_exploit_mcp_session(
     original_target: str | None = None,
     resolved_ip: str | None = None,
 ) -> AsyncIterator[Any]:
-    _mcp_session.MCP_BOOT_TIMEOUT_SECONDS = MCP_BOOT_TIMEOUT_SECONDS
-    _mcp_session.ui = ui
     async with _mcp_session.open_exploit_mcp_session(
         transport=transport,
         config_path=config_path,
@@ -138,6 +156,7 @@ async def open_exploit_mcp_session(
         soft_fail=soft_fail,
         original_target=original_target,
         resolved_ip=resolved_ip,
+        ctx=get_runtime_context(),
     ) as session:
         yield session
 
@@ -148,8 +167,7 @@ async def _elapsed_ticker(
     interval: float = 15.0,
     heartbeat: "_mcp_session._RunHeartbeat | None" = None,
 ) -> None:
-    _mcp_session.ui = ui
-    await _mcp_session._elapsed_ticker(label, interval=interval, heartbeat=heartbeat)
+    await _mcp_session._elapsed_ticker(label, interval=interval, heartbeat=heartbeat, ctx=get_runtime_context())
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +197,6 @@ async def run_exploit_session(
     original_target: str | None = None,
     resolved_ip: str | None = None,
 ) -> dict[str, Any]:
-    _exploit_session.ui = ui
-    _exploit_session.load_config = load_config
-    _exploit_session.open_exploit_mcp_session = open_exploit_mcp_session
-    _exploit_session.mcp_tools_to_ollama = mcp_tools_to_ollama
-    _exploit_session.run_exploit_agent = run_exploit_agent
     return await _exploit_session.run_exploit_session(
         client=client,
         model=model,
@@ -202,6 +215,7 @@ async def run_exploit_session(
         heartbeat=heartbeat,
         original_target=original_target,
         resolved_ip=resolved_ip,
+        ctx=get_runtime_context(),
     )
 
 
@@ -219,8 +233,9 @@ async def run_safety_review(
     target_ip: str,
     goal: AttackGoal,
 ) -> SafetyReview:
-    _safety_review_cli.ui = ui
-    return await _safety_review_cli.run_safety_review(client, model, result, target_ip, goal)
+    return await _safety_review_cli.run_safety_review(
+        client, model, result, target_ip, goal, ctx=get_runtime_context()
+    )
 
 
 from tools import recon_assessment_cli as _recon_assessment_cli
@@ -327,11 +342,11 @@ async def run_recon_assessment(
     target_ip: str,
     reports_dir: Path,
 ) -> ReconAssessment:
-    _recon_assessment_cli.ui = ui
     return await _recon_assessment_cli.run_recon_assessment(
         session=session,
         target_ip=target_ip,
         reports_dir=reports_dir,
+        ctx=get_runtime_context(),
     )
 
 

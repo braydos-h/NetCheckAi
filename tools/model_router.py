@@ -86,6 +86,11 @@ MODEL_INFO: dict[str, dict[str, Any]] = {
         "context_window": 512_000,
         "description": "Minimax M3 (cloud) — 512K context, balanced coding + reasoning.",
     },
+    "glm3": {
+        "label": "GLM-5.3 Flash",
+        "context_window": 128_000,
+        "description": "Zhipu GLM-5.3 Flash — fast low-latency GLM option (128K context).",
+    },
 }
 
 # DEFAULT_MODEL_REGISTRY is imported from tools.providers.ollama_provider

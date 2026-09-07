@@ -270,7 +270,7 @@ async def _open_exploit_mcp_session_once(
             # surface a single WARN line and yield None so the caller can
             # degrade. We do NOT yield when the import itself failed (a real
             # environment problem) because there is no point continuing.
-            ui.warning("MCP Python SDK is not installed; recon skipped.")
+            _ui.warning("MCP Python SDK is not installed; recon skipped.")
             yield None
             return
         raise RuntimeError(
@@ -317,13 +317,13 @@ async def _open_exploit_mcp_session_once(
     # (which animates on stderr), then a [OK]/[FAILED] line when the step
     # resolves. The spinner remains as transient decoration; these lines are
     # what a log scraper greps. See AttackUi.boot_step / boot_section.
-    ui.boot_section("MCP exploit session boot sequence")
+    _ui.boot_section("MCP exploit session boot sequence")
 
     def _boot_step(label: str, *, ok: bool = True, failed: bool = False) -> None:
         """Emit a boot checklist step to the terminal UI and, when a ``boot_cb``
         is supplied (the API path), forward it so the WebUI can render a live
         boot checklist. ``boot_cb`` receives ``(label, ok, failed)``."""
-        ui.boot_step(label, ok=ok, failed=failed)  # terminal UI only — do not recurse
+        _ui.boot_step(label, ok=ok, failed=failed)  # terminal UI only — do not recurse
         if boot_cb is not None:
             boot_cb(label, ok, failed)
 
@@ -345,7 +345,7 @@ async def _open_exploit_mcp_session_once(
 
         _stdio_label = "Booting MCP server (stdio)"
         _boot_step(_stdio_label, ok=False)
-        with ui.spinner(
+        with _ui.spinner(
             "Booting MCP server (stdio)...",
             soft_fail=startup_soft_fail,
             # Show elapsed seconds on the boot spinner. The MCP server
@@ -379,7 +379,7 @@ async def _open_exploit_mcp_session_once(
                         except asyncio.TimeoutError as exc:
                             startup_errors.append(exc)
                             if startup_soft_fail:
-                                ui.warning(
+                                _ui.warning(
                                     f"MCP server boot timed out after "
                                     f"{_boot_timeout:.0f}s — "
                                     f"subprocess did not finish initializing."
@@ -398,13 +398,13 @@ async def _open_exploit_mcp_session_once(
                         # static ``[SUCCESS]`` message) still fires on exit; this only
                         # stops the recurring elapsed-seconds redraw. See
                         # ``AttackUi.release_active_spinner``.
-                        ui.release_active_spinner()
+                        _ui.release_active_spinner()
                         try:
                             stdio_yielded = True
                             yield session
                         except _EXC_GROUP_CATCH as exc:
                             if soft_fail:
-                                ui.warning(f"MCP session closed mid-recon: {exc}")
+                                _ui.warning(f"MCP session closed mid-recon: {exc}")
                                 if _is_exception_group(exc):
                                     _log_nested_exceptions(exc)
                                 boot_failed[0] = True
@@ -417,10 +417,10 @@ async def _open_exploit_mcp_session_once(
                 # ``BaseExceptionGroup`` on subprocess failure — that is *not* an
                 # ``Exception`` subclass, so we MUST catch the group explicitly.
                 if startup_soft_fail:
-                    ui.warning(f"MCP stdio session failed: {exc}")
+                    _ui.warning(f"MCP stdio session failed: {exc}")
                     if _is_exception_group(exc):
                         _log_nested_exceptions(exc)
-                    # Fall out of the ``with ui.spinner(...)`` and the function
+                    # Fall out of the ``with _ui.spinner(...)`` and the function
                     # to give the caller a ``None`` session.
                     boot_failed[0] = True
                     _boot_step(_stdio_label, failed=True)
@@ -428,9 +428,9 @@ async def _open_exploit_mcp_session_once(
                         stdio_yielded = True
                         yield None
                     return
-                ui.error(f"MCP stdio session failed: {exc}")
+                _ui.error(f"MCP stdio session failed: {exc}")
                 if _is_exception_group(exc):
-                    ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
+                    _ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
                     _log_nested_exceptions(exc)
                 raise
         return
@@ -444,7 +444,7 @@ async def _open_exploit_mcp_session_once(
     def _boot_remaining() -> float:
         return max(1.0, min(_boot_timeout, _boot_deadline - time.monotonic()))
 
-    with ui.spinner(
+    with _ui.spinner(
         f"Starting MCP HTTP server on port {exploit_port}...",
         soft_fail=startup_soft_fail,
         soft_fail_flag=boot_failed,
@@ -470,12 +470,12 @@ async def _open_exploit_mcp_session_once(
             # session (M19: an asynccontextmanager must yield before
             # returning). Mirror the stdio soft-fail contract.
             if startup_soft_fail:
-                ui.warning(f"MCP HTTP server failed to start on port {exploit_port}: {exc}")
+                _ui.warning(f"MCP HTTP server failed to start on port {exploit_port}: {exc}")
                 boot_failed[0] = True
                 _boot_step(_http_start_label, failed=True)
                 yield None
                 return
-            ui.error(f"MCP HTTP server failed to start on port {exploit_port}: {exc}")
+            _ui.error(f"MCP HTTP server failed to start on port {exploit_port}: {exc}")
             raise
     _boot_step(_http_start_label, ok=not boot_failed[0], failed=boot_failed[0])
     http_log_path = Path(log_handle.name)
@@ -485,7 +485,7 @@ async def _open_exploit_mcp_session_once(
         _http_port_label = f"Waiting for MCP HTTP readiness on port {exploit_port}"
         _boot_step(_http_port_label, ok=False)
         try:
-            with ui.spinner(
+            with _ui.spinner(
                 f"Waiting for MCP HTTP readiness on port {exploit_port}...",
                 soft_fail=startup_soft_fail,
                 soft_fail_flag=boot_failed,
@@ -505,7 +505,7 @@ async def _open_exploit_mcp_session_once(
         except (OSError, asyncio.TimeoutError, RuntimeError) as exc:
             startup_errors.append(exc)
             if startup_soft_fail:
-                ui.warning(f"MCP HTTP server did not start on port {exploit_port}: {exc}")
+                _ui.warning(f"MCP HTTP server did not start on port {exploit_port}: {exc}")
                 # M19: an asynccontextmanager MUST yield before returning. The
                 # stdio soft-fail branches (281/307) already yield None; the HTTP
                 # branches here and below used to ``return`` without yielding,
@@ -527,7 +527,7 @@ async def _open_exploit_mcp_session_once(
         ):
             _http_init_label = "Initializing MCP session"
             _boot_step(_http_init_label, ok=False)
-            with ui.spinner(
+            with _ui.spinner(
                 "Initializing MCP session...",
                 soft_fail=startup_soft_fail,
                 heartbeat_seconds=1.0,
@@ -550,7 +550,7 @@ async def _open_exploit_mcp_session_once(
                     except asyncio.TimeoutError as exc:
                         startup_errors.append(exc)
                         if startup_soft_fail:
-                            ui.warning(
+                            _ui.warning(
                                 f"MCP HTTP session init timed out after "
                                 f"{_boot_timeout:.0f}s."
                                 f"{_server_log_tail(http_log_path, secret_values=http_log_secrets)}"
@@ -579,7 +579,7 @@ async def _open_exploit_mcp_session_once(
                         # crashes recon-first. Mirror the stdio branch's
                         # ``_EXC_GROUP_CATCH`` handling.
                         if startup_soft_fail:
-                            ui.warning(
+                            _ui.warning(
                                 f"MCP HTTP session init failed: {exc}"
                                 f"{_server_log_tail(http_log_path, secret_values=http_log_secrets)}"
                             )
@@ -589,12 +589,12 @@ async def _open_exploit_mcp_session_once(
                             _boot_step(_http_init_label, failed=True)
                             yield None
                             return
-                        ui.error(
+                        _ui.error(
                             f"MCP HTTP session init failed: {exc}"
                             f"{_server_log_tail(http_log_path, secret_values=http_log_secrets)}"
                         )
                         if _is_exception_group(exc):
-                            ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
+                            _ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
                             _log_nested_exceptions(exc)
                         raise
                     http_initialized = True
@@ -602,12 +602,12 @@ async def _open_exploit_mcp_session_once(
                     # initialized — see the matching comment in the stdio branch.
                     # Without this ``[STATUS] Initializing MCP session... X.Xs``
                     # would keep ticking for the whole session.
-                    ui.release_active_spinner()
+                    _ui.release_active_spinner()
                     try:
                         yield session
                     except _EXC_GROUP_CATCH as exc:
                         if soft_fail:
-                            ui.warning(f"MCP session closed mid-recon: {exc}")
+                            _ui.warning(f"MCP session closed mid-recon: {exc}")
                             if _is_exception_group(exc):
                                 _log_nested_exceptions(exc)
                             boot_failed[0] = True
@@ -629,15 +629,15 @@ async def _open_exploit_mcp_session_once(
             startup_errors.append(exc)
         startup_log_tail = "" if http_initialized else _server_log_tail(http_log_path, secret_values=http_log_secrets)
         if failure_is_soft:
-            ui.warning(f"MCP HTTP session failed: {exc}{startup_log_tail}")
+            _ui.warning(f"MCP HTTP session failed: {exc}{startup_log_tail}")
             if _is_exception_group(exc):
                 _log_nested_exceptions(exc)
             boot_failed[0] = True
             yield None
             return
-        ui.error(f"MCP HTTP session failed: {exc}{startup_log_tail}")
+        _ui.error(f"MCP HTTP session failed: {exc}{startup_log_tail}")
         if _is_exception_group(exc):
-            ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
+            _ui.error("Detected ExceptionGroup / BaseExceptionGroup. Unpacking nested exceptions:")
             _log_nested_exceptions(exc)
         raise
     finally:

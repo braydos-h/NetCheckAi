@@ -734,3 +734,31 @@ def test_config_yaml_and_schema_in_sync_via_python_c():
     # The modern provider layout must be present in the checked-in config.
     for required in ("providers", "embeddings", "models"):
         assert required in cfg, f"config.yaml must exercise the modern {required!r} block"
+
+
+def test_glm3_registry_and_info_have_no_silent_fallback(tmp_path):
+    """glm3 must resolve with explicit metadata everywhere — never the silent
+    128K 'Unknown alias' fallback (provider/schema drift regression)."""
+    import yaml
+
+    from tools.config_manager import validate_config_file
+    from tools.model_router import MODEL_INFO, get_model_info
+    from tools.providers.ollama_provider import DEFAULT_MODEL_REGISTRY
+
+    # schema defaults carry glm3
+    from tools.config.schema import CONFIG_SCHEMA
+
+    assert CONFIG_SCHEMA["models"]["registry"]["glm3"] == "glm-5.3-flash"
+    assert CONFIG_SCHEMA["models"]["info"]["glm3"]["context_window"] == 128000
+    # in-code fallbacks agree (no 128K-unknown surprise)
+    assert DEFAULT_MODEL_REGISTRY["glm3"] == "glm-5.3-flash"
+    assert MODEL_INFO["glm3"]["context_window"] == 128_000
+    assert "Unknown alias" not in get_model_info("glm3", None)["description"]
+    # the live lab config validates with zero warnings and resolves glm3
+    result = validate_config_file("config.yaml")
+    assert result.errors == []
+    assert result.warnings == []
+    live = yaml.safe_load(open("config.yaml", encoding="utf-8"))
+    info = get_model_info("glm3", live["models"].get("info"))
+    assert info["context_window"] == 128000
+    assert "Unknown alias" not in info["description"]

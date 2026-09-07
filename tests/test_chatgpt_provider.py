@@ -391,7 +391,7 @@ def test_stream_stops_on_done_and_ignores_keepalive():
 
 
 def test_httpx_error_is_retryable():
-    from tools.exploit_agent.ollama_client import _is_retryable_error
+    from tools.exploit_agent.model_client import _is_retryable_error
 
     class _HttpxErr(Exception):
         pass

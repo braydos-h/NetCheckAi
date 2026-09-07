@@ -1367,7 +1367,7 @@ class AttackUi:
 #
 # Modules along the CLI run path used to each construct their own
 # ``AttackUi(plain=False)`` (main.py, mcp_session.py, exploit_session.py,
-# exploit_agent/loop.py). Each independently re-detected TTY/plain, which
+# exploit_agent/runner/_impl.py). Each independently re-detected TTY/plain, which
 # produced mixed color/plain output when one module's stdout was piped and
 # another's wasn't, and meant a spinner running on one instance wasn't
 # coordinated with prints routed through another.

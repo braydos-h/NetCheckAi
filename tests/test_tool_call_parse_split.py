@@ -1,6 +1,6 @@
 """Regression tests for the split transport/parse try in the agent loop.
 
-The tool-call dispatch in ``tools/exploit_agent/loop.py`` used to wrap both
+The tool-call dispatch in ``tools/exploit_agent/runner/_impl.py`` used to wrap both
 ``session.call_tool(...)`` (MCP transport) and the result-parsing lines in a
 single ``try``. That conflated transport failures with parse failures and was
 the historical home of the ``cannot access local variable 'result'`` crash.

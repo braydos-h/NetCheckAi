@@ -44,6 +44,10 @@ models:
       label: Minimax M3
       context_window: 512000
       description: Minimax M3 (cloud) — 512K context, balanced coding + reasoning.
+    glm3:
+      label: GLM-5.3 Flash
+      context_window: 128000
+      description: Zhipu GLM-5.3 Flash — fast low-latency GLM option (128K context).
 mcp:
   default_transport: stdio
 engine_mcp:

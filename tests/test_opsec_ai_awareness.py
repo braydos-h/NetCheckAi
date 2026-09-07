@@ -5,7 +5,7 @@ the OPSEC system instead of having it applied invisibly:
 
 1. ``tools.exploit_agent.prompt.build_opsec_briefing`` -- a target-aware,
    advisory OPSEC posture block injected into the system prompt (wired in
-   ``tools/exploit_agent/loop.py``). Empty for local/private targets or when
+   ``tools/exploit_agent/runner/_impl.py``). Empty for local/private targets or when
    OPSEC is off, so the AI is never told OPSEC is "on" for the operator's own box.
 2. ``tools.mcp_tools.terminal._opsec_advisory_block`` -- a per-command advisory
    block appended to every ``run_exploit_terminal`` result, surfacing a live

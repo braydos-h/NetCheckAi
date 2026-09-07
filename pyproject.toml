@@ -165,8 +165,7 @@ ignore = ["E501", "F405", "F403", "F841"]
 "skills/**/*.py" = ["F401"]
 # main.py and exploit loop use late imports after ui bootstrap (ui = get_ui() must precede)
 "main.py" = ["E402"]
-"tools/exploit_agent/loop.py" = ["E402"]
-"tools/exploit_agent/runner.py" = ["E402"]
+"tools/exploit_agent/runner/*.py" = ["E402"]
 # PEP 562 lazy questionary (attack_ui) + lazy numpy annotations (semantic_memory):
 # names resolve via module __getattr__ / function-level imports, invisible to static F821
 "tools/attack_ui.py" = ["F821"]

@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tools.attack_ui import AttackUi
 from tools.exceptions import _EXC_GROUP_CATCH, _is_exception_group, _log_nested_exceptions
 from tools.goal_suggester import ReconAssessment, build_assessment_from_mcp_results
 
 ui = AttackUi(plain=False)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from tools.runtime_context import RuntimeContext
 
 
 _GENERIC_SERVICE_NAMES = frozenset(
@@ -67,17 +70,19 @@ async def run_recon_assessment(
     session: Any,
     target_ip: str,
     reports_dir: Path,
+    ctx: "RuntimeContext | None" = None,
 ) -> ReconAssessment:
     """Run quick recon against target and build a structured assessment.
 
     Executes check_os, quick_scan, and search_cve_intel for each discovered
     service. Returns a ReconAssessment ready for goal suggestion.
     """
-    ui.status("Running reconnaissance assessment...")
-    ui.divider()
+    _ui = ctx.ui if ctx is not None else ui
+    _ui.status("Running reconnaissance assessment...")
+    _ui.divider()
 
     # ── Step 1: OS detection ──
-    with ui.spinner("Probing OS via TTL and port analysis...", soft_fail=True):
+    with _ui.spinner("Probing OS via TTL and port analysis...", soft_fail=True):
         try:
             os_raw = await session.call_tool("check_os", {"target_ip": target_ip})
             os_result = _extract_tool_text(os_raw)
@@ -85,15 +90,15 @@ async def run_recon_assessment(
             # ``BaseExceptionGroup`` is *not* an ``Exception`` subclass — must be
             # listed explicitly or the spinner exits with a confusing [ERROR] line
             # and the user sees no underlying cause.
-            ui.warning(f"OS detection failed: {exc}")
+            _ui.warning(f"OS detection failed: {exc}")
             os_result = f"OS_CHECK_RESULTS:\nTARGET: {target_ip}\nOS_VERDICT: UNKNOWN\nHINTS: Error: {exc}"
             if _is_exception_group(exc):
                 _log_nested_exceptions(exc)
 
-    ui.result("OS Detection", os_result[:800])
+    _ui.result("OS Detection", os_result[:800])
 
     # ── Step 2: Quick port scan ──
-    with ui.spinner("Scanning top 24 ports...", soft_fail=True):
+    with _ui.spinner("Scanning top 24 ports...", soft_fail=True):
         try:
             scan_raw = await session.call_tool(
                 "quick_scan",
@@ -104,12 +109,12 @@ async def run_recon_assessment(
             )
             scan_result = _extract_tool_text(scan_raw)
         except _EXC_GROUP_CATCH as exc:
-            ui.warning(f"Port scan failed: {exc}")
+            _ui.warning(f"Port scan failed: {exc}")
             scan_result = f"QUICK_SCAN_RESULTS: {target_ip}\nSUMMARY: 0/0 ports open\nNOTE: Scan error: {exc}"
             if _is_exception_group(exc):
                 _log_nested_exceptions(exc)
 
-    ui.result("Port Scan", scan_result[:1200])
+    _ui.result("Port Scan", scan_result[:1200])
 
     # ── Step 3: CVE lookup per discovered service ──
     cve_results: list[dict[str, Any]] = []
@@ -135,10 +140,10 @@ async def run_recon_assessment(
             qv = _cve_query_from_banner(b)
             if qv is not None:
                 queryable.append((port, proto, service, qv))
-        ui.info(f"Looking up CVEs for {len(queryable)} of {len(open_ports)} discovered service(s)...")
+        _ui.info(f"Looking up CVEs for {len(queryable)} of {len(open_ports)} discovered service(s)...")
         for port, proto, service, (product, version) in queryable:
             query = f"{product} {version}"
-            with ui.spinner(f"Looking up CVEs for {product} {version} on port {port}..."):
+            with _ui.spinner(f"Looking up CVEs for {product} {version} on port {port}..."):
                 try:
                     cve_raw = await session.call_tool("search_cve_intel", {"query": query})
                     cve_text = _extract_tool_text(cve_raw)
@@ -151,9 +156,9 @@ async def run_recon_assessment(
                             "results": cve_text[:2000],
                         }
                     )
-                    ui.result(f"CVEs for {product} {version}", cve_text[:600])
+                    _ui.result(f"CVEs for {product} {version}", cve_text[:600])
                 except _EXC_GROUP_CATCH as exc:
-                    ui.warning(f"CVE lookup skipped for {service}: {exc}")
+                    _ui.warning(f"CVE lookup skipped for {service}: {exc}")
                     if _is_exception_group(exc):
                         _log_nested_exceptions(exc)
 
@@ -168,7 +173,7 @@ async def run_recon_assessment(
     # ── Persist to reports dir ──
     assessment_path = reports_dir / "recon_assessment.json"
     assessment_path.write_text(json.dumps(assessment.to_dict(), indent=2), encoding="utf-8")
-    ui.info(f"Recon assessment saved to: {assessment_path}")
+    _ui.info(f"Recon assessment saved to: {assessment_path}")
 
     return assessment
 

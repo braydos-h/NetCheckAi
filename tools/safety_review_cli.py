@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tools.attack_ui import AttackUi
 from tools.goal_engine import AttackGoal
 from tools.safety_reviewer import SafetyReview, SafetyReviewer
 
 ui = AttackUi(plain=False)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from tools.runtime_context import RuntimeContext
 
 
 async def run_safety_review(
@@ -17,9 +20,16 @@ async def run_safety_review(
     result: dict[str, Any],
     target_ip: str,
     goal: AttackGoal,
+    *,
+    ctx: "RuntimeContext | None" = None,
 ) -> SafetyReview:
-    """After recon, send results to AI for safety review."""
-    ui.status("Reconnaissance complete. Running safety review...")
+    """After recon, send results to AI for safety review.
+
+    ``ctx`` selects the UI explicitly (see ``RuntimeContext``); omitted
+    means the module-global UI (back-compat).
+    """
+    _ui = ctx.ui if ctx is not None else ui
+    _ui.status("Reconnaissance complete. Running safety review...")
 
     # Extract results text for review
     parts: list[str] = []
@@ -32,7 +42,7 @@ async def run_safety_review(
     recon_summary = "\n\n".join(parts[:20])
     reviewer = SafetyReviewer(client, model)
     review = reviewer.review(recon_summary, target_ip, goal.description)
-    ui.display_safety_review(review)
+    _ui.display_safety_review(review)
     return review
 
 

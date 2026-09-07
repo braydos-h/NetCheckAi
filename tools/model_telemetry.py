@@ -201,7 +201,7 @@ def infer_source() -> str:
         # instead of falling through to "unknown" after the refactor.
         "loop.py": "exploit_agent",
         "context.py": "exploit_agent",
-        "ollama_client.py": "exploit_agent",
+        "model_client.py": "exploit_agent",
         "tool_calls.py": "exploit_agent",
         "prompt.py": "exploit_agent",
         "skills.py": "exploit_agent",

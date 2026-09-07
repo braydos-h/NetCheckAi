@@ -101,7 +101,7 @@ class AutonomousOrchestrator:
         # missions, not just within the exploit loop. Read-only consumer —
         # store_lesson writes to the lessons table; no execution authority.
         # Built from config when not supplied (mirrors agent_loop.py:172-182
-        # and tools/exploit_agent/loop.py:470-489). Gated by
+        # and tools/exploit_agent/runner/_impl.py). Gated by
         # ``orchestrator.semantic_memory`` (default false) so the wiring is
         # opt-in per the "new attack-path capabilities must be opt-in" rule.
         self._semantic_memory = semantic_memory

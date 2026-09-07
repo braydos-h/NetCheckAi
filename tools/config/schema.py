@@ -33,8 +33,10 @@ CONFIG_SCHEMA: dict[str, Any] = {
     "models": {
         # ponytail: chat/generate provider selector. ``ollama`` (default) is
         # the unchanged per-alias registry path. ``chatgpt`` routes through
-        # the local openai-oauth proxy (see the ``chatgpt`` block below).
-        # Absent key = ``ollama`` so first-run behavior is unchanged.
+        # the local openai-oauth proxy (see the ``chatgpt`` block below);
+        # ``opencode_go`` routes through the hosted Responses API (see the
+        # ``opencode_go`` block below). Absent key = ``ollama`` so first-run
+        # behavior is unchanged.
         "provider": "ollama",
         "registry": {
             "kimi": "kimi-k2.6:cloud",
@@ -42,6 +44,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
             "deepseek_flash": "deepseek-v4-flash:cloud",
             "glm": "glm-5.2:cloud",
             "minimax": "minimax-m3:cloud",
+            "glm3": "glm-5.3-flash",
         },
         "default_alias": "glm",
         # Auto-update the registry against the live Ollama API (GET /api/tags):
@@ -95,6 +98,11 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "label": "Minimax M3",
                 "context_window": 512000,
                 "description": "Minimax M3 (cloud) — 512K context, balanced coding + reasoning.",
+            },
+            "glm3": {
+                "label": "GLM-5.3 Flash",
+                "context_window": 128000,
+                "description": "Zhipu GLM-5.3 Flash — fast low-latency GLM option (128K context).",
             },
         },
     },

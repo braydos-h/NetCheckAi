@@ -56,6 +56,7 @@ DEFAULT_MODEL_REGISTRY: dict[str, str] = {
     "deepseek_flash": "deepseek-v4-flash:cloud",
     "glm": "glm-5.2:cloud",
     "minimax": "minimax-m3:cloud",
+    "glm3": "glm-5.3-flash",
 }
 
 _DEFAULT_TITLE_MODEL = "gemma4:31b-cloud"

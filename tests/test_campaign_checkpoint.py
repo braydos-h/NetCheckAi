@@ -80,7 +80,7 @@ class _RecordingHook:
 @pytest.mark.asyncio
 async def test_verified_compromise_creates_access_checkpoint(tmp_path):
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -111,7 +111,7 @@ async def test_verified_compromise_creates_access_checkpoint(tmp_path):
 @pytest.mark.asyncio
 async def test_cred_dump_creates_access_checkpoint(tmp_path):
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -148,7 +148,7 @@ async def test_natural_no_foothold_termination_creates_no_path_checkpoint(tmp_pa
     reporting phase, can_terminate passes, and the no-path checkpoint fires
     (no verified foothold). No can_terminate monkeypatch."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -197,7 +197,7 @@ async def test_single_failed_tool_call_no_checkpoint(tmp_path):
     """One blocked/failed call that trips terminal_constraint_reached terminates
     via the blocked path, not the natural-termination path → no checkpoint."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -242,7 +242,7 @@ async def test_single_failed_tool_call_no_checkpoint(tmp_path):
 async def test_continue_injects_objective_and_keeps_history(tmp_path):
     """'continue' appends a user-role objective message and does not break."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="continue", objective_text="NEW OBJECTIVE: try harder."))
     policy = _policy(tmp_path)
@@ -275,7 +275,7 @@ async def test_continue_injects_objective_and_keeps_history(tmp_path):
 @pytest.mark.asyncio
 async def test_cancel_sets_cancelled_flag(tmp_path):
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="cancel"))
     policy = _policy(tmp_path)
@@ -303,7 +303,7 @@ async def test_cancel_sets_cancelled_flag(tmp_path):
 @pytest.mark.asyncio
 async def test_finish_breaks_loop(tmp_path):
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -337,7 +337,7 @@ async def test_no_path_decision_loop_guard_requires_fresh_actions(tmp_path):
     """'continue' at a no-path checkpoint advances _last_no_path_action; a
     second natural-termination with no new actions does NOT re-prompt."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     # First call: continue. Second call: finish (so the loop stops).
     outcomes = iter(

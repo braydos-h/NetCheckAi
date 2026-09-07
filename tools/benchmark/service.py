@@ -23,7 +23,7 @@ __all__ = ["BenchmarkService"]
 class BenchmarkService:
     """Owns at most one active benchmark run (matches RunManager semantics)."""
 
-    def __init__(self, config: dict[str, Any], config_path: Path) -> None:
+    def __init__(self, config: dict[str, Any], config_path: Path, *, run_manager: Any = None) -> None:
         self.config = config
         self.config_path = Path(config_path)
         self.storage = BenchmarkStorage(
@@ -36,8 +36,19 @@ class BenchmarkService:
         self._start_lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
         self._status: dict[str, Any] = {"run_id": None, "state": "idle", "error": ""}
-        # ponytail: bound by app.create_app so runs count toward the cap.
-        self._run_manager: Any = None
+        # Explicit constructor injection (was a private cross-link poked by
+        # app.create_app): active API runs occupy benchmark slots. None =
+        # standalone (back-compat).
+        self._run_manager = run_manager
+
+    @property
+    def run_manager(self) -> Any:
+        """The attached run manager, if any (explicit wiring, not a poke)."""
+        return self._run_manager
+
+    @run_manager.setter
+    def run_manager(self, manager: Any) -> None:
+        self._run_manager = manager
 
     def is_active(self) -> bool:
         """True while a benchmark run is live."""

@@ -155,6 +155,7 @@ class RunManager:
         config: dict[str, Any],
         config_path: Path,
         callables: "Callables | None" = None,
+        benchmark_service: Any = None,
     ) -> None:
         self._persistence = persistence
         self._events = event_registry
@@ -167,8 +168,19 @@ class RunManager:
         # key every caller already has.
         self._active: dict[str, RunHandle] = {}
         self._lifecycle_lock = asyncio.Lock()
-        # ponytail: bound by app.create_app so benchmarks count toward the cap.
-        self._benchmark_service: Any = None
+        # Explicit constructor injection (was a private cross-link poked by
+        # app.create_app): the benchmark service occupies one concurrency
+        # slot via ``max_concurrent_runs``. None = standalone (back-compat).
+        self._benchmark_service = benchmark_service
+
+    @property
+    def benchmark_service(self) -> Any:
+        """The attached benchmark service, if any (explicit wiring, not a poke)."""
+        return self._benchmark_service
+
+    @benchmark_service.setter
+    def benchmark_service(self, service: Any) -> None:
+        self._benchmark_service = service
 
     @property
     def max_concurrent_runs(self) -> int:

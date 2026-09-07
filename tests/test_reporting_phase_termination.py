@@ -215,7 +215,7 @@ async def test_no_path_checkpoint_fires_without_can_terminate_monkeypatch(tmp_pa
     """Non-compromise run that met the other minima reaches the no-path
     operator checkpoint naturally (no can_terminate patching)."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
@@ -257,7 +257,7 @@ async def test_unmapped_tool_call_does_not_increment_reporting(tmp_path):
     it must never be counted as 'reporting'. The summary turn is the only
     source of the reporting credit, visible in the checkpoint evidence."""
     from tools.exploit_agent import run_exploit_agent
-    from tools.exploit_agent.loop import CheckpointOutcome
+    from tools.exploit_agent.runner import CheckpointOutcome
 
     hook = _RecordingHook(CheckpointOutcome(action="finish"))
     policy = _policy(tmp_path)
