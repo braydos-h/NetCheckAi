@@ -15,9 +15,10 @@ from __future__ import annotations
 import functools
 import inspect
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tools.kernel.allowlist import (
     _check_allowlist,
@@ -224,8 +225,101 @@ def _audit_log(
 
 _BLOCKED_RESULT_MARKERS = ("BLOCKED:", "TERMINAL_RESULT: BLOCKED", "ROOT_CMD_RESULT: BLOCKED", "ERROR:")
 
+# Structured terminal statuses for audit records. ``failed`` covers any
+# exception escaping the wrapped tool (including BaseExceptionGroup and
+# cancellation) — every ``started`` record is guaranteed a terminal sibling.
+# The legacy ``"BLOCKED:"`` text prefixes in MCP responses are preserved;
+# this model describes the audit record, not the wire format.
+AuditStatus = Literal["started", "completed", "blocked", "failed"]
+
+# Max characters of sanitized exception text kept in a failure record.
+_FAILURE_SUMMARY_LEN = 500
+
 # ponytail: cache mkdir'd parents — audit fires 2x per tool call.
 _MKDIR_CACHE: set[str] = set()
+
+
+def _failure_extra(exc: BaseException) -> dict[str, Any]:
+    """Build the audit ``extra`` payload for a tool failure.
+
+    Records the exception class name plus a sanitized one-line summary run
+    through the same credential-redaction pipeline as ordinary argument
+    logging — passwords, tokens, hashes, private keys, and Authorization
+    headers in exception text never reach disk in cleartext.
+    """
+    summary = _mask_secret_content(str(exc)) if str(exc) else ""
+    summary = " ".join(summary.split())[:_FAILURE_SUMMARY_LEN]
+    return {"error_class": type(exc).__name__, "error_summary": summary}
+
+
+def _extract_attempt_id(bound: "inspect.BoundArguments") -> str:
+    """Return the tool's attempt ID when it takes one, else ``""``."""
+    attempt_id = bound.arguments.get("attempt_id", "")
+    return attempt_id if isinstance(attempt_id, str) else ""
+
+
+def _safe_audit_log(audit_path: Path, **record: Any) -> None:
+    """Best-effort :func:`_audit_log` for the failure path only.
+
+    A full disk (or vanished workspace) must never mask the tool's original
+    exception — or erase its failure record by raising inside the handler.
+    Swallowing here is deliberate and narrow: normal-path audit writes keep
+    surfacing errors loudly.
+    """
+    import logging
+
+    try:
+        _audit_log(audit_path, **record)
+    except Exception as exc:  # noqa: BLE001 -- best-effort failure-path logging only
+        logging.getLogger(__name__).warning("audit failure record lost: %s", exc)
+
+
+def _log_terminal(
+    audit_path: Path,
+    *,
+    target_ip: str,
+    tool_name: str,
+    result: Any,
+    args: dict[str, Any],
+    attempt_id: str = "",
+    duration_seconds: float = 0.0,
+) -> None:
+    """Write the ``completed``/``blocked`` record for a returned result."""
+    blocked = _result_is_blocked(result)
+    _audit_log(
+        audit_path,
+        target_ip=target_ip,
+        tool_name=tool_name,
+        approved=not blocked,
+        status="blocked" if blocked else "completed",
+        args=args,
+        attempt_id=attempt_id,
+        duration_seconds=duration_seconds,
+    )
+
+
+def _log_failure(
+    audit_path: Path,
+    *,
+    target_ip: str,
+    tool_name: str,
+    exc: BaseException,
+    args: dict[str, Any],
+    attempt_id: str = "",
+    duration_seconds: float = 0.0,
+) -> None:
+    """Write the terminal ``failed`` record for an escaping exception."""
+    _safe_audit_log(
+        audit_path,
+        target_ip=target_ip,
+        tool_name=tool_name,
+        approved=False,
+        status="failed",
+        args=args,
+        attempt_id=attempt_id,
+        duration_seconds=duration_seconds,
+        extra=_failure_extra(exc),
+    )
 
 
 def _result_is_blocked(result: Any) -> bool:
