@@ -1165,7 +1165,610 @@ function Test-CheckoutSafe {
     return @{ Safe = $true; Reason = "clean checkout of $script:SourceFull ($($Checkout.Branch)@$($Checkout.Sha))" }
 }
 
-# __PART4__
+# ---------------------------------------------------------------------------
+# Install metadata + installer state machine
+# ---------------------------------------------------------------------------
+
+function Read-InstallMetadata {
+    param([string]$InstallDir)
+    $path = Join-Path $InstallDir $script:MetadataFileName
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        $obj = $raw | ConvertFrom-Json
+        return $obj
+    } catch {
+        Write-Log "Install metadata at $path is corrupt: $($_.Exception.Message)" -Level "WARN"
+        return [pscustomobject]@{ Corrupt = $true; Path = $path }
+    }
+}
+
+function Write-InstallMetadata {
+    param(
+        [string]$InstallDir,
+        [pscustomobject]$Resolved,
+        [string]$ArchiveSha256,
+        [string]$LauncherKind
+    )
+    $path = Join-Path $InstallDir $script:MetadataFileName
+    # Never store secrets here (tokens live in env / secr.json / .webui_secret_key).
+    $obj = [ordered]@{
+        repository        = $script:SourceFull
+        channel           = $Resolved.Channel
+        tag               = $Resolved.Tag
+        commit            = $Resolved.Sha
+        installed_at      = (Get-Date).ToUniversalTime().ToString("o")
+        installer_version = $script:InstallerVersion
+        archive_sha256    = $ArchiveSha256
+        launcher          = $LauncherKind
+        install_dir       = $InstallDir
+    }
+    $json = ($obj | ConvertTo-Json -Depth 4)
+    $tmp = "$path.tmp"
+    try {
+        Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8 -NoNewline:$false
+        Move-Item -LiteralPath $tmp -Destination $path -Force
+        Write-Log "Wrote install metadata: channel=$($Resolved.Channel) tag=$($Resolved.Tag) commit=$($Resolved.Sha)" -Level "INFO"
+    } catch {
+        if (Test-Path -LiteralPath $tmp) { try { Remove-Item -LiteralPath $tmp -Force } catch { } }
+        throw "Failed to write install metadata to $path`: $($_.Exception.Message)"
+    }
+}
+
+function Read-InstallState {
+    param([string]$InstallDir)
+    $path = Join-Path $InstallDir $script:StateFileName
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        Write-Log "Install state file corrupt; ignoring: $path" -Level "WARN"
+        return $null
+    }
+}
+
+function Write-InstallState {
+    param([string]$InstallDir, [string]$State)
+    $path = Join-Path $InstallDir $script:StateFileName
+    try {
+        $obj = [ordered]@{ state = $State; updated_at = (Get-Date).ToUniversalTime().ToString("o") }
+        Set-Content -LiteralPath $path -Value ($obj | ConvertTo-Json) -Encoding UTF8
+        Write-Log "Install state -> $State" -Level "INFO"
+    } catch {
+        Write-Log "Could not persist install state ($State): $($_.Exception.Message)" -Level "WARN"
+    }
+}
+
+function Clear-InstallState {
+    param([string]$InstallDir)
+    $path = Join-Path $InstallDir $script:StateFileName
+    if (Test-Path -LiteralPath $path) { try { Remove-Item -LiteralPath $path -Force } catch { } }
+}
+
+function Test-InterruptedInstall {
+    <#
+    .SYNOPSIS
+        Detect an unfinished previous run and decide how to recover.
+    .OUTPUTS
+        @{ Interrupted = <bool>; State = <string>; BackupDir = <string> }.
+    #>
+    param([string]$InstallDir)
+    $st = Read-InstallState -InstallDir $InstallDir
+    if ($null -eq $st -or [string]::IsNullOrWhiteSpace([string]$st.state)) {
+        return @{ Interrupted = $false; State = "none"; BackupDir = "" }
+    }
+    $state = [string]$st.state
+    if ($state -eq "completed") {
+        return @{ Interrupted = $false; State = $state; BackupDir = "" }
+    }
+    # Any non-completed persisted state means the last run did not finish.
+    $backupDir = ""
+    if (-not [string]::IsNullOrWhiteSpace([string]$st.backup_dir)) {
+        $backupDir = [string]$st.backup_dir
+    }
+    return @{ Interrupted = $true; State = $state; BackupDir = $backupDir }
+}
+
+# ---------------------------------------------------------------------------
+# Backup / restore / atomic deploy
+# ---------------------------------------------------------------------------
+
+function Backup-BreachPilotInstall {
+    <#
+    .SYNOPSIS
+        Copy the live install (minus venv/caches/build output) to a timestamped backup.
+    .OUTPUTS
+        Backup directory path, or "" when there is nothing to back up.
+    #>
+    param([string]$InstallDir)
+    if (-not (Test-Path -LiteralPath $InstallDir)) { return "" }
+    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $parent = Split-Path -Parent $InstallDir
+    $leaf = Split-Path -Leaf $InstallDir
+    $backup = Join-Path $parent "$leaf.backup-$stamp"
+    Write-Prog "Backing up existing installation to $backup ..."
+    $exclude = @(".venv", "venv", "__pycache__", ".git", "node_modules", "webui\node_modules", "webui\dist", ".mypy_cache", ".ruff_cache", ".pytest_cache")
+    try {
+        New-Item -ItemType Directory -Path $backup -Force | Out-Null
+        $items = Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction Stop
+        foreach ($item in $items) {
+            if ($exclude -contains $item.Name) { continue }
+            $rel = $item.Name
+            if (($InstallDir + "\webui") -eq $item.FullName) {
+                # webui: copy everything except node_modules/dist.
+                $destWeb = Join-Path $backup "webui"
+                New-Item -ItemType Directory -Path $destWeb -Force | Out-Null
+                foreach ($w in (Get-ChildItem -LiteralPath $item.FullName -Force)) {
+                    if ($exclude -contains $w.Name) { continue }
+                    Copy-Item -LiteralPath $w.FullName -Destination (Join-Path $destWeb $w.Name) -Recurse -Force
+                }
+                continue
+            }
+            Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $backup $rel) -Recurse -Force
+        }
+        Write-Ok "Backup created: $backup"
+        Write-Log "Backup created at $backup" -Level "INFO"
+        return $backup
+    } catch {
+        throw "Failed to back up $InstallDir to $backup`: $($_.Exception.Message)"
+    }
+}
+
+function Restore-BreachPilotInstall {
+    param([string]$InstallDir, [string]$BackupDir)
+    if ([string]::IsNullOrWhiteSpace($BackupDir) -or -not (Test-Path -LiteralPath $BackupDir)) {
+        throw "NONRETRY: Cannot roll back: backup directory '$BackupDir' is missing."
+    }
+    Write-Prog "Rolling back: restoring $BackupDir -> $InstallDir ..."
+    # Remove the failed new tree (but keep the backup itself, which lives beside it).
+    $failedStaging = Join-Path ([System.IO.Path]::GetTempPath()) ("bp-failed-" + [guid]::NewGuid().ToString("N"))
+    try {
+        if (Test-Path -LiteralPath $InstallDir) {
+            New-Item -ItemType Directory -Path $failedStaging -Force | Out-Null
+            $failedCopy = Join-Path $failedStaging (Split-Path -Leaf $InstallDir)
+            Move-Item -LiteralPath $InstallDir -Destination $failedCopy -Force
+            Write-Log "Moved failed tree to $failedCopy for forensics." -Level "WARN"
+        }
+        Move-Item -LiteralPath $BackupDir -Destination $InstallDir -Force
+        Write-Ok "Rollback complete: previous installation restored."
+        Write-Log "Rollback complete from $BackupDir" -Level "INFO"
+    } catch {
+        throw "Rollback FAILED: $($_.Exception.Message). Previous files are at '$BackupDir'; failed tree (if moved) is under '$failedStaging'."
+    }
+}
+
+function Copy-PreservedData {
+    <#
+    .SYNOPSIS
+        Restore user data/config/secrets from the backup into the fresh tree.
+    .DESCRIPTION
+        Explicit per-item migration (never a blanket copy): secrets and configs
+        (secr.json, .env, .webui_secret_key) and runtime data dirs are copied
+        back; the fresh config.yaml is kept but any operator-modified keys are
+        NOT clobbered — operator config wins: if the backup had config.yaml, it
+        is restored over the fresh default (operator edits preserved).
+    #>
+    param([string]$BackupDir, [string]$InstallDir)
+    if ([string]::IsNullOrWhiteSpace($BackupDir) -or -not (Test-Path -LiteralPath $BackupDir)) { return }
+    foreach ($name in $script:PreserveNames) {
+        $src = Join-Path $BackupDir $name
+        if (-not (Test-Path -LiteralPath $src)) { continue }
+        $dst = Join-Path $InstallDir $name
+        try {
+            if ((Get-Item -LiteralPath $src) -is [System.IO.DirectoryInfo]) {
+                if (-not (Test-Path -LiteralPath $dst)) {
+                    New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                }
+                # Merge: copy backup content into the fresh dir without deleting
+                # anything the fresh tree legitimately added.
+                Copy-Item -LiteralPath (Join-Path $src "*") -Destination $dst -Recurse -Force
+            } else {
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+            }
+            Write-Log "Preserved user data: $name" -Level "INFO"
+        } catch {
+            Write-Warn "Could not restore preserved item '$name': $($_.Exception.Message)"
+        }
+    }
+}
+
+function Deploy-StagedTree {
+    <#
+    .SYNOPSIS
+        Atomically replace the live install with the validated staged tree.
+    .DESCRIPTION
+        Steps: backup live -> move live aside -> move staged in -> restore
+        preserved data. The old live tree is kept as the backup until the caller
+        deletes it after critical validation (unless -KeepBackup).
+    #>
+    param(
+        [string]$InstallDir,
+        [string]$StagedRoot,
+        [ref]$BackupDirOut
+    )
+    $backup = ""
+    if (Test-Path -LiteralPath $InstallDir) {
+        $backup = Backup-BreachPilotInstall -InstallDir $InstallDir
+        $BackupDirOut.Value = $backup
+        # Move the live tree aside so the staged tree takes its exact path.
+        $aside = "$InstallDir.deploy-aside"
+        if (Test-Path -LiteralPath $aside) {
+            try { Remove-Item -LiteralPath $aside -Recurse -Force } catch { }
+        }
+        Move-Item -LiteralPath $InstallDir -Destination $aside -Force
+        try {
+            Move-Item -LiteralPath $StagedRoot -Destination $InstallDir -Force
+            try { Remove-Item -LiteralPath $aside -Recurse -Force } catch {
+                Write-Log "Could not remove deploy-aside dir $aside`: $($_.Exception.Message)" -Level "WARN"
+            }
+        } catch {
+            # Deploy failed mid-move: put the live tree back immediately.
+            try {
+                if (Test-Path -LiteralPath $InstallDir) {
+                    try { Remove-Item -LiteralPath $InstallDir -Recurse -Force } catch { }
+                }
+                Move-Item -LiteralPath $aside -Destination $InstallDir -Force
+            } catch {
+                throw "Deploy failed AND live-tree restore failed: $($_.Exception.Message). Backup is at '$backup'."
+            }
+            throw "Deploy failed; live tree restored from aside copy: $($_.Exception.Message)"
+        }
+    } else {
+        $parent = Split-Path -Parent $InstallDir
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        Move-Item -LiteralPath $StagedRoot -Destination $InstallDir -Force
+        $BackupDirOut.Value = ""
+    }
+    if (-not [string]::IsNullOrWhiteSpace($backup)) {
+        Copy-PreservedData -BackupDir $backup -InstallDir $InstallDir
+    }
+    return $backup
+}
+
+# ---------------------------------------------------------------------------
+# Package managers + dependency installation
+# ---------------------------------------------------------------------------
+
+function Get-PackageManagers {
+    $managers = @()
+    if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+        $managers += "winget"
+    }
+    if ($null -ne (Get-Command choco -ErrorAction SilentlyContinue)) {
+        $managers += "choco"
+    }
+    if ($null -ne (Get-Command scoop -ErrorAction SilentlyContinue)) {
+        $managers += "scoop"
+    }
+    return $managers
+}
+
+function Install-Dependency {
+    <#
+    .SYNOPSIS
+        Install one dependency via the best available package manager.
+    .DESCRIPTION
+        Never trusts the manager exit code alone: re-detects the command and
+        verifies it executes afterward. Requires interactive approval unless
+        -Yes/-Force. Honors -Offline (refuses) and -Check (reports only).
+        Winget IDs are explicit per tool; choco/scoop are fallbacks where the
+        package name is well-known, otherwise the user is told the winget ID.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $true)][string]$DetectCommand,
+        [Parameter(Mandatory = $true)][string]$WingetId,
+        [string]$ChocoPackage = "",
+        [string]$ManualUrl = "",
+        [string]$WhyNeeded = ""
+    )
+    $found = Get-Command $DetectCommand -ErrorAction SilentlyContinue
+    if ($null -ne $found) {
+        return @{ Installed = $true; Path = $found.Source; Changed = $false }
+    }
+    if ($Check) {
+        $msg = "Would install $DisplayName (winget $WingetId)"
+        if ($ManualUrl) { $msg += "; manual: $ManualUrl" }
+        Write-Skip $msg
+        return @{ Installed = $false; Path = ""; Changed = $false }
+    }
+    if ($Offline) {
+        throw "NONRETRY: $DisplayName is missing and -Offline forbids installing it. Install manually ($ManualUrl) and re-run."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WhyNeeded)) {
+        Write-Info "$DisplayName is needed: $WhyNeeded"
+    }
+    $managers = Get-PackageManagers
+    if ($managers.Count -eq 0) {
+        Write-Warn "$DisplayName is missing and no package manager (winget/choco/scoop) is available. Manual install: $ManualUrl"
+        Add-ActionRequired "Install ${DisplayName}: $ManualUrl, then re-run install.ps1"
+        return @{ Installed = $false; Path = ""; Changed = $false }
+    }
+    $approved = $false
+    if ($Yes -or $Force) {
+        $approved = $true
+        Write-Prog "Installing $DisplayName via $($managers[0]) (non-interactive)..."
+    } else {
+        $answer = Read-Host "   Install $DisplayName via $($managers[0])? [y/N]"
+        if ($answer -match "^(?i:y|yes)$") { $approved = $true }
+    }
+    if (-not $approved) {
+        Write-Skip "$DisplayName install declined. Manual install: $ManualUrl"
+        Add-ActionRequired "Install ${DisplayName}: $ManualUrl, then re-run install.ps1"
+        return @{ Installed = $false; Path = ""; Changed = $false }
+    }
+    $installed = $false
+    if ($managers -contains "winget") {
+        try {
+            Invoke-ExternalCommand -Command "winget" -Arguments @("install", "--id", $WingetId, "-e", "--silent",
+                "--accept-package-agreements", "--accept-source-agreements") -TimeoutSeconds 900 -AllowFailure | Out-Null
+        } catch {
+            Write-Log "winget install $WingetId threw: $($_.Exception.Message)" -Level "WARN"
+        }
+        Refresh-ProcessEnvironment
+        Start-Sleep -Seconds 2
+        Refresh-ProcessEnvironment
+    } elseif (($managers -contains "choco") -and (-not [string]::IsNullOrWhiteSpace($ChocoPackage))) {
+        try {
+            Invoke-ExternalCommand -Command "choco" -Arguments @("install", $ChocoPackage, "-y") -TimeoutSeconds 900 -AllowFailure | Out-Null
+        } catch {
+            Write-Log "choco install $ChocoPackage threw: $($_.Exception.Message)" -Level "WARN"
+        }
+        Refresh-ProcessEnvironment
+    } else {
+        Write-Warn "No supported automatic install path for $DisplayName on this machine (have: $($managers -join ', ')). Manual install: $ManualUrl"
+        Add-ActionRequired "Install ${DisplayName}: $ManualUrl, then re-run install.ps1"
+        return @{ Installed = $false; Path = ""; Changed = $false }
+    }
+    # Verify: re-detect AND execute (never trust the manager exit code alone).
+    $again = Get-Command $DetectCommand -ErrorAction SilentlyContinue
+    if ($null -eq $again) {
+        Refresh-ProcessEnvironment
+        Start-Sleep -Seconds 2
+        $again = Get-Command $DetectCommand -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $again) {
+        $ver = Get-CommandVersion -Command $DetectCommand
+        if ($null -ne $ver) {
+            Write-Ok "$DisplayName now available: $($again.Source)"
+            return @{ Installed = $true; Path = $again.Source; Changed = $true }
+        }
+    }
+    Write-Warn "$DisplayName install ran but '$DetectCommand' is still not usable on PATH. Open a NEW terminal (package managers often need one) and re-run install.ps1. Manual: $ManualUrl"
+    Add-ActionRequired "$DisplayName installed but not on PATH yet: open a new terminal and re-run install.ps1 (exit code 9 signals this)."
+    return @{ Installed = $false; Path = ""; Changed = $true }
+}
+
+# ---------------------------------------------------------------------------
+# Python discovery, install, venv, dependencies
+# ---------------------------------------------------------------------------
+
+function Find-BestPython {
+    <#
+    .SYNOPSIS
+        Discover the best compatible Python interpreter (>= 3.11).
+    .DESCRIPTION
+        Probes `py`, `python`, `python3`, then known Windows install locations.
+        Skips the Windows Store stub (WindowsApps\python.exe) which opens the
+        Store instead of running Python. Parses the real version and picks the
+        highest compatible interpreter. Returns $null when none qualifies.
+    #>
+    $candidates = New-Object System.Collections.ArrayList
+    foreach ($name in @("py", "python", "python3")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) { continue }
+        if ($cmd.Source -match "(?i)WindowsApps") {
+            Write-Log "Skipping Windows Store alias: $($cmd.Source)" -Level "INFO"
+            continue
+        }
+        $null = $candidates.Add(@{ Name = $name; Path = $cmd.Source; Args = @() })
+        if ($name -eq "py") {
+            # The launcher can hide a newer Python behind `-3`; probe both.
+            $null = $candidates.Add(@{ Name = "py -3"; Path = $cmd.Source; Args = @("-3") })
+        }
+    }
+    # Known install locations (per-user + machine, 3.11-3.13+, x64/ARM64).
+    $roots = @()
+    foreach ($base in @($env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)}, "C:\Python311", "C:\Python312", "C:\Python313")) {
+        if (-not [string]::IsNullOrWhiteSpace($base)) { $roots += $base }
+    }
+    foreach ($root in $roots) {
+        foreach ($leaf in @("Programs\Python\Python311\python.exe", "Programs\Python\Python312\python.exe",
+                "Programs\Python\Python313\python.exe", "Programs\Python\Python314\python.exe",
+                "Python311\python.exe", "Python312\python.exe", "Python313\python.exe", "python.exe")) {
+            try {
+                $p = Join-Path $root $leaf
+                if ((Test-Path -LiteralPath $p) -and ($p -notmatch "(?i)WindowsApps")) {
+                    $null = $candidates.Add(@{ Name = $p; Path = $p; Args = @() })
+                }
+            } catch { }
+        }
+    }
+    $best = $null
+    $bestVer = $null
+    foreach ($c in $candidates) {
+        try {
+            $args = @() + $c.Args + @("--version")
+            $r = Invoke-ExternalCommand -Command $c.Path -Arguments $args -TimeoutSeconds 15 -AllowFailure
+            $raw = ($r.StdOut + " " + $r.StdErr).Trim()
+            if ($r.ExitCode -ne 0) { continue }
+            $m = [regex]::Match($raw, "(\d+)\.(\d+)\.(\d+)")
+            if (-not $m.Success) { continue }
+            $v = New-Object Version([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$m.Groups[3].Value)
+            if ($v -lt $script:MinPython) {
+                Write-Log "Python too old ($v): $($c.Path)" -Level "INFO"
+                continue
+            }
+            # Sanity: must be able to run code (Store stub passes --version rarely, but be sure).
+            $probe = Invoke-ExternalCommand -Command $c.Path -Arguments (@() + $c.Args + @("-c", "import sys;print(sys.version_info[0])")) -TimeoutSeconds 15 -AllowFailure
+            if ($probe.ExitCode -ne 0) { continue }
+            if ($null -eq $bestVer -or $v -gt $bestVer) {
+                $bestVer = $v
+                $best = @{ Command = $c.Name; Path = $c.Path; ExtraArgs = $c.Args; Version = "$v"; Raw = $raw }
+            }
+        } catch {
+            Write-Log "Python probe failed for $($c.Path): $($_.Exception.Message)" -Level "DEBUG"
+        }
+    }
+    return $best
+}
+
+function Install-PythonEnvironment {
+    <#
+    .SYNOPSIS
+        Ensure a compatible Python exists (installing via winget if approved).
+    .OUTPUTS
+        Python info hashtable from Find-BestPython, or throws ExitDependency.
+    #>
+    $py = Find-BestPython
+    if ($null -ne $py) {
+        Write-Ok "Python $($py.Version) ($($py.Command))"
+        return $py
+    }
+    if ($Check) {
+        Write-Skip "Would install Python 3.12 via winget (Python.Python.3.12)"
+        return $null
+    }
+    if ($Offline) {
+        throw "NONRETRY: No compatible Python (>= 3.11) found and -Offline forbids installing one."
+    }
+    Write-Warn "No compatible Python (>= 3.11) found."
+    $res = Install-Dependency -DisplayName "Python 3.12" -DetectCommand "python" `
+        -WingetId "Python.Python.3.12" -ChocoPackage "python" `
+        -ManualUrl "https://www.python.org/downloads/ (tick 'Add Python to PATH')" `
+        -WhyNeeded "BreachPilot requires Python 3.11+ (pyproject.toml requires-python)."
+    $py = Find-BestPython
+    if ($null -eq $py) {
+        throw "Python 3.11+ is required but none is usable. Install from https://www.python.org/downloads/ (tick 'Add Python to PATH'), open a NEW terminal, and re-run install.ps1."
+    }
+    Write-Ok "Python $($py.Version) ($($py.Command))"
+    return $py
+}
+
+function Test-VenvHealthy {
+    param([string]$VenvPython, [string]$InstallDir)
+    if ([string]::IsNullOrWhiteSpace($VenvPython)) { return @{ Healthy = $false; Reason = "no venv python path" } }
+    if (-not (Test-Path -LiteralPath $VenvPython)) { return @{ Healthy = $false; Reason = "venv interpreter missing: $VenvPython" } }
+    try {
+        $r = Invoke-ExternalCommand -Command $VenvPython -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+        if ($r.ExitCode -ne 0) { return @{ Healthy = $false; Reason = "venv python --version failed" } }
+        if (-not (Test-PythonVersionSupported -VersionText ($r.StdOut + " " + $r.StdErr))) {
+            return @{ Healthy = $false; Reason = "venv python version unsupported: $($r.StdOut.Trim())" }
+        }
+        # Must belong to this install (prefix/pyvenv.cfg check), not a stray venv.
+        $cfg = Join-Path (Split-Path -Parent (Split-Path -Parent $VenvPython)) "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $cfg)) {
+            return @{ Healthy = $false; Reason = "pyvenv.cfg missing — not a real venv" }
+        }
+        $pip = Invoke-ExternalCommand -Command $VenvPython -Arguments @("-m", "pip", "--version") -TimeoutSeconds 20 -AllowFailure
+        if ($pip.ExitCode -ne 0) { return @{ Healthy = $false; Reason = "pip broken inside venv" } }
+        $yaml = Invoke-ExternalCommand -Command $VenvPython -Arguments @("-c", "import yaml, fastapi, mcp; print('deps-ok')") -TimeoutSeconds 30 -AllowFailure
+        if ($yaml.ExitCode -ne 0) {
+            return @{ Healthy = $true; Reason = "venv works but project deps missing (pip install needed)"; NeedsDeps = $true }
+        }
+        return @{ Healthy = $true; Reason = "ok" }
+    } catch {
+        return @{ Healthy = $false; Reason = $_.Exception.Message }
+    }
+}
+
+function Install-VenvAndDeps {
+    <#
+    .SYNOPSIS
+        Create/repair .venv and install the canonical dependency set.
+    .DESCRIPTION
+        Canonical source is requirements.txt (header: == pip install -e
+        ".[ollama,dev]"). Never installs both requirements.txt and pyproject
+        extras (that would duplicate/conflict). Calls the venv interpreter
+        explicitly; never depends on activation.
+    #>
+    param(
+        [hashtable]$Python,
+        [string]$InstallDir
+    )
+    $venvDir = Join-Path $InstallDir ".venv"
+    $venvPy = Join-Path $venvDir "Scripts\python.exe"
+    $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+    if ($health.Healthy -and -not $health.NeedsDeps -and -not $Force) {
+        $r = Invoke-ExternalCommand -Command $venvPy -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+        Write-Ok "venv healthy ($($r.StdOut.Trim())), deps present — skipping recreate."
+        return $venvPy
+    }
+    if ($health.Healthy -and $health.NeedsDeps -and -not $Force) {
+        Write-Prog "venv works but project deps are missing — installing deps only."
+    } elseif (-not $health.Healthy) {
+        Write-Prog "venv $($health.Reason) — (re)creating..."
+        if ((Test-Path -LiteralPath $venvDir) -and $Force) {
+            try { Remove-Item -LiteralPath $venvDir -Recurse -Force } catch {
+                Write-Warn "Could not remove broken venv at $venvDir`: $($_.Exception.Message). Trying to reuse it."
+            }
+        } elseif (Test-Path -LiteralPath $venvDir) {
+            # Broken venv without -Force: still recreate (a broken venv can never
+            # be "already correct"), but say so loudly.
+            Write-Warn "Removing broken venv at $venvDir (recreate required)."
+            try { Remove-Item -LiteralPath $venvDir -Recurse -Force } catch {
+                throw "Cannot remove broken venv at $venvDir`: $($_.Exception.Message). Delete it manually and re-run."
+            }
+        }
+        if (-not (Test-Path -LiteralPath $venvPy)) {
+            $pyArgs = @() + $Python.ExtraArgs + @("-m", "venv", $venvDir)
+            try {
+                Invoke-ExternalCommand -Command $Python.Path -Arguments $pyArgs -TimeoutSeconds 300
+            } catch {
+                throw "venv creation failed: $($_.Exception.Message). On Windows this usually means the Python install lacks venv support — reinstall Python from python.org (not the Store) and re-run."
+            }
+        }
+        $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+        if (-not $health.Healthy -and -not $health.NeedsDeps) {
+            throw "venv created but unusable: $($health.Reason)"
+        }
+        Write-Ok "venv created at $venvDir"
+    }
+    # Upgrade packaging tooling (safe: pip/setuptools/wheel inside our own venv).
+    try {
+        Invoke-ExternalCommand -Command $venvPy -Arguments @("-m", "pip", "install", "--upgrade", "pip") -TimeoutSeconds 300 | Out-Null
+        Write-Log "pip upgraded." -Level "INFO"
+    } catch {
+        Write-Warn "pip upgrade had warnings — continuing. ($($_.Exception.Message))"
+    }
+    # Canonical install: requirements.txt only (== .[ollama,dev]; see its header).
+    $req = Join-Path $InstallDir "requirements.txt"
+    if (-not (Test-Path -LiteralPath $req)) {
+        throw "NONRETRY: requirements.txt missing under $InstallDir — source tree incomplete."
+    }
+    $pipLog = ""
+    try {
+        $res = Invoke-ExternalCommand -Command $venvPy -Arguments @("-m", "pip", "install", "-r", $req) -TimeoutSeconds 1800
+        Write-Ok "Python dependencies installed (requirements.txt)."
+    } catch {
+        Write-Warn "pip install failed once; retrying after 5s... ($($_.Exception.Message))"
+        Start-Sleep -Seconds 5
+        try {
+            Invoke-ExternalCommand -Command $venvPy -Arguments @("-m", "pip", "install", "-r", $req) -TimeoutSeconds 1800 | Out-Null
+            Write-Ok "Python dependencies installed on retry."
+        } catch {
+            $pipLog = $_.Exception.Message
+            Write-Log "pip install full error: $pipLog" -Level "ERROR"
+            throw "pip install -r requirements.txt failed twice. Check network access to pypi.org and re-run install.ps1 (idempotent). Last error: $pipLog"
+        }
+    }
+    # Verify the venv can now import the core stack.
+    $verify = Invoke-ExternalCommand -Command $venvPy -Arguments @("-c", "import yaml, fastapi, mcp; print('deps-ok')") -TimeoutSeconds 60 -AllowFailure
+    if ($verify.ExitCode -ne 0) {
+        throw "Dependencies installed but core imports still fail: $($verify.StdErr). Re-run with -Repair."
+    }
+    try {
+        $pv = (Invoke-ExternalCommand -Command $venvPy -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure).StdOut.Trim()
+        $pp = (Invoke-ExternalCommand -Command $venvPy -Arguments @("-m", "pip", "--version") -TimeoutSeconds 20 -AllowFailure).StdOut.Trim()
+        Write-Log "venv python: $pv | $pp" -Level "INFO"
+    } catch { }
+    return $venvPy
+}
+
+# __PART6__
 
 # ---------------------------------------------------------------------------
 # Bootstrap: help, arg validation, logging, UX helpers
