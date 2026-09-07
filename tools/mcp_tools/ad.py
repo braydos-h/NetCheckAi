@@ -46,6 +46,13 @@ _IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _MAX_COMMAND_CHARS = 2000
 # Longest ticket lifetime accepted (10y in days); larger values clamp.
 _MAX_DURATION_DAYS = 3650
+# Display cap for tool output tails. Gates always see the FULL input; only
+# the shown OUTPUT tail is truncated, marked with a [truncated] marker.
+_OUTPUT_CHARS = 4000
+# One char of fetch slack past _OUTPUT_CHARS: the shared runner slices
+# silently at max_chars, so a full-length fetch proves trimming happened and
+# _tail must fire the marker; anything shorter is shown verbatim.
+_FETCH_CHARS = _OUTPUT_CHARS + 1
 
 
 def _ad_cfg(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -252,6 +259,24 @@ def _clamp_duration(duration: str) -> tuple[str, str | None]:
     return f"{amount}{m.group(2) or 'd'}", None
 
 
+def _tail(output: str) -> str:
+    """Mark an output tail as truncated when the tool trimmed it.
+
+    Args:
+        output: Raw tool output (already tail-sliced by the runner).
+    Returns:
+        ``output`` unchanged when within ``_OUTPUT_CHARS``; otherwise the
+        tail plus a ``[truncated]`` marker so the caller knows content above
+        was elided. Display-only: gates always ran on the full input.
+    Gates: None (display helper).
+    Side-effects: None.
+    """
+    text = output or ""
+    if len(text) <= _OUTPUT_CHARS:
+        return text
+    return text[-_OUTPUT_CHARS:] + "\n[truncated]"
+
+
 def _run(argv: list[str], timeout: int) -> tuple[str, int | None, str]:
     """Run argv via the shared captured-run helper.
 
@@ -260,12 +285,13 @@ def _run(argv: list[str], timeout: int) -> tuple[str, int | None, str]:
         timeout: Hard timeout in seconds.
     Returns:
         ``(status, returncode, output)``; returncode is preserved so callers
-        surface it as EXIT_CODE.
+        surface it as EXIT_CODE. The output is the tail (``_OUTPUT_CHARS``)
+        with a ``[truncated]`` marker when the tool trimmed it.
     Gates: None (caller pre-gates).
     Side-effects: Spawns the child process.
     """
-    status, returncode, output, _ = run_argv_captured(argv, timeout, max_chars=4000)
-    return status, returncode, output
+    status, returncode, output, _ = run_argv_captured(argv, timeout, max_chars=_FETCH_CHARS)
+    return status, returncode, _tail(output)
 
 
 def _run_with_cwd_env(
@@ -298,7 +324,7 @@ def _run_with_cwd_env(
             cwd=str(cwd),
             env=env,
         )
-        output = ((out or "") + "\n" + (err or ""))[-4000:]
+        output = _tail(((out or "") + "\n" + (err or ""))[-_FETCH_CHARS:])
         return ("completed" if returncode == 0 else "failed"), returncode, output
     except subprocess.TimeoutExpired:
         name = argv[0] if argv else "command"

@@ -349,7 +349,7 @@ def create_router(
                         continue
                     cursor = max(cursor, int(live.get("sequence", 0) or 0))
                     yield f"data: {json.dumps(live, default=str)}\n\n"
-                    if live.get("type") in ("run_end", "run_error"):
+                    if live.get("type") in ("run_end", "run_error") and live.get("run_id") in (None, run_id):
                         break
             finally:
                 svc.unsubscribe(queue)

@@ -27,6 +27,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from tools import nmap_priv
+
 
 def _check_python() -> dict[str, Any]:
     v = sys.version_info
@@ -110,12 +112,38 @@ def _check_linux_privilege() -> dict[str, Any]:
     sudo_on = bool(_DOCTOR_NMAP_CFG.get("sudo", False))
     if euid == 0:
         return {"name": "linux_privilege", "ok": True, "value": f"root (euid={euid})"}
+    try:
+        cap_net_raw = bool(nmap_priv._nmap_has_cap_net_raw())
+    except Exception:
+        cap_net_raw = False
     if sudo_on:
+        try:
+            sudo_ok = bool(nmap_priv._can_passwordless_sudo())
+        except Exception:
+            sudo_ok = False
+        if sudo_ok:
+            return {
+                "name": "linux_privilege",
+                "ok": True,
+                "value": f"euid={euid} (sudo enabled)",
+                "note": "nmap.sudo=true: -O/-sS run via sudo -n (needs passwordless sudo)",
+            }
         return {
             "name": "linux_privilege",
             "ok": True,
             "value": f"euid={euid} (sudo enabled)",
-            "note": "nmap.sudo=true: -O/-sS run via sudo -n (needs passwordless sudo)",
+            "note": (
+                "nmap.sudo=true but no passwordless sudo detected: sudo -n will fail. "
+                "Add a NOPASSWD rule (e.g. /etc/sudoers.d/breachpilot-nmap) or set "
+                "nmap.sudo: false to use the unprivileged downgrade."
+            ),
+        }
+    if cap_net_raw:
+        return {
+            "name": "linux_privilege",
+            "ok": True,
+            "value": f"euid={euid} (non-root, cap_net_raw on nmap binary)",
+            "note": "nmap carries effective file CAP_NET_RAW: -O/-sS work without root.",
         }
     return {
         "name": "linux_privilege",

@@ -1,4 +1,29 @@
-"""Execution tools for terminal MCP (run_exploit_terminal, run_as_root, git_clone)."""
+"""Execution tools for terminal MCP (run_exploit_terminal, run_as_root, git_clone).
+
+Family: interactive shell funnel + privileged exec + repo fetch.
+
+Tool-type classification (gates):
+- ``run_exploit_terminal`` -- command-content, no ``target_ip`` param:
+  ``@audit_tool`` + MANUAL ``_target_lock_block`` on the FULL sanitized
+  command (RULE-LOCK-FIRST: the gate sees every destination; only display
+  OUTPUT tails are truncated, with a ``[truncated]`` marker).
+- ``run_as_root`` -- command-content, no ``target_ip`` param: ``@audit_tool``
+  + preflight check + MANUAL ``_target_lock_block`` on the FULL sanitized
+  command (fires BEFORE the sudo pivot) + ``_require_sudo_or_pivot``.
+- ``git_clone`` -- local-only (no ``target_ip`` param, no target touch):
+  ``@audit_tool`` ONLY, never an allowlist. URL format gate + existence
+  preflight (advisory warning, never blocks) + workspace containment.
+
+Intentional shell paths (preserved, never extended): the host
+``run_exploit_terminal`` path runs the FULL sanitized command through a
+wrapper script (``run_exploit.sh`` / ``run_exploit.cmd``) so ``&&`` chaining,
+pipes, and redirects keep working; ``run_as_root`` runs
+``bash -c "sudo <command> 2>&1"``. No other tool in this family uses a shell
+(``git_clone`` host path is a pure argv list). Secrets are never capped
+(RULE-NO-CAP-SECRETS): the only size bound on commands is an MB-scale
+anti-fill cap; persisted logs are secret-masked + capped while live OUTPUT
+stays verbatim (cracking workflows need the recovered plaintext).
+"""
 
 from __future__ import annotations
 
@@ -12,10 +37,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tools.exceptions import _EXC_GROUP_CATCH, _log_nested_exceptions
 from tools.kernel.audit import _mask_secret_content
 from tools.mcp_shared import _is_inside_workspace
-from tools.mcp_tools.registry import ToolContext, _attempt_dir, _run_with_pgrp_timeout
+from tools.mcp_tools.registry import ToolContext, _attempt_dir, _positive_int, _run_with_pgrp_timeout
 from tools.mcp_tools.sandbox_exec import (
     collect_command_targets,
     loopback_hint,
@@ -31,17 +55,100 @@ from tools.validation_utils import preflight_command_check
 
 __all__ = ["_register_execute_tools"]
 
+# MB-scale anti-fill ONLY (per RULE-NO-CAP-SECRETS): commands carrying
+# code/passwords/PEM/base64 are never capped small; this just stops a runaway
+# write from filling the operator disk or blowing past ARG_MAX.
+_MAX_COMMAND_CHARS = 10 * 1024 * 1024
+# Display OUTPUT tails (live result) + persisted-log bound (terminal.log).
+_OUTPUT_CHARS = 4000
+_GIT_OUTPUT_CHARS = 3000
+_MAX_LOG_FILE_CHARS = 200_000
+
+
+def _tail(text: Any, limit: int) -> str:
+    """Last ``limit`` chars of ``text`` with a ``[truncated]`` marker when cut.
+
+    Args:
+        text: Raw output (None-safe, stringified).
+        limit: Max chars to show (tail).
+
+    Returns:
+        Full text when short, else a ``[truncated ...]`` header + last
+        ``limit`` chars. Gates always saw the FULL text; only display is cut.
+
+    Gates:
+        None (pure display helper).
+
+    Side-effects:
+        None.
+    """
+    body = str(text or "")
+    if len(body) <= limit:
+        return body
+    return f"[truncated - showing last {limit} of {len(body)} chars]\n{body[-limit:]}"
+
+
+def _config_timeout(config: Any, default: int = 300) -> int:
+    """Host/sandbox run timeout from ``exploit.command_timeout_seconds``.
+
+    Args:
+        config: Full config dict (reads the ``exploit`` block).
+        default: Fallback seconds when the key is missing/invalid.
+
+    Returns:
+        Positive-int seconds (validated via ``_positive_int``).
+
+    Gates:
+        None (reads config; validation falls back, never raises).
+
+    Side-effects:
+        None.
+    """
+    try:
+        raw = (config or {}).get("exploit", {}).get("command_timeout_seconds", default)
+    except (AttributeError, TypeError):
+        return default
+    return _positive_int(raw, default)
+
 
 def _sandbox_terminal_ok(result: Any) -> tuple[str, str, int | None, float]:
-    """(status, output_tail, exit_code, duration) from a contained SandboxResult."""
+    """(status, output_tail, exit_code, duration) from a contained SandboxResult.
+
+    Args:
+        result: Sandbox result with ``stdout`` / ``stderr`` / ``status`` /
+            ``exit_code`` / ``duration_seconds``.
+
+    Returns:
+        Tuple of status, verbatim OUTPUT tail (marked when trimmed),
+        exit code, and duration.
+
+    Gates:
+        None (renders the contained execution -- the sandbox already gated).
+
+    Side-effects:
+        None.
+    """
     merged = result.stdout or ""
     if result.stderr:
         merged = f"{merged}\n{result.stderr}" if merged else result.stderr
-    tail = merged[-4000:]
-    return result.status, tail, result.exit_code, result.duration_seconds
+    return result.status, _tail(merged, _OUTPUT_CHARS), result.exit_code, result.duration_seconds
 
 
 def _sandbox_status_line(manager: Any) -> str:
+    """One-line sandbox identity for the result block (advisory, never blocks).
+
+    Args:
+        manager: Session sandbox manager (``status()`` dict).
+
+    Returns:
+        ``SANDBOX:`` line, or a bare fallback when the probe fails.
+
+    Gates:
+        None (advisory only).
+
+    Side-effects:
+        None.
+    """
     try:
         st = manager.status()
         return (
@@ -53,6 +160,18 @@ def _sandbox_status_line(manager: Any) -> str:
 
 
 def _platform_system() -> str:
+    """Operator OS name (Windows vs platform.system()).
+
+    Returns:
+        ``"Windows"`` on operator Windows, else ``platform.system()``
+        (``"Linux"`` fallback when the probe fails).
+
+    Gates:
+        None.
+
+    Side-effects:
+        None.
+    """
     import platform
 
     if os.name == "nt":
@@ -64,6 +183,22 @@ def _platform_system() -> str:
 
 
 def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
+    """Register the terminal execution family on ``mcp``.
+
+    Args:
+        mcp: The MCP server to register tools on.
+        ctx: ToolContext (workspace + config + audit_tool used here; sandbox
+            selects the contained vs legacy host path per call).
+
+    Returns:
+        None.
+
+    Gates:
+        Per-tool gates inside each body (see family docstring).
+
+    Side-effects:
+        Registers ``run_exploit_terminal`` / ``run_as_root`` / ``git_clone``.
+    """
     workspace = ctx.workspace
     config = ctx.config
     audit_tool = ctx.audit_tool
@@ -71,18 +206,41 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
     @mcp.tool()
     @audit_tool
     def run_exploit_terminal(command: str) -> str:
-        """Run any shell command in a dedicated visible terminal window. The command executes synchronously; output is captured and RETURNED in the result under an OUTPUT: section. Use for running Kali tools, nmap, curl, netcat, searchsploit, etc. IMPORTANT: for long scans (nmap -sV), redirect output to a file with -oN scan.txt so you can read it later with read_workspace_file."""
+        """Run any shell command in a dedicated visible terminal window. The command executes synchronously; output is captured and RETURNED in the result under an OUTPUT: section. Use for running Kali tools, nmap, curl, netcat, searchsploit, etc. IMPORTANT: for long scans (nmap -sV), redirect output to a file with -oN scan.txt so you can read it later with read_workspace_file.
+
+        Args:
+            command: Full shell command text (never truncated before the gate;
+                an MB-scale anti-fill cap is the only size bound, so
+                code/passwords/PEM/base64 are never capped small).
+
+        Returns:
+            TERMINAL_RESULT block (status, exit code, duration, attempt id,
+            original + sanitized command, OUTPUT tail) or a preflight /
+            target-lock BLOCKED TERMINAL_RESULT.
+
+        Gates:
+            Empty/MB-cap pre-gates; ``preflight_command_check`` (sanitizes IP
+            typos, never blocks except empty); MANUAL ``_target_lock_block``
+            on the FULL sanitized command (RULE-LOCK-FIRST -- fail closed when
+            ``require_explicit_allowlist`` is enforced).
+
+        Side-effects:
+            Executes the sanitized command (sandbox worker when enabled, fail
+            closed -- else the host wrapper-script shell funnel, preserving
+            ``&&`` chaining/pipes/redirects); writes terminal.log
+            (secret-masked, capped). Live OUTPUT stays verbatim.
+        """
         if not command or not command.strip():
             return "BLOCKED: empty command."
-        if len(command) > 4000:
-            return "BLOCKED: command too long."
+        if len(command) > _MAX_COMMAND_CHARS:
+            return f"BLOCKED: command exceeds the {_MAX_COMMAND_CHARS}-byte anti-fill cap; split the command."
 
         original_command = command
         preflight = preflight_command_check(command)
         if not preflight["valid"]:
             return (
-                f"TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
-                f"ATTEMPT_ID: preflight\n"
+                "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
+                "ATTEMPT_ID: preflight\n"
                 f"COMMAND_ORIGINAL: {original_command}\n"
                 f"COMMAND_SANITIZED: {preflight['sanitized_command']}\n"
                 f"BLOCKED_REASON: {preflight['blocked_reason']}"
@@ -91,11 +249,13 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         sanitized_command = preflight["sanitized_command"]
         corrections = preflight["corrections"]
 
+        # RULE-LOCK-FIRST: the gate sees the FULL sanitized command -- never a
+        # truncated prefix (an off-target host past any display cap must block).
         _lock_reason = _target_lock_block(sanitized_command, config)
         if _lock_reason:
             return (
-                f"TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
-                f"ATTEMPT_ID: preflight\n"
+                "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
+                "ATTEMPT_ID: preflight\n"
                 f"COMMAND_ORIGINAL: {original_command}\n"
                 f"COMMAND_SANITIZED: {sanitized_command}\n"
                 f"BLOCKED_REASON: {_lock_reason}"
@@ -111,6 +271,7 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         attempt_dir, attempt_id = _attempt_dir(workspace)
         log_path = attempt_dir / "terminal.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        timeout = _config_timeout(config)
 
         # ---- sandbox path (fail closed): when the disposable execution
         # sandbox is enabled, the command runs inside the hardened worker
@@ -120,11 +281,11 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             _opsec_advisory = _opsec_advisory_block(sanitized_command, config)
             try:
                 _ran, result = run_command_in_sandbox(
-                    ctx, sanitized_command, timeout=300, cwd_host=attempt_dir, tool_name="run_exploit_terminal"
+                    ctx, sanitized_command, timeout=timeout, cwd_host=attempt_dir, tool_name="run_exploit_terminal"
                 )
             except SandboxError as exc:
                 return (
-                    f"TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
+                    "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
                     f"ATTEMPT_ID: {attempt_id}\n"
                     f"COMMAND_ORIGINAL: {original_command}\n"
                     f"COMMAND_SANITIZED: {sanitized_command}\n"
@@ -143,14 +304,14 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     _hint = loopback_hint(_primary, config)
             except Exception:  # ponytail: bare except intentional -- hint is advisory only
                 _hint = ""
-            # Persisted logs are redacted: raw stdout may carry dumped hashes,
+            # Persisted logs are masked: raw stdout may carry dumped hashes,
             # tokens, or key material that must not sit on disk in the clear.
             # (The live OUTPUT below stays verbatim -- cracking workflows need
             # the recovered plaintext.)
             _logged = _mask_secret_content((result.stdout or "") + ("\n" + result.stderr if result.stderr else ""))
             log_path.write_text(
                 f"{'=' * 60}\nCOMMAND: {_mask_secret_content(sanitized_command)}\n{'=' * 60}\n"
-                + _logged
+                + _tail(_logged, _MAX_LOG_FILE_CHARS)
                 + f"\nEXIT_CODE: {_exit_code if _exit_code is not None else 'timed_out'}\n",
                 encoding="utf-8",
                 errors="replace",
@@ -177,11 +338,11 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if is_windows and _bash_on_windows is None:
             wrapper = attempt_dir / "run_exploit.cmd"
             wrapper.write_text(
-                f"@echo off\r\n"
-                f"title AI Exploit Terminal\r\n"
+                "@echo off\r\n"
+                "title AI Exploit Terminal\r\n"
                 f'cd /d "{attempt_dir}"\r\n'
                 f"{sanitized_command} >> terminal.log 2>&1\r\n"
-                f"echo EXIT_CODE: %ERRORLEVEL% >> terminal.log\r\n",
+                "echo EXIT_CODE: %ERRORLEVEL% >> terminal.log\r\n",
                 encoding="ascii",
                 errors="replace",
             )
@@ -211,7 +372,6 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 start_new_session=True,
             )
 
-        timeout = 300
         out_bytes: bytes | str | None = None
         try:
             if is_windows and _bash_on_windows is None:
@@ -238,7 +398,7 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             if not (is_windows and _bash_on_windows is None):
                 try:
                     out_bytes, _ = proc.communicate(timeout=5)
-                except _EXC_GROUP_CATCH:
+                except Exception:  # ponytail: bare except intentional -- post-kill drain is best-effort
                     out_bytes = out_bytes or b""
             exit_code = None
             status = "timed_out"
@@ -248,13 +408,29 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if out_bytes is not None:
             try:
                 text = out_bytes.decode("utf-8", errors="replace") if isinstance(out_bytes, bytes) else str(out_bytes)
-                log_path.write_text(header + _mask_secret_content(text), encoding="utf-8", errors="replace")
-                output_tail = text[-4000:]
-            except _EXC_GROUP_CATCH:
+                log_path.write_text(
+                    header + _tail(_mask_secret_content(text), _MAX_LOG_FILE_CHARS),
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                # Live OUTPUT stays verbatim (marked tail) -- the persisted log
+                # above is the masked copy.
+                output_tail = _tail(text, _OUTPUT_CHARS)
+            except Exception:  # ponytail: bare except intentional -- decode failure keeps prior (empty) tail
                 pass
         elif log_path.exists():
-            text = log_path.read_text(encoding="utf-8", errors="replace")
-            output_tail = text[-4000:]
+            # cmd.exe path appends raw output to terminal.log via shell
+            # redirect: show it verbatim, then mask the persisted copy.
+            raw_text = log_path.read_text(encoding="utf-8", errors="replace")
+            output_tail = _tail(raw_text, _OUTPUT_CHARS)
+            try:
+                log_path.write_text(
+                    _tail(_mask_secret_content(raw_text), _MAX_LOG_FILE_CHARS),
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError:
+                pass
 
         _opsec_advisory = _opsec_advisory_block(sanitized_command, config)
 
@@ -273,24 +449,54 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
     @mcp.tool()
     @audit_tool
     def run_as_root(command: str) -> str:
-        """Run ANY command with sudo (root privileges). Use for commands that require root: tcpdump, iptables, systemctl, writing to /etc, raw socket operations, etc. The command runs synchronously and output is captured."""
+        """Run ANY command with sudo (root privileges). Use for commands that require root: tcpdump, iptables, systemctl, writing to /etc, raw socket operations, etc. The command runs synchronously and output is captured.
+
+        Args:
+            command: Full shell command text (never truncated before the gate;
+                an MB-scale anti-fill cap is the only size bound).
+
+        Returns:
+            ROOT_CMD_RESULT block (status, exit code, command, OUTPUT tail),
+            or a preflight / target-lock / sudo-pivot block.
+
+        Gates:
+            Empty/MB-cap pre-gates; ``preflight_command_check`` (sanitizes IP
+            typos); MANUAL ``_target_lock_block`` on the FULL sanitized
+            command -- fires BEFORE the sudo pivot (RULE-LOCK-FIRST); then
+            ``_require_sudo_or_pivot`` short-circuits when passwordless sudo
+            is unavailable.
+
+        Side-effects:
+            Executes ``sudo <sanitized-command>`` (container root when
+            sandboxed, fail closed -- else host ``bash -c``, preserving
+            ``&&`` chaining). Live OUTPUT stays verbatim.
+        """
         if not command or not command.strip():
             return "BLOCKED: empty command."
-        if len(command) > 4000:
-            return "BLOCKED: command too long."
+        if len(command) > _MAX_COMMAND_CHARS:
+            return f"BLOCKED: command exceeds the {_MAX_COMMAND_CHARS}-byte anti-fill cap; split the command."
         original_command = command
-        _lock_reason = _target_lock_block(command, config)
+        preflight = preflight_command_check(command)
+        if not preflight["valid"]:
+            return f"ROOT_CMD_RESULT: blocked (preflight: {preflight['blocked_reason']})\nCOMMAND: {original_command}"
+        sanitized_command = preflight["sanitized_command"]
+        # RULE-LOCK-FIRST: lock on the FULL sanitized command, before the sudo
+        # pivot, so an off-target command reports the lock (not the pivot).
+        _lock_reason = _target_lock_block(sanitized_command, config)
         if _lock_reason:
             return f"ROOT_CMD_RESULT: blocked (target lock: {_lock_reason})"
-        _pivot = _require_sudo_or_pivot("run_as_root", original_command)
+        _pivot = _require_sudo_or_pivot("run_as_root", sanitized_command)
         if _pivot:
             return _pivot
+        timeout = _config_timeout(config)
         # ---- sandbox path: root INSIDE the disposable worker (confined by
         # --cap-drop ALL / no devices / netns firewall / workspace-only bind);
         # host root is never involved.
         if getattr(ctx, "sandbox", None) is not None:
             try:
-                _ran, result = run_command_in_sandbox(ctx, command, timeout=300, tool_name="run_as_root", user="root")
+                _ran, result = run_command_in_sandbox(
+                    ctx, sanitized_command, timeout=timeout, tool_name="run_as_root", user="root"
+                )
             except SandboxError as exc:
                 return f"ROOT_CMD_RESULT: blocked\n{sandbox_error_block(exc, tool_name='run_as_root')}"
             merged = result.stdout or ""
@@ -299,18 +505,18 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return (
                 f"ROOT_CMD_RESULT: {result.status} (exit_code={result.exit_code}, sandbox)\n"
                 f"COMMAND: {original_command}\nSUDO: not required (executed as container root)\n"
-                f"OUTPUT:\n{merged[-4000:]}"
+                f"OUTPUT:\n{_tail(merged, _OUTPUT_CHARS)}"
             )
-        cmd = f"sudo {command} 2>&1"
+        cmd = f"sudo {sanitized_command} 2>&1"
         try:
             returncode, out, err = _run_with_pgrp_timeout(
                 ["bash", "-c", cmd],
-                300,
+                timeout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            output = (out + "\n" + err)[-4000:]
+            output = _tail(((out or "") + "\n" + (err or "")), _OUTPUT_CHARS)
             status = "completed" if returncode == 0 else "failed"
             return (
                 f"{sandbox_fallback_notice(ctx)}"
@@ -318,14 +524,33 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             )
         except subprocess.TimeoutExpired:
             return f"{sandbox_fallback_notice(ctx)}ROOT_CMD_RESULT: timed_out\nCOMMAND: {original_command}"
-        except _EXC_GROUP_CATCH as exc:
-            _log_nested_exceptions(exc)
+        except Exception as exc:  # ponytail: bare except intentional -- run failure is data, not a crash
             return f"{sandbox_fallback_notice(ctx)}ROOT_CMD_RESULT: error - {exc}"
 
     @mcp.tool()
     @audit_tool
     def git_clone(repo_url: str, target_dir: str = "") -> str:
-        """Clone a Git repository (GitHub exploit/PoC/tool) into the workspace. Provide the full repo URL (e.g., 'https://github.com/user/repo.git'). Optional target_dir for a custom folder name."""
+        """Clone a Git repository (GitHub exploit/PoC/tool) into the workspace. Provide the full repo URL (e.g., 'https://github.com/user/repo.git'). Optional target_dir for a custom folder name.
+
+        Args:
+            repo_url: Full HTTPS repo URL (format-gated to https Git URLs).
+            target_dir: Optional custom folder name ([A-Za-z0-9._-]{1,80}).
+
+        Returns:
+            GIT_CLONE_RESULT block (status, exit code, repo, path, OUTPUT
+            tail), BLOCKED on gate failure, or a PREFLIGHT_WARNING prefix when
+            the URL existence check fails (advisory -- the clone still runs).
+
+        Gates:
+            Local-only ``@audit_tool`` (never an allowlist -- no target
+            touch). URL format regex; ``target_dir`` charset/length;
+            workspace containment (fail closed on escape).
+
+        Side-effects:
+            Clones via argv-list ``git clone`` (sandbox worker when enabled,
+            else host ``_run_with_pgrp_timeout`` with the configured timeout);
+            no shell anywhere on this path.
+        """
         if not repo_url or not repo_url.strip():
             return "BLOCKED: repo_url is required."
         url = repo_url.strip()
@@ -339,6 +564,7 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         clone_dir = workspace / dir_name
         if not _is_inside_workspace(workspace, clone_dir.resolve()):
             return f"BLOCKED: clone target {clone_dir} escapes the exploit workspace."
+        timeout = _config_timeout(config, 120)
 
         preflight_note = ""
         if url.lower().startswith(("http://", "https://")):
@@ -346,14 +572,14 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 from tools.exploit_search import url_exists as _url_exists_check
 
                 _ok, _reason = _url_exists_check(url, timeout=8)
-            except _EXC_GROUP_CATCH:
+            except Exception:  # ponytail: bare except intentional -- existence check never blocks the clone
                 _ok, _reason = True, None
             if not _ok:
                 preflight_note = (
                     f"PREFLIGHT_WARNING: URL existence check failed ({_reason}); "
-                    f"if this is a private/auth-gated repo the clone may still "
-                    f"succeed. If the clone fails, use cve_to_poc instead of "
-                    f"guessing URLs.\n"
+                    "if this is a private/auth-gated repo the clone may still "
+                    "succeed. If the clone fails, use cve_to_poc instead of "
+                    "guessing URLs.\n"
                 )
 
         # ---- sandbox path: clone inside the worker (egress is governed by
@@ -364,7 +590,7 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             _clone_cmd = f"git clone -- {_shlex.quote(url)} {_shlex.quote(dir_name)}"
             try:
                 _ran, result = run_command_in_sandbox(
-                    ctx, _clone_cmd, timeout=120, cwd_host=workspace, tool_name="git_clone"
+                    ctx, _clone_cmd, timeout=timeout, cwd_host=workspace, tool_name="git_clone"
                 )
             except SandboxError as exc:
                 return f"{preflight_note}GIT_CLONE_RESULT: blocked\n{sandbox_error_block(exc, tool_name='git_clone')}"
@@ -374,18 +600,18 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return (
                 f"{preflight_note}GIT_CLONE_RESULT: {result.status} (exit_code={result.exit_code}, sandbox)\n"
                 f"REPO: {url}\nPATH: {clone_dir} (container: /workspace/{dir_name})\n"
-                f"OUTPUT:\n{merged[-3000:]}"
+                f"OUTPUT:\n{_tail(merged, _GIT_OUTPUT_CHARS)}"
             )
 
         try:
             returncode, out, err = _run_with_pgrp_timeout(
                 ["git", "clone", "--", url, str(clone_dir)],
-                120,
+                timeout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            output = (out + "\n" + err)[-3000:]
+            output = _tail(((out or "") + "\n" + (err or "")), _GIT_OUTPUT_CHARS)
             status = "completed" if returncode == 0 else "failed"
             return (
                 f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: {status} (exit_code={returncode})\n"
@@ -393,6 +619,5 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             )
         except subprocess.TimeoutExpired:
             return f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: timed_out\nREPO: {url}"
-        except _EXC_GROUP_CATCH as exc:
-            _log_nested_exceptions(exc)
+        except Exception as exc:  # ponytail: bare except intentional -- run failure is data, not a crash
             return f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: error - {exc}"

@@ -53,6 +53,18 @@ _SELF_TEST_ALLOWED_TOOLS = {
     "list_workspace",
 }
 
+# Repo root (tools/ lives one level below it). CWD-relative probe paths are
+# anchored here so `--self-test` writes to the repo even when invoked from a
+# different working directory. Absolute paths pass through untouched.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _anchor_to_repo_root(path: Path) -> Path:
+    """Prefix CWD-relative paths with the repo root; leave absolute ones alone."""
+    if path.is_absolute():
+        return path
+    return _REPO_ROOT / path
+
 
 class SelfTestError(Exception):
     """Raised when a self-test stage fails in a non-recoverable way."""
@@ -79,7 +91,7 @@ async def run_self_test(args: Any) -> int:
         return 1
 
     config_path = Path(getattr(args, "config", "config.yaml"))
-    reports_dir = Path(getattr(args, "reports_dir", "reports"))
+    reports_dir = _anchor_to_repo_root(Path(getattr(args, "reports_dir", "reports")))
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

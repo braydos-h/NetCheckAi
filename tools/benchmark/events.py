@@ -108,19 +108,30 @@ class BenchmarkEventLogger:
         return self._seq
 
 
+def _truncate_nested(value: Any) -> Any:
+    """Recursively truncate oversized strings inside nested dicts/lists/tuples."""
+    if isinstance(value, str):
+        return truncate_output(value) if len(value) > _MAX_FIELD else value
+    if isinstance(value, dict):
+        return {k: _truncate_nested(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_truncate_nested(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_truncate_nested(v) for v in value)
+    return value
+
+
 def _redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Redact secrets + bound sizes in one event payload (shallow, recursive).
+    """Redact secrets + bound sizes in one event payload (fully recursive).
 
     Reuses the audit kernel's nested redaction (secret-key masking + content
-    masking) and additionally truncates oversized string values.
+    masking) and additionally truncates oversized string values at any depth
+    so a nested stdout/output blob cannot blow up events.jsonl.
     """
     from tools.kernel.audit import _redact_nested
 
     redacted = _redact_nested(payload)
-    return {
-        key: (truncate_output(value) if isinstance(value, str) and len(value) > _MAX_FIELD else value)
-        for key, value in redacted.items()
-    }
+    return {key: _truncate_nested(value) for key, value in redacted.items()}
 
 
 #: A live event subscriber: one serialized event dict per call.

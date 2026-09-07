@@ -17,18 +17,28 @@ network).
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
 from tools.enhanced_reporting import CVSSScore, TechnicalFinding
-from tools.mcp_shared import _attempt_dir
-from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout, parse_extra_options, tool_slug
+from tools.kernel.allowlist import _scanner_token_is_host
+from tools.mcp_shared import _attempt_dir, check_targets_allowlist
+from tools.mcp_tools.registry import (
+    ToolContext,
+    _positive_int,
+    _run_with_pgrp_timeout,
+    parse_extra_options,
+    run_argv_captured,
+    tool_slug,
+)
 from tools.validation_utils import validate_target_or_ip
 
 _NUCLEI_JSONL_NAME = "nuclei.jsonl"

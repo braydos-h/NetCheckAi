@@ -183,18 +183,20 @@ def compute_run_summary(
 
 
 def run_summary_from_dict(payload: dict[str, Any]) -> RunSummary:
-    """Rebuild a RunSummary from its persisted dict form (scenario rows included)."""
-    scenarios = [
-        ScenarioSummary(
-            **{
-                **s,
-                "tags": list(s.get("tags", []) or []),
-                "failure_categories": dict(s.get("failure_categories", {}) or {}),
-            }
-        )
-        for s in (payload.get("scenarios") or [])
-        if isinstance(s, dict)
-    ]
+    """Rebuild a RunSummary from its persisted dict form (scenario rows included).
+
+    Unknown keys (older/newer schema versions, hand-built payloads) are
+    ignored so a stray field can never raise ``TypeError`` on rebuild.
+    """
+    scenario_fields = set(ScenarioSummary.__dataclass_fields__)
+    scenarios = []
+    for s in payload.get("scenarios") or []:
+        if not isinstance(s, dict):
+            continue
+        cleaned = {k: v for k, v in s.items() if k in scenario_fields}
+        cleaned["tags"] = list(s.get("tags", []) or [])
+        cleaned["failure_categories"] = dict(s.get("failure_categories", {}) or {})
+        scenarios.append(ScenarioSummary(**cleaned))
     known = set(RunSummary.__dataclass_fields__)
     return RunSummary(
         **{k: v for k, v in payload.items() if k in known and k != "scenarios"},

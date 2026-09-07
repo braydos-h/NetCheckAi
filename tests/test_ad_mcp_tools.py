@@ -390,6 +390,221 @@ async def test_adcs_enum_valid_argv(monkeypatch, tmp_path: Path) -> None:
     assert "bash" not in argv
 
 
+# ── output-tail truncation marker (RULE-LOCK-FIRST output side) ─────────────
+
+
+def test_tail_marks_only_trimmed_output() -> None:
+    from tools.mcp_tools.ad import _OUTPUT_CHARS, _tail
+
+    short = "ok"
+    assert _tail(short) == short
+    exact = "A" * _OUTPUT_CHARS
+    assert _tail(exact) == exact
+    long = "A" * (_OUTPUT_CHARS + 100)
+    marked = _tail(long)
+    assert marked.endswith("\n[truncated]")
+    assert len(marked) == _OUTPUT_CHARS + len("\n[truncated]")
+
+
+@pytest.mark.asyncio
+async def test_long_tool_output_carries_truncated_marker(monkeypatch, tmp_path: Path) -> None:
+    def _run_long(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="A" * 6000, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run_long)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(tmp_path)
+    text = _text(await mcp.call_tool("smb_signing_check", {"target_ip": "10.0.0.1"}))
+    assert "SMB_SIGNING_CHECK_RESULT: completed" in text
+    assert "[truncated]" in text
+
+
+@pytest.mark.asyncio
+async def test_short_tool_output_has_no_truncated_marker(monkeypatch, tmp_path: Path) -> None:
+    run, _ = _capture_run()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(tmp_path)
+    text = _text(await mcp.call_tool("smb_signing_check", {"target_ip": "10.0.0.1"}))
+    assert "[truncated]" not in text
+
+
+@pytest.mark.asyncio
+async def test_failed_rc_preserved_in_result(monkeypatch, tmp_path: Path) -> None:
+    def _run_fail(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        return subprocess.CompletedProcess(args=argv, returncode=3, stdout="nope", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run_fail)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(tmp_path)
+    text = _text(await mcp.call_tool("smb_signing_check", {"target_ip": "10.0.0.1"}))
+    assert "SMB_SIGNING_CHECK_RESULT: failed" in text
+    assert "EXIT_CODE: 3" in text
+
+
+# ── iface / command caps / duration / sid / users_file ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_responder_relay_invalid_iface(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(await mcp.call_tool("responder_relay", {"target_ip": "10.0.0.1", "iface": "eth0; rm -rf /"}))
+    assert "BLOCKED" in text and "iface" in text
+
+
+@pytest.mark.asyncio
+async def test_responder_relay_command_over_cap(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(await mcp.call_tool("responder_relay", {"target_ip": "10.0.0.1", "command": "x" * 2001}))
+    assert "BLOCKED" in text and "2000" in text
+
+
+@pytest.mark.asyncio
+async def test_pass_the_hash_command_over_cap(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "pass_the_hash",
+            {
+                "target_ip": "10.0.0.1",
+                "username": "admin",
+                "ntlm_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "command": "y" * 2001,
+            },
+        )
+    )
+    assert "BLOCKED" in text and "2000" in text
+
+
+@pytest.mark.asyncio
+async def test_asrep_roast_users_file_not_found(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "asrep_roast",
+            {"target_ip": "10.0.0.1", "domain": "corp", "users_file": str(tmp_path / "nope.txt")},
+        )
+    )
+    assert "BLOCKED" in text and "users_file not found" in text
+
+
+@pytest.mark.asyncio
+async def test_golden_ticket_rejects_non_domain_sid(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "golden_ticket",
+            {
+                "target_ip": "10.0.0.1",
+                "domain": "corp",
+                "username": "admin",
+                "krbtgt_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "sid": "S-1-5-32-544",
+            },
+        )
+    )
+    assert "BLOCKED" in text and "sid" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_golden_ticket_invalid_duration(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "golden_ticket",
+            {
+                "target_ip": "10.0.0.1",
+                "domain": "corp",
+                "username": "admin",
+                "krbtgt_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "sid": "S-1-5-21-1-2-3",
+                "duration": "ten-days",
+            },
+        )
+    )
+    assert "BLOCKED" in text and "duration" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_golden_ticket_duration_clamped(monkeypatch, tmp_path: Path) -> None:
+    run, cap = _capture_run()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "golden_ticket",
+            {
+                "target_ip": "10.0.0.1",
+                "domain": "corp",
+                "username": "Administrator",
+                "krbtgt_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "sid": "S-1-5-21-1-2-3",
+                "duration": "99999d",
+            },
+        )
+    )
+    assert "GOLDEN_TICKET_RESULT: completed" in text
+    argv = cap["argv"]
+    idx = argv.index("-duration")
+    assert argv[idx + 1] == "3650d"
+
+
+@pytest.mark.asyncio
+async def test_golden_ticket_ccache_rooted_at_attempt_dir(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def _run_kw(*args, **kwargs):
+        captured["argv"] = list(args[0] if args else kwargs.get("args"))
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env") or {}
+        argv = captured["argv"]
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run_kw)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(tmp_path)
+    text = _text(
+        await mcp.call_tool(
+            "golden_ticket",
+            {
+                "target_ip": "10.0.0.1",
+                "domain": "corp",
+                "username": "Administrator",
+                "krbtgt_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "sid": "S-1-5-21-1-2-3",
+            },
+        )
+    )
+    assert "GOLDEN_TICKET_RESULT: completed" in text
+    assert captured["cwd"] and "KRB5CCNAME" in captured["env"]
+    assert captured["env"]["KRB5CCNAME"].startswith(captured["cwd"])
+    assert captured["env"]["KRB5CCNAME"].endswith(".ccache")
+
+
+@pytest.mark.asyncio
+async def test_responder_relay_keeps_domain_cidr_verbatim(monkeypatch, tmp_path: Path) -> None:
+    run, cap = _capture_run()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    mcp = _make_server(
+        tmp_path,
+        require_allowlist=True,
+        allowed_targets=["corp.example.com", "10.0.1.0/24"],
+    )
+    text = _text(await mcp.call_tool("responder_relay", {"target_ip": "10.0.1.5"}))
+    assert "RESPONDER_RELAY_RESULT: completed" in text
+    argv = cap["argv"]
+    tf = argv[argv.index("-tf") + 1]
+    tf_content = Path(tf).read_text()
+    tf_lines = {line.strip() for line in tf_content.splitlines() if line.strip()}
+    assert "corp.example.com" in tf_lines
+    assert "10.0.1.0/24" in tf_lines
+    assert "10.0.1.5" in tf_lines
+
+
 # ── registration ─────────────────────────────────────────────────────────────
 
 

