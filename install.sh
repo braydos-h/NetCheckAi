@@ -220,9 +220,6 @@ confirm() {
     [[ "$answer" == "y" || "$answer" == "Y" || "$answer" == "yes" ]]
 }
 
-# __NEXT__
-
-
 print_usage() {
     cat <<'USAGE'
 BreachPilot installer — bootstrap, update, repair, diagnose, uninstall.
@@ -514,8 +511,6 @@ check_network() {
 }
 
 
-
-
 # ---------------------------------------------------------------------------
 # Environment detection
 # ---------------------------------------------------------------------------
@@ -755,8 +750,6 @@ read_install_info() {
     python3 -c 'import sys; d=dict(l.rstrip("\n").split("=",1) for l in open(sys.argv[1]) if "=" in l); print(d.get(sys.argv[2],""))' \
         "$dir/.install-info" "$field" 2>/dev/null || true
 }
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1049,8 +1042,6 @@ run_preflight() {
         exit "$BP_EX_PREFLIGHT"
     fi
 }
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1522,8 +1513,6 @@ except Exception:
 }
 
 
-
-
 # ---------------------------------------------------------------------------
 # Optional tooling: ChatGPT runtime, sandbox image (both best-effort)
 # ---------------------------------------------------------------------------
@@ -1841,8 +1830,6 @@ print(" ".join(bad))
     fi
     return 0
 }
-
-
 
 
 # ---------------------------------------------------------------------------

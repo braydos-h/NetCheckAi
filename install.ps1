@@ -2666,7 +2666,750 @@ function Test-DoctorResult {
     return @{ Status = "action-required"; Detail = "doctor reports setup gaps (provider key / Docker / optional tools) — install is sound" }
 }
 
-# __PART8__
+# ---------------------------------------------------------------------------
+# Modes: Check / Uninstall / Repair / Update / Install
+# ---------------------------------------------------------------------------
+
+function Show-Header {
+    param([pscustomobject]$Platform, [string]$InstallDir)
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host " BreachPilot Windows Installer  v$script:InstallerVersion" -ForegroundColor Cyan
+    Write-Host " Autonomous Security Assessment Platform" -ForegroundColor DarkGray
+    Write-Host "============================================================" -ForegroundColor Cyan
+    $mode = "Install"
+    if ($Check) { $mode = "Check (read-only — no changes)" }
+    elseif ($Update) { $mode = "Update" }
+    elseif ($Repair) { $mode = "Repair" }
+    elseif ($Uninstall) { $mode = "Uninstall" }
+    Write-Host " Mode:          $mode"
+    Write-Host " Install dir:   $InstallDir"
+    Write-Host " Channel:       $(if ($Version) { "explicit $Version" } else { $Channel })"
+    Write-Host " OS:            $($Platform.OSVersion) (build $($Platform.OSBuild), $($Platform.Architecture))"
+    Write-Host " PowerShell:    $($Platform.PSEdition) $($Platform.PSVersion)"
+    $elev = "no"
+    if ($Platform.IsAdmin) { $elev = "yes" }
+    Write-Host " Elevated:      $elev   User: $($Platform.User)"
+    if ($Platform.IsRemote) { Write-Host " Session:       remote (no interactive prompts assumed safe)" -ForegroundColor Yellow }
+    Write-Host ""
+    Write-Log "Header: mode=$mode dir=$InstallDir channel=$Channel version=$Version os=$($Platform.OSVersion) arch=$($Platform.Architecture) ps=$($Platform.PSEdition)/$($Platform.PSVersion) admin=$($Platform.IsAdmin) remote=$($Platform.IsRemote)" -Level "INFO"
+}
+
+function Invoke-CheckMode {
+    param([string]$InstallDir)
+    Write-Step "System checks (read-only)"
+    $platform = Get-PlatformInfo
+    Show-Header -Platform $platform -InstallDir $InstallDir
+    Write-Info "OS: $($platform.OSVersion) (build $($platform.OSBuild), $($platform.Architecture))"
+    Write-Info "PowerShell: $($platform.PSEdition) $($platform.PSVersion); user $($platform.User); admin: $($platform.IsAdmin)"
+    if (-not (Test-PlatformSupported -Platform $platform)) { exit $script:ExitUnsupported }
+    $free = Get-InstallDriveFreeGB -Path (Split-Path -Parent $InstallDir)
+    if ($free -ge 0) { Write-Info "Free disk on install drive: ${free} GB" }
+    if ($platform.WingetPresent) { Write-Ok "winget present" } else { Write-Warn "winget not found — missing tools need manual install (https://aka.ms/getwinget)" }
+    Write-Info "Package managers: $((Get-PackageManagers) -join ', ')"
+    if ([string]::IsNullOrWhiteSpace($platform.OSVersion)) { Write-Warn "Could not determine Windows version precisely." }
+    Write-StepDone
+
+    Write-Step "Installation state (read-only)"
+    $meta = Read-InstallMetadata -InstallDir $InstallDir
+    $interrupted = Test-InterruptedInstall -InstallDir $InstallDir
+    if ($interrupted.Interrupted) {
+        Write-Warn "Interrupted previous run detected (state '$($interrupted.State)'). Re-run install/update/repair to recover cleanly."
+    }
+    $checkout = Get-CheckoutStatus -Dir $InstallDir
+    if ($null -ne $checkout -and $checkout.IsGit) {
+        if ($checkout.GitAvailable) {
+            Write-Info "Git checkout: origin='$($checkout.Origin)' branch=$($checkout.Branch) sha=$($checkout.Sha) dirty=$($checkout.IsDirty)"
+        } else {
+            Write-Info ".git present but git CLI unavailable."
+        }
+    }
+    if ($null -ne $meta -and $null -eq $meta.Corrupt) {
+        Write-Info "Installed: $(if ($meta.tag) { $meta.tag } else { $meta.commit }) (channel $($meta.channel), $($meta.installed_at))"
+    } elseif ($null -ne $meta -and $meta.Corrupt) {
+        Write-Warn "Install metadata is corrupt — treated as unknown/corrupted install."
+    } else {
+        Write-Info "No install metadata — no managed BreachPilot install at $InstallDir."
+    }
+    Write-StepDone
+
+    Write-Step "Version resolution (read-only)"
+    $net = Test-NetworkConnectivity
+    if (-not $net) {
+        Write-Warn "GitHub not reachable (or -Offline): latest-version comparison unavailable."
+        Write-Host " Status: Unknown (offline)" -ForegroundColor Yellow
+    } else {
+        try {
+            $resolved = Resolve-BreachPilotVersion
+            $have = ""
+            if ($null -ne $meta -and $null -eq $meta.Corrupt) {
+                $have = [string]$meta.commit
+                if (-not [string]::IsNullOrWhiteSpace([string]$meta.tag)) { $have = [string]$meta.tag }
+            }
+            $want = $resolved.Tag
+            if ([string]::IsNullOrWhiteSpace($want)) { $want = $resolved.Sha }
+            Write-Host " Installed: $(if ($have) { $have } else { '(none)' })"
+            Write-Host " Latest ($($resolved.Channel)): $want"
+            if ($have -eq $want -or ($have -ne "" -and $resolved.Sha -eq [string]$meta.commit)) {
+                Write-Host " Status: Up to date" -ForegroundColor Green
+            } elseif ([string]::IsNullOrWhiteSpace($have)) {
+                Write-Host " Status: Not installed" -ForegroundColor Yellow
+            } else {
+                Write-Host " Status: Update available" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Warn "Version resolution failed: $($_.Exception.Message)"
+            Write-Host " Status: Unknown" -ForegroundColor Yellow
+        }
+    }
+    Write-StepDone
+
+    Write-Step "Dependencies (read-only)"
+    $py = Find-BestPython
+    if ($null -ne $py) { Write-Ok "Python $($py.Version) ($($py.Command))" } else { Write-Warn "No compatible Python (>= 3.11) found" }
+    $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
+    $vh = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+    if ($vh.Healthy -and -not $vh.NeedsDeps) { Write-Ok "venv healthy" }
+    elseif ($vh.Healthy) { Write-Warn "venv works but project deps missing" }
+    else { Write-Info "venv: $($vh.Reason)" }
+    $node = Test-NodeInstall
+    if ($node.Present) {
+        $okFlag = "OK"
+        if (-not $node.Supported) { $okFlag = "OLD" }
+        Write-Info "Node $($node.NodeVersion) / npm $($node.NpmVersion) [$okFlag, need 18+]"
+    } else { Write-Info "Node.js not installed (WebUI-build only)" }
+    $nmap = Find-Nmap -InstallDir $InstallDir
+    if ($nmap.Present) { Write-Ok "Nmap: $($nmap.VersionLine) [$($nmap.Path)]" } else { Write-Warn "Nmap not found" }
+    $git = Test-GitInstall
+    if ($git.Present) { Write-Ok "Git: $($git.Version)" } else { Write-Info "Git not installed (optional — ZIP download path works without it)" }
+    $active = Get-ActiveProvider -InstallDir $InstallDir
+    Write-Info "Active provider: $($active.Provider) (embeddings: $($active.Embeddings))"
+    $ol = Test-OllamaInstall
+    if ($ol.CliPresent) {
+        $dstat = "stopped"
+        if ($ol.DaemonUp) { $dstat = "running" }
+        Write-Info "Ollama CLI: $($ol.Version) (daemon $dstat)"
+    } else { Write-Info "Ollama CLI not installed (needed only when provider/embeddings use ollama)" }
+    $dk = Test-DockerInstall
+    Write-Info "Docker: $($dk.Detail) $(if ($dk.Version) { "[$($dk.Version)]" })"
+    $img = Get-ConfiguredSandboxImage -InstallDir $InstallDir
+    if ($dk.DaemonUp) {
+        $chk = Invoke-ExternalCommand -Command "docker" -Arguments @("image", "inspect", $img) -TimeoutSeconds 30 -AllowFailure
+        if ($chk.ExitCode -eq 0) { Write-Ok "Sandbox image present: $img" } else { Write-Warn "Sandbox image missing: $img" }
+    }
+    $dist = Join-Path $InstallDir "webui\dist\index.html"
+    if (Test-Path -LiteralPath $dist) { Write-Ok "WebUI built (webui\dist\index.html)" } else { Write-Info "WebUI not built" }
+    $binDir = Get-LauncherDir
+    foreach ($n in @("bp.cmd", "breachpilot.cmd")) {
+        if (Test-Path -LiteralPath (Join-Path $binDir $n)) { Write-Ok "Launcher present: $binDir\$n" }
+        else { Write-Info "Launcher missing: $binDir\$n" }
+    }
+    try {
+        $up = [Environment]::GetEnvironmentVariable("Path", "User")
+        if (($up -split ";" | Where-Object { $_.Trim().TrimEnd("\").Equals($binDir.Trim().TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+            Write-Ok "User PATH contains $binDir"
+        } else { Write-Info "User PATH lacks $binDir" }
+    } catch { }
+    Write-StepDone
+
+    Write-Step "BreachPilot doctor (read-only)"
+    if ((Test-Path -LiteralPath $venvPy) -and (Test-Path -LiteralPath (Join-Path $InstallDir "main.py"))) {
+        $dr = Invoke-BreachPilotDoctor -VenvPython $venvPy -InstallDir $InstallDir
+        $dj = Get-DoctorJson -VenvPython $venvPy
+        $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
+        Write-Info "Doctor classification: $($cls.Status) — $($cls.Detail)"
+    } else {
+        Write-Skip "Doctor unavailable (no venv or main.py at $InstallDir)."
+    }
+    Write-StepDone
+
+    Write-Host ""
+    Write-Host "Check complete — no changes made (-Check mode)." -ForegroundColor Cyan
+    Write-Host "Installer log: $script:LogFile"
+    return $script:ExitSuccess
+}
+
+function Remove-BreachPilot {
+    param([string]$InstallDir)
+    Write-Host ""
+    Write-Host "Uninstalling BreachPilot-owned components..." -ForegroundColor Cyan
+    # Launchers (owned).
+    $binDir = Get-LauncherDir
+    foreach ($n in @("breachpilot.cmd", "bp.cmd", "breachpilot.bat", "natai.bat")) {
+        $p = Join-Path $binDir $n
+        if (Test-Path -LiteralPath $p) {
+            try { Remove-Item -LiteralPath $p -Force; Write-Ok "Removed $p" }
+            catch { Write-Warn "Could not remove $p`: $($_.Exception.Message)" }
+        }
+    }
+    # PATH entry (owned; shared dir left alone, other tools unaffected).
+    if (Remove-UserPathEntry -Entry $binDir) {
+        Write-Ok "Removed '$binDir' from user PATH."
+    } else {
+        Write-Skip "'$binDir' was not on user PATH (or already removed)."
+    }
+    # Shortcuts (owned).
+    Remove-Shortcuts
+    # Install dir: prompt unless -Yes. User data choice is separate from code.
+    $deleteData = $false
+    if (Test-Path -LiteralPath $InstallDir) {
+        $hasData = $false
+        foreach ($n in @("reports", "exploit_workspace", "research_workspace", "swarm_workspace", "secr.json", ".env", ".webui_secret_key")) {
+            if (Test-Path -LiteralPath (Join-Path $InstallDir $n)) { $hasData = $true; break }
+        }
+        $removeDir = $false
+        if ($Yes) {
+            # -Yes: remove the application but KEEP user data by default is
+            # ambiguous — choose the safe side: remove code, keep data dirs.
+            $removeDir = $true
+            Write-Info "-Yes: removing application files but preserving user data (reports/workspaces/secrets)."
+        } else {
+            $ans = Read-Host "   Remove the installation directory $InstallDir ? [y/N]"
+            if ($ans -match "^(?i:y|yes)$") { $removeDir = $true }
+            if ($hasData) {
+                $ans2 = Read-Host "   Also delete user data (reports, workspaces, secr.json, .env)? [y/N]"
+                if ($ans2 -match "^(?i:y|yes)$") { $deleteData = $true }
+            }
+        }
+        if ($removeDir) {
+            if (-not $deleteData -and $hasData) {
+                # Move user data aside instead of deleting: code gone, data safe.
+                $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+                $aside = "$InstallDir.userdata-$stamp"
+                try {
+                    New-Item -ItemType Directory -Path $aside -Force | Out-Null
+                    foreach ($n in ($script:PreserveNames + @("*.db", "*.log"))) {
+                        foreach ($match in (Get-ChildItem -LiteralPath $InstallDir -Filter $n -Force -ErrorAction SilentlyContinue)) {
+                            Move-Item -LiteralPath $match.FullName -Destination (Join-Path $aside $match.Name) -Force
+                        }
+                    }
+                    Write-Ok "User data preserved at $aside"
+                } catch {
+                    Write-Warn "Could not stage user data aside: $($_.Exception.Message). Aborting dir removal to protect data."
+                    $removeDir = $false
+                }
+            }
+            if ($removeDir) {
+                try {
+                    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+                    Write-Ok "Removed $InstallDir"
+                } catch {
+                    Write-Warn "Could not fully remove $InstallDir`: $($_.Exception.Message)"
+                }
+            }
+        } else {
+            Write-Skip "Installation directory kept: $InstallDir"
+        }
+    } else {
+        Write-Skip "Install dir not present: $InstallDir"
+    }
+    Write-Host ""
+    Write-Host "Shared dependencies were NOT uninstalled (Python, Node, Docker, Nmap, Ollama, Git) — they may belong to other tools." -ForegroundColor DarkGray
+    Write-Host "Uninstall complete." -ForegroundColor Green
+    Write-Host "Installer log: $script:LogFile"
+    # Refresh process PATH to drop the removed entry for this session.
+    try { Refresh-ProcessEnvironment } catch { }
+    return $script:ExitSuccess
+}
+
+function Invoke-RepairMode {
+    param([string]$InstallDir)
+    Write-Prog "Repair mode: verifying required files (user data is never deleted)..."
+    $missing = @()
+    foreach ($req in $script:RequiredSourceFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $req))) { $missing += $req }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Fail "Install at $InstallDir is missing: $($missing -join ', '). Repair needs a source tree — run 'install.ps1 -Update' to re-stage, or fresh-install."
+        return @{ Code = $script:ExitFailure; VenvPython = ""; Proceeded = $false }
+    }
+    Write-Ok "Required source files present."
+    Write-InstallState -InstallDir $InstallDir -State "dependencies"
+    $py = Install-PythonEnvironment
+    $venvPy = Install-VenvAndDeps -Python $py -InstallDir $InstallDir
+    Install-NmapIfNeeded -InstallDir $InstallDir | Out-Null
+    Install-OllamaIfNeeded -InstallDir $InstallDir | Out-Null
+    $webui = Install-WebUI -InstallDir $InstallDir -VenvPython $venvPy
+    Install-SandboxImage -InstallDir $InstallDir | Out-Null
+    Install-Launcher -InstallDir $InstallDir -VenvPython $venvPy | Out-Null
+    $binDir = Get-LauncherDir
+    Add-UserPath -Entry $binDir | Out-Null
+    Offer-ApiKeySetup -InstallDir $InstallDir -VenvPython $venvPy
+    Write-InstallState -InstallDir $InstallDir -State "validating"
+    $dr = Invoke-BreachPilotDoctor -VenvPython $venvPy -InstallDir $InstallDir
+    $dj = Get-DoctorJson -VenvPython $venvPy
+    $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
+    if ($cls.Status -eq "fail") {
+        Write-Fail "Doctor still reports hard failures after repair: $($cls.Detail)"
+        Write-InstallState -InstallDir $InstallDir -State "completed"
+        return @{ Code = $script:ExitDoctor; VenvPython = $venvPy; Proceeded = $true }
+    }
+    Write-InstallState -InstallDir $InstallDir -State "completed"
+    Write-Ok "Repair finished: $($cls.Status) — $($cls.Detail)"
+    return @{ Code = $script:ExitSuccess; VenvPython = $venvPy; Proceeded = $true }
+}
+
+# ---------------------------------------------------------------------------
+# Final summary screen
+# ---------------------------------------------------------------------------
+
+function Show-FinalSummary {
+    param(
+        [string]$InstallDir,
+        [string]$VenvPython,
+        [pscustomobject]$Resolved,
+        [string]$ArchiveSha256,
+        [hashtable]$Sandbox,
+        [hashtable]$WebUI,
+        [string]$DoctorStatus,
+        [int]$ExitCode
+    )
+    $py = Find-BestPython
+    $node = Test-NodeInstall
+    $nmap = Find-Nmap -InstallDir $InstallDir
+    $git = Test-GitInstall
+    $ol = Test-OllamaInstall
+    $dk = Test-DockerInstall
+    $bpVer = ""
+    if ($null -ne $Resolved) {
+        $bpVer = $Resolved.Tag
+        if ([string]::IsNullOrWhiteSpace($bpVer)) { $bpVer = $Resolved.Sha.Substring(0, [Math]::Min(12, $Resolved.Sha.Length)) }
+    }
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host " BreachPilot is ready" -ForegroundColor Green
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host (" BreachPilot       {0} / {1}" -f $bpVer, $Resolved.Channel)
+    Write-Host (" Python            {0}" -f $(if ($py) { $py.Version } else { "missing" }))
+    Write-Host (" Node              {0}" -f $(if ($node.Present) { "$($node.NodeVersion) / npm $($node.NpmVersion)" } else { "not installed (WebUI-build only)" }))
+    Write-Host (" Nmap              {0}" -f $(if ($nmap.Present) { "$($nmap.VersionLine) [$($nmap.Path)]" } else { "missing" }))
+    Write-Host (" Git               {0}" -f $(if ($git.Present) { $git.Version } else { "not installed (optional)" }))
+    Write-Host (" Docker            {0}" -f $(if ($dk.CliPresent) { "$($dk.Version) / $($dk.Detail)" } else { "not installed" }))
+    Write-Host (" Ollama            {0}" -f $(if ($ol.CliPresent) { "$($ol.Version) / $(if ($ol.DaemonUp) { 'daemon running' } else { 'daemon stopped' })" } else { "skipped / not required" }))
+    Write-Host (" WebUI             {0}" -f $(if ($WebUI.Built) { "built" } elseif ($WebUI.Skipped) { "skipped" } else { "not built" }))
+    Write-Host (" Sandbox           {0}" -f $(if ($Sandbox.Status -eq "ready") { "ready ($((Get-ConfiguredSandboxImage -InstallDir $InstallDir)))" } else { $Sandbox.Status }))
+    Write-Host (" Doctor            {0}" -f $DoctorStatus)
+    Write-Host (" Install location  {0}" -f $InstallDir)
+    $binDir = Get-LauncherDir
+    Write-Host (" Launcher          {0}" -f $(if ($NoPath) { "(in-install only, -NoPath)" } else { "$binDir\bp.cmd" }))
+    Write-Host ""
+    if ($script:ActionItems.Count -gt 0) {
+        Write-Host " Action items:" -ForegroundColor Yellow
+        $seen = @{}
+        foreach ($a in $script:ActionItems) {
+            if ($seen.ContainsKey($a)) { continue }
+            $seen[$a] = $true
+            Write-Host "  - $a" -ForegroundColor Yellow
+        }
+        Write-Host ""
+    }
+    if ($ExitCode -eq $script:ExitReboot) {
+        Write-Host " REBOOT/RE-LOGIN REQUIRED: Docker Desktop, WSL, or PATH changes need a new session. Re-run install.ps1 afterward — it resumes cleanly." -ForegroundColor Yellow
+    }
+    Write-Host " Quick start (open a NEW terminal if PATH was just updated):" -ForegroundColor Cyan
+    Write-Host "   bp --doctor                 re-check environment"
+    Write-Host "   bp --menu                   terminal menu"
+    Write-Host "   bp                          WebUI daemon + browser (default)"
+    Write-Host ""
+    Write-Host " Only run against systems you own or are explicitly authorized to test." -ForegroundColor DarkGray
+    Write-Host " Installer log: $script:LogFile"
+}
+
+# ---------------------------------------------------------------------------
+# Main flow
+# ---------------------------------------------------------------------------
+
+function Invoke-Main {
+    Initialize-Logging -ExplicitPath $LogPath
+    try { $script:SupportsColor = ($Host.UI.SupportsVirtualTerminal -ne $false) } catch { $script:SupportsColor = $true }
+
+    $scriptRoot = ""
+    try { $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { $scriptRoot = (Get-Location).Path }
+    $installDir = Resolve-InstallDir -Requested $InstallDir -ScriptRoot $scriptRoot
+    Write-Log "InstallDir resolved: $installDir (script root: $scriptRoot)" -Level "INFO"
+
+    if ($Uninstall) {
+        $platform = Get-PlatformInfo
+        Show-Header -Platform $platform -InstallDir $installDir
+        return (Remove-BreachPilot -InstallDir $installDir)
+    }
+
+    if ($Check) {
+        return (Invoke-CheckMode -InstallDir $installDir)
+    }
+
+    if ($Repair) {
+        $platform = Get-PlatformInfo
+        Show-Header -Platform $platform -InstallDir $installDir
+        if (-not (Test-PlatformSupported -Platform $platform)) { return $script:ExitUnsupported }
+        $script:PhaseTotal = 8
+        Write-Step "Verifying install + repairing"
+        $res = Invoke-RepairMode -InstallDir $installDir
+        Write-StepDone
+        Show-FinalSummary -InstallDir $installDir -VenvPython $res.VenvPython -Resolved (
+            [pscustomobject]@{ Tag = ""; Sha = "unknown"; Channel = "Repair" }
+        ) -ArchiveSha256 "" -Sandbox @{ Status = "see-above" } -WebUI @{ Built = $false; Skipped = $true } `
+            -DoctorStatus $(if ($res.Code -eq 0) { "PASS" } else { "FAIL" }) -ExitCode $res.Code
+        return $res.Code
+    }
+
+    # ---- Install / Update shared flow ----
+    $platform = Get-PlatformInfo
+    Show-Header -Platform $platform -InstallDir $installDir
+    if (-not (Test-PlatformSupported -Platform $platform)) { return $script:ExitUnsupported }
+    if (-not $platform.WingetPresent -and -not $Offline) {
+        Write-Warn "winget not found — missing tools will need manual install (https://aka.ms/getwinget)."
+    }
+
+    $existingMeta = Read-InstallMetadata -InstallDir $installDir
+    $hasExisting = (Test-Path -LiteralPath (Join-Path $installDir "main.py"))
+    if ($Update -and -not $hasExisting -and ($null -eq $existingMeta)) {
+        Write-Fail "No existing install at $installDir to update. Run plain 'install.ps1' for a fresh install (or point -InstallDir at the existing one)."
+        return $script:ExitInvalidArgs
+    }
+    if ((-not $Update) -and $hasExisting -and ($null -ne $existingMeta) -and ($null -eq $existingMeta.Corrupt) -and -not $Force) {
+        Write-Info "Existing managed install detected at $installDir ($($existingMeta.tag) $($existingMeta.commit)). Re-running as repair/update of that install — user data preserved."
+    }
+    $interrupted = Test-InterruptedInstall -InstallDir $installDir
+    if ($interrupted.Interrupted) {
+        Write-Warn "Interrupted previous run detected (state '$($interrupted.State)') — recovering: verifying what completed before continuing."
+        Write-Log "Interrupted state: $($interrupted.State); backup: $($interrupted.BackupDir)" -Level "WARN"
+    }
+
+    # ---- Phase: resolve version ----
+    $script:PhaseTotal = 12
+    Write-Step "Resolving BreachPilot version"
+    if ($Offline -and ($null -eq $existingMeta -or $null -ne $existingMeta.Corrupt)) {
+        Write-Fail "-Offline given but no usable local metadata to resolve from. Connect once (or supply a staged tree) and re-run."
+        return $script:ExitDownload
+    }
+    try {
+        $resolved = Resolve-BreachPilotVersion
+    } catch {
+        Write-Fail "Version resolution failed: $($_.Exception.Message)"
+        Write-Log "Version resolution error: $($_.Exception.Message)" -Level "ERROR"
+        return $script:ExitDownload
+    }
+    if ($Update -and ($null -ne $existingMeta) -and ($null -eq $existingMeta.Corrupt)) {
+        $sameTag = ((-not [string]::IsNullOrWhiteSpace($resolved.Tag)) -and ($resolved.Tag -eq [string]$existingMeta.tag))
+        $sameSha = ((-not [string]::IsNullOrWhiteSpace($resolved.Sha)) -and ($resolved.Sha -eq [string]$existingMeta.commit))
+        if (($sameTag -or $sameSha) -and -not $Force) {
+            Write-Host ""
+            Write-Host "Already up to date ($($resolved.Tag) $($resolved.Sha.Substring(0, 12))). Nothing to do." -ForegroundColor Green
+            Write-Host "Installer log: $script:LogFile"
+            return $script:ExitSuccess
+        }
+    }
+    if ($hasExisting) {
+        $checkout = Get-CheckoutStatus -Dir $installDir
+        $safety = Test-CheckoutSafe -Checkout $checkout -Dir $installDir
+        if ((-not $safety.Safe) -and -not $Force) {
+            Write-Fail $safety.Reason
+            return $script:ExitInvalidArgs
+        } elseif (-not $safety.Safe) {
+            Write-Warn "Proceeding despite checkout concern (-Force): $($safety.Reason)"
+        } else {
+            Write-Log "Checkout safety: $($safety.Reason)" -Level "INFO"
+        }
+    }
+    Write-InstallState -InstallDir $installDir -State "resolving"
+    Write-StepDone
+
+    # ---- Phase: acquire source (staging) ----
+    $stagingParent = Join-Path ([System.IO.Path]::GetTempPath()) ("BreachPilot-Install-" + [guid]::NewGuid().ToString("N"))
+    $archiveSha = ""
+    $stagedRoot = ""
+    try {
+        New-Item -ItemType Directory -Path $stagingParent -Force | Out-Null
+    } catch {
+        Write-Fail "Cannot create staging dir $stagingParent`: $($_.Exception.Message)"
+        return $script:ExitFailure
+    }
+    try {
+        $runningFromCheckout = $false
+        try {
+            $fullScript = [System.IO.Path]::GetFullPath($scriptRoot)
+            $fullInstall = [System.IO.Path]::GetFullPath($installDir)
+            $runningFromCheckout = $fullScript.TrimEnd("\").Equals($fullInstall.TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)
+        } catch { }
+        if ($runningFromCheckout -and -not $Update -and -not $Force) {
+            # Already inside the desired tree: skip download, validate in place,
+            # still run the full dependency/doctor pipeline below.
+            Write-Step "Validating package"
+            Write-Info "Running from inside the install tree — validating in place (no download, no file replacement)."
+            foreach ($req in $script:RequiredSourceFiles) {
+                if (-not (Test-Path -LiteralPath (Join-Path $installDir $req))) {
+                    Write-Fail "Current tree is not a valid BreachPilot source tree: missing '$req'."
+                    return $script:ExitValidation
+                }
+            }
+            Write-Ok "Package validated (in-place checkout)."
+            $stagedRoot = $installDir
+            Write-InstallState -InstallDir $installDir -State "staged"
+            Write-StepDone
+        } else {
+            Write-Step "Downloading source"
+            Write-InstallState -InstallDir $installDir -State "downloading"
+            $zipPath = Join-Path $stagingParent "breachpilot-source.zip"
+            try {
+                $archiveSha = Get-BreachPilotArchive -Resolved $resolved -DestinationZip $zipPath
+            } catch {
+                Write-Fail "Download failed: $($_.Exception.Message)"
+                return $script:ExitDownload
+            }
+            Write-StepDone
+
+            Write-Step "Validating package"
+            try {
+                $extractDir = Join-Path $stagingParent "extract"
+                New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+                $stagedRoot = Expand-ValidatedArchive -ZipPath $zipPath -StagingDir $extractDir
+                try { Remove-Item -LiteralPath $zipPath -Force } catch { }
+            } catch {
+                Write-Fail "Package validation failed: $($_.Exception.Message)"
+                return $script:ExitValidation
+            }
+            Write-InstallState -InstallDir $installDir -State "staged"
+            Write-StepDone
+
+            # ---- Phase: atomic deploy ----
+            $script:PhaseIndex++  # deploy shares the "Finalizing" numbering visually; keep count honest:
+            $script:PhaseIndex--
+            Write-Step "Deploying (backup + atomic replace)"
+            Write-InstallState -InstallDir $installDir -State "backup_created"
+            $backupRef = ""
+            $backupHolder = @{ Value = "" }
+            try {
+                if ($runningFromCheckout) {
+                    # Updating the very checkout we run from: never move the live
+                    # dir (we execute from it). Copy staged files over the top,
+                    # excluding runtime/user data + ourselves.
+                    $backupHolder.Value = Backup-BreachPilotInstall -InstallDir $installDir
+                    $excl = @(".venv", "venv", "__pycache__", ".git", "node_modules", "webui\node_modules", "webui\dist",
+                        "reports", "exploit_workspace", "research_workspace", "swarm_workspace",
+                        "secr.json", ".env", ".webui_secret_key", "*.db", "*.log",
+                        $script:MetadataFileName, $script:StateFileName) + $script:PreserveNames
+                    foreach ($item in (Get-ChildItem -LiteralPath $stagedRoot -Force)) {
+                        if ($excl -contains $item.Name) { continue }
+                        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $installDir $item.Name) -Recurse -Force
+                    }
+                    Write-Ok "In-place checkout refreshed from $($resolved.Tag) (user data + venv + .git untouched)."
+                } else {
+                    $backupHolder.Value = Deploy-StagedTree -InstallDir $installDir -StagedRoot $stagedRoot -BackupDirOut ([ref]$backupRef)
+                }
+            } catch {
+                Write-Fail "Deploy failed: $($_.Exception.Message)"
+                $bd = $backupHolder.Value
+                if (-not [string]::IsNullOrWhiteSpace($bd) -and -not $runningFromCheckout) {
+                    try {
+                        Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $bd
+                        Write-InstallState -InstallDir $installDir -State "rollback"
+                        return $script:ExitRolledBack
+                    } catch {
+                        Write-Fail "ROLLBACK FAILED: $($_.Exception.Message)"
+                        return $script:ExitFailure
+                    }
+                }
+                return $script:ExitFailure
+            }
+            $backupRef = $backupHolder.Value
+            Write-InstallState -InstallDir $installDir -State "deploying"
+            Write-StepDone
+        }
+    } finally {
+        if ((Test-Path -LiteralPath $stagingParent) -and ($stagedRoot -ne $installDir)) {
+            try { Remove-Item -LiteralPath $stagingParent -Recurse -Force } catch {
+                Write-Log "Staging cleanup incomplete: $($_.Exception.Message)" -Level "WARN"
+            }
+        }
+    }
+    # Re-resolve backup dir (in-place path sets it inside the try above).
+    $backupDir = ""
+    try {
+        if ($runningFromCheckout -and -not $Update -and -not $Force) { $backupDir = "" }
+    } catch { }
+
+    # ---- Dependency phases ----
+    Write-Step "Python"
+    try {
+        $python = Install-PythonEnvironment
+    } catch {
+        Write-Fail "Python setup failed: $($_.Exception.Message)"
+        return $script:ExitDependency
+    }
+    try {
+        $pv = Invoke-ExternalCommand -Command $python.Path -Arguments (@() + $python.ExtraArgs + @("--version")) -TimeoutSeconds 15 -AllowFailure
+        $pp = Invoke-ExternalCommand -Command $python.Path -Arguments (@() + $python.ExtraArgs + @("-m", "pip", "--version")) -TimeoutSeconds 20 -AllowFailure
+        if ($pv.ExitCode -ne 0 -or $pp.ExitCode -ne 0) {
+            Write-Fail "Python verification failed: 'python --version' / 'python -m pip --version' must both succeed."
+            return $script:ExitDependency
+        }
+        Write-Ok "Verified: $($pv.StdOut.Trim()) / $($pp.StdOut.Trim().Split("`n")[0])"
+    } catch {
+        Write-Fail "Python verification failed: $($_.Exception.Message)"
+        return $script:ExitDependency
+    }
+    Write-StepDone
+
+    Write-Step "Python environment"
+    Write-InstallState -InstallDir $installDir -State "dependencies"
+    try {
+        $venvPython = Install-VenvAndDeps -Python $python -InstallDir $installDir
+    } catch {
+        Write-Fail "Python environment setup failed: $($_.Exception.Message)"
+        return $script:ExitDependency
+    }
+    Write-StepDone
+
+    Write-Step "System tools"
+    Install-NmapIfNeeded -InstallDir $installDir | Out-Null
+    $gitInfo = Test-GitInstall
+    if ($gitInfo.Present) { Write-Ok "Git: $($gitInfo.Version)" }
+    else { Write-Skip "Git not installed — optional (source ZIP path works without it). Manual: https://git-scm.com/downloads" }
+    Install-OllamaIfNeeded -InstallDir $installDir | Out-Null
+    Write-StepDone
+
+    Write-Step "WebUI"
+    $webuiResult = Install-WebUI -InstallDir $installDir -VenvPython $venvPython
+    Write-StepDone
+
+    Write-Step "Docker sandbox"
+    $sandboxResult = Install-SandboxImage -InstallDir $installDir
+    Write-StepDone
+
+    Write-Step "Launcher"
+    Install-Launcher -InstallDir $installDir -VenvPython $venvPython | Out-Null
+    $binDir = Get-LauncherDir
+    $pathRes = Add-UserPath -Entry $binDir
+    Install-Shortcuts -InstallDir $installDir
+    Offer-ApiKeySetup -InstallDir $installDir -VenvPython $venvPython
+    Write-StepDone
+
+    Write-Step "Doctor"
+    Write-InstallState -InstallDir $installDir -State "validating"
+    $dr = Invoke-BreachPilotDoctor -VenvPython $venvPython -InstallDir $installDir
+    $dj = Get-DoctorJson -VenvPython $venvPython
+    $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
+    $doctorStatus = ""
+    $finalCode = $script:ExitSuccess
+    switch ($cls.Status) {
+        "pass" { $doctorStatus = "PASS"; Write-Ok "Doctor passed — you're ready to run!" }
+        "warnings" { $doctorStatus = "PASS (warnings)"; Write-Warn "Doctor passed with warnings — see action items." }
+        "action-required" { $doctorStatus = "ACTION REQUIRED"; Write-Warn "Doctor: $($cls.Detail)"; $finalCode = $script:ExitActionRequired }
+        "fail" { $doctorStatus = "FAIL"; Write-Fail "Doctor hard failures: $($cls.Detail)" }
+    }
+    if ($cls.Status -eq "fail") {
+        # Critical validation failed AFTER replacing files: roll back (update) or
+        # fail loudly (fresh install has no backup to restore).
+        if ((-not [string]::IsNullOrWhiteSpace($backupDir)) -and (Test-Path -LiteralPath $backupDir)) {
+            try {
+                Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $backupDir
+                Write-InstallState -InstallDir $installDir -State "rollback"
+                Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
+                    -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+                    -DoctorStatus "ROLLED BACK" -ExitCode $script:ExitRolledBack
+                return $script:ExitRolledBack
+            } catch {
+                Write-Fail "ROLLBACK FAILED: $($_.Exception.Message). Backup at '$backupDir'."
+                return $script:ExitFailure
+            }
+        }
+        Write-InstallState -InstallDir $installDir -State "completed"
+        Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
+            -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+            -DoctorStatus $doctorStatus -ExitCode $script:ExitDoctor
+        return $script:ExitDoctor
+    }
+    Write-StepDone
+
+    Write-Step "Finalizing"
+    if ($null -eq $Resolved) { }
+    try {
+        $launcherKind = "bp.cmd+breachpilot.cmd"
+        if ($NoPath) { $launcherKind = "in-install-only" }
+        Write-InstallMetadata -InstallDir $installDir -Resolved $resolved -ArchiveSha256 $archiveSha -LauncherKind $launcherKind
+    } catch {
+        Write-Warn "Install succeeded but metadata could not be written: $($_.Exception.Message)"
+    }
+    # Drop an installed copy of this installer for the Uninstall shortcut + reruns.
+    try {
+        Copy-Item -LiteralPath $MyInvocation.MyCommand.Path -Destination (Join-Path $installDir "install.ps1") -Force
+        Write-Log "Installed copy of install.ps1 refreshed." -Level "INFO"
+    } catch {
+        Write-Log "Could not refresh installed install.ps1 copy: $($_.Exception.Message)" -Level "WARN"
+    }
+    # Delete the pre-update backup after critical validation — unless -KeepBackup.
+    if ((-not [string]::IsNullOrWhiteSpace($backupDir)) -and (Test-Path -LiteralPath $backupDir)) {
+        if ($KeepBackup) {
+            Write-Info "Keeping pre-update backup: $backupDir (-KeepBackup)."
+        } else {
+            try {
+                Remove-Item -LiteralPath $backupDir -Recurse -Force
+                Write-Log "Deleted pre-update backup after validation: $backupDir" -Level "INFO"
+            } catch {
+                Write-Warn "Could not delete pre-update backup $backupDir`: $($_.Exception.Message). Remove it manually when satisfied."
+            }
+        }
+    }
+    # Free space sanity after install.
+    try {
+        $freeAfter = Get-InstallDriveFreeGB -Path $installDir
+        if ($freeAfter -ge 0 -and $freeAfter -lt 2) {
+            Write-Warn "Only ${freeAfter} GB free on the install drive — Docker image builds and reports need headroom."
+        }
+    } catch { }
+    Write-InstallState -InstallDir $installDir -State "completed"
+    Clear-InstallState -InstallDir $installDir
+    Write-StepDone
+
+    $statusLabel = "SUCCESS"
+    if ($script:HadWarning -or $finalCode -eq $script:ExitActionRequired) {
+        $statusLabel = "SUCCESS WITH WARNINGS"
+        if ($finalCode -eq $script:ExitSuccess) { $finalCode = $script:ExitActionRequired }
+    }
+    Write-Host ""
+    Write-Host "Status: $statusLabel" -ForegroundColor $(if ($finalCode -eq 0) { "Green" } else { "Yellow" })
+    Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
+        -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+        -DoctorStatus $doctorStatus -ExitCode $finalCode
+
+    # Launch offer (interactive installs only; never in -Yes/-NoLaunch/remote).
+    $isRemote = $platform.IsRemote
+    if ((-not $NoLaunch) -and (-not $Yes) -and (-not $isRemote) -and ($finalCode -in @($script:ExitSuccess, $script:ExitActionRequired))) {
+        Write-Host ""
+        Write-Host " Launch BreachPilot now?"
+        Write-Host "   [1] Yes — terminal menu (bp --menu)"
+        Write-Host "   [2] Yes — WebUI in browser (bp --web)"
+        Write-Host "   [3] No — exit installer"
+        $choice = Read-Host " Choice [1/2/3, default 3]"
+        if ($choice -eq "1") {
+            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--menu") -TimeoutSeconds 86400 -StreamOutput | Out-Null } catch { }
+        } elseif ($choice -eq "2") {
+            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--web") -TimeoutSeconds 86400 -StreamOutput | Out-Null } catch { }
+        } else {
+            Write-Host " Exit. Run bp (or START.bat) when ready."
+        }
+    } elseif ($isRemote -and (-not $NoLaunch)) {
+        Write-Info "Remote session: skipping launch offer (run 'bp --web' in a local terminal)."
+    }
+
+    return $finalCode
+}
+
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+$code = $script:ExitFailure
+try {
+    $code = Invoke-Main
+} catch {
+    $msg = Redact-Secrets $_.Exception.Message
+    Write-Fail "Fatal: $msg"
+    Write-Log "FATAL: $($_.ScriptStackTrace)" -Level "ERROR"
+    $code = $script:ExitFailure
+}
+Write-Host "Installer log: $script:LogFile"
+exit $code
 
 # ---------------------------------------------------------------------------
 # Bootstrap: help, arg validation, logging, UX helpers

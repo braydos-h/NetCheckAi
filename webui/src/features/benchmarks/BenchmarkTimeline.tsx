@@ -1,7 +1,7 @@
 // BreachPilot by @braydos-h — https://github.com/braydos-h/BreachPilot
 // Structured mission-event timeline for a benchmark run.
 import { useMemo } from "react";
-import { AlertCircle, CheckCircle2, Clock, PlayCircle, ShieldAlert, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock, Flag, PackageOpen, PlayCircle, Save, ShieldAlert, Wrench, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/features/benchmarks/MetricCards";
 import type { BenchmarkEvent } from "@/features/benchmarks/types";
@@ -16,18 +16,16 @@ const EVENT_ICON: Record<string, React.ComponentType<{ className?: string }>> = 
   sandbox_unavailable: ShieldAlert,
   mission_start: PlayCircle,
   agent_phase: Clock,
-  agent_boot: Wrench,
+  agent_boot: PackageOpen,
   agent_tool_start: Wrench,
   agent_tool_result: Wrench,
-  oracle_result: CheckCircle2,
+  oracle_result: Flag,
   verify_session_unavailable: ShieldAlert,
-  baseline_saved: CheckCircle2,
+  baseline_saved: Save,
   regression_check: ShieldAlert,
   mission_error: AlertCircle,
   mission_timeout: AlertCircle,
 };
-
-const VERIFIED_TYPES = new Set(["oracle_result", "run_end"]);
 
 function eventLabel(event: BenchmarkEvent): string {
   switch (event.type) {
@@ -127,7 +125,14 @@ export function BenchmarkTimeline({ events, trialId, isLoading, maxEvents = 200 
         {filtered.map((event, idx) => {
           const Icon = EVENT_ICON[event.type] ?? Clock;
           const isError = event.level === "error" || event.type.includes("error") || event.type.includes("timeout");
-          const isVerified = VERIFIED_TYPES.has(event.type) && event.payload.verified !== false;
+          // run_end carries no `verified` field on failed runs — only the
+          // oracle verdict or a completed status counts as verified.
+          const isVerified =
+            event.type === "oracle_result"
+              ? event.payload.verified === true
+              : event.type === "run_end"
+                ? event.payload.status === "completed"
+                : false;
           return (
             <li key={event.sequence} className="relative flex gap-3 pb-4">
               {idx < filtered.length - 1 && (
@@ -150,7 +155,10 @@ export function BenchmarkTimeline({ events, trialId, isLoading, maxEvents = 200 
                   <span className="text-[10px] font-medium tabular-nums text-muted-foreground">
                     {formatDuration(event.elapsed_seconds)}
                   </span>
-                  <span className={cn("text-sm", isError && "text-red-500")}>{eventLabel(event)}</span>
+                  <span className="flex items-center gap-1.5 text-sm">
+                    {isError && <AlertCircle className="h-3.5 w-3.5 text-destructive" aria-label="Error" />}
+                    {eventLabel(event)}
+                  </span>
                 </div>
                 <div className="mt-0.5 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
                   {event.scenario_id && <span className="font-mono">{event.scenario_id}</span>}

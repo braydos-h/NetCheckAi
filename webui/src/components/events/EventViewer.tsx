@@ -85,6 +85,7 @@ export function EventViewer({
   const [older, setOlder] = useState<RunEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [olderError, setOlderError] = useState("");
   const [bootDismissed, setBootDismissed] = useState(false);
 
   const followRef = useRef(true);
@@ -217,6 +218,7 @@ export function EventViewer({
     const firstSeq = older.length > 0 ? older[0]?.sequence : events[0]?.sequence;
     if (!firstSeq || loadingOlder) return;
     setLoadingOlder(true);
+    setOlderError("");
     try {
       const res = await apiFetch<EventReplayResponse>(
         `/runs/${encodeURIComponent(runId)}/events?before=${firstSeq}&limit=500`,
@@ -228,7 +230,9 @@ export function EventViewer({
       });
       setHasMoreOlder(!!res.has_more_before);
     } catch {
-      // Leave the window as-is; the banner already notes history is preserved.
+      // The banner already notes history is preserved server-side, but say so
+      // inline — a silent failure reads as "no more history".
+      setOlderError("Could not load older events. History is preserved — retry below.");
     } finally {
       setLoadingOlder(false);
     }
@@ -337,7 +341,9 @@ export function EventViewer({
             Showing latest {older.length + events.length} events
             {remainingOlder > 0 && ` · ${remainingOlder} older events omitted (full history is preserved server-side)`}
           </span>
-          {hasMoreOlder && (
+          {/* hasMoreOlder starts false on first paint — the button must also
+              show while omitted events remain, otherwise it is unreachable. */}
+          {(hasMoreOlder || remainingOlder > 0) && (
             <button
               type="button"
               onClick={() => void loadOlder()}
@@ -346,6 +352,14 @@ export function EventViewer({
             >
               {loadingOlder ? "Loading…" : "Load older events"}
             </button>
+          )}
+          {olderError && (
+            <span className="text-destructive" role="alert">
+              {olderError}{" "}
+              <button type="button" onClick={() => void loadOlder()} className="underline underline-offset-2">
+                Retry
+              </button>
+            </span>
           )}
         </div>
       )}

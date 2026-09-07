@@ -93,9 +93,9 @@ function Chip({
   const Icon = icon;
   const tones = {
     default: "border-border/70 bg-card/40 text-foreground",
-    accent: "border-amber-500/30 bg-amber-500/10 text-amber-200",
-    emerald: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
-    danger: "border-red-500/40 bg-red-500/10 text-red-200",
+    accent: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    emerald: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    danger: "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-200",
   } as const;
   const cls = cn(
     "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-mono text-[11px] tabular-nums",
