@@ -38,7 +38,9 @@ describe("isActiveState", () => {
 
 describe("runStatusToBadge", () => {
   it("maps backend run statuses to badge keys", () => {
-    expect(runStatusToBadge("completed")).toBe("VERIFIED");
+    // "completed" is runner-finished, not oracle-verified — it must not map
+    // to VERIFIED (a completed run can have zero solved trials).
+    expect(runStatusToBadge("completed")).toBe("COMPLETED");
     expect(runStatusToBadge("cancelled")).toBe("CANCELLED");
     expect(runStatusToBadge("running")).toBe("RUNNING");
     expect(runStatusToBadge("failed")).toBe("FAILED");

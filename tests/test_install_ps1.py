@@ -73,8 +73,6 @@ def test_cmdlet_binding_and_channel_validation(script: str) -> None:
 
 
 def test_exit_codes_documented_and_defined(script: str) -> None:
-    for code, meaning in EXIT_CODES.items():
-        assert f"$script:Exit{code if code else 'Success'}" in script or code == 0 or True
     for name in (
         "ExitSuccess",
         "ExitFailure",
@@ -107,13 +105,11 @@ def test_security_prohibitions(script: str) -> None:
     # as an executed command. Strip block comments (<#...#>) and # lines,
     # then forbid any use.
     no_block = re.sub(r"<#.*?#>", "", lowered, flags=re.DOTALL)
-    code_lines = [
-        line for line in no_block.splitlines() if not line.lstrip().startswith("#")
-    ]
+    code_lines = [line for line in no_block.splitlines() if not line.lstrip().startswith("#")]
     code = "\n".join(code_lines)
     assert "invoke-expression" not in code, "Invoke-Expression must not be used"
     assert not re.search(r"(?<![a-z-])iex(?![a-z-])", code), "iex alias must not be used"
-    assert "powershell.exe -c \"[string]([text.encoding]" not in script
+    assert 'powershell.exe -c "[string]([text.encoding]' not in script
     # TLS must never be weakened: no ServerCertificateValidationCallback hacks.
     assert "servercertificatevalidationcallback" not in lowered
     assert "securityprotocoltype::ssl3" not in lowered
@@ -124,9 +120,7 @@ def test_security_prohibitions(script: str) -> None:
     assert "exclusionpath" not in lowered
     assert "new-netfirewallrule" not in lowered
     assert "set-netfirewallprofile" not in lowered
-    assert "uninstall-windowsfeature" not in lowered.replace(
-        "do not install or enable windows optional features", ""
-    )
+    assert "uninstall-windowsfeature" not in lowered.replace("do not install or enable windows optional features", "")
 
 
 def test_https_only_downloads(script: str) -> None:
@@ -145,9 +139,7 @@ def test_metadata_and_state_filenames(script: str) -> None:
 
 
 def test_no_secrets_in_metadata_writer(script: str) -> None:
-    m = re.search(
-        r"function Write-InstallMetadata.*?\n\}", script, re.DOTALL
-    )
+    m = re.search(r"function Write-InstallMetadata.*?\n\}", script, re.DOTALL)
     assert m, "Write-InstallMetadata not found"
     body = m.group(0)
     assert "Never store secrets here" in body

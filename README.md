@@ -309,21 +309,81 @@ make run                # WebUI daemon + browser (http://127.0.0.1:8765)
 That is the whole app. No CLI flags to memorize: everything happens in the WebUI.
 
 <details>
-<summary><strong>Windows (legacy, secondary)</strong></summary>
+<summary><strong>Windows 10/11 (installer-supported, secondary platform)</strong></summary>
 
-Windows still works where cheap, but it is no longer the primary dev
-platform — the Kali arsenal is unavailable there (Python-only exploits).
+Windows is fully installer-supported via `install.ps1` (the single source of
+truth for Windows installation; `install.bat` is a thin wrapper that finds
+PowerShell and invokes it). The Kali arsenal is unavailable there, so Windows
+runs Python-only exploits — Linux stays the primary hardened platform.
 
-```powershell
-.\install.bat    # checks Python/Node/Nmap/Ollama, creates .venv, builds WebUI, pulls models, runs --doctor
-.\START.bat      # launches the WebUI at http://127.0.0.1:8765
-```
-
-Or after install, from any terminal:
+From a checkout (recommended — inspect before running):
 
 ```powershell
-python main.py   # opens the WebUI in your browser
+git clone https://github.com/braydos-h/BreachPilot.git
+cd BreachPilot
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+Remote bootstrap (downloads the installer, inspect it, then run):
+
+```powershell
+Invoke-WebRequest `
+  https://raw.githubusercontent.com/braydos-h/BreachPilot/main/install.ps1 `
+  -OutFile "$env:TEMP\breachpilot-install.ps1"
+& "$env:TEMP\breachpilot-install.ps1"
+```
+
+> Never pipe a downloaded script to `Invoke-Expression` (`irm ... | iex`).
+> Save `install.ps1` to disk, inspect it if desired, then execute it.
+> `-ExecutionPolicy Bypass` above applies to that one process only — no
+> permanent policy change.
+
+Installer essentials (`.\install.ps1 -Help` for exit codes and all options):
+
+```powershell
+.\install.ps1 -Check       # read-only diagnostics, changes nothing
+.\install.ps1 -Yes         # non-interactive (auto-approves winget installs)
+.\install.ps1 -Update      # safe upgrade preserving config/secrets/data, with rollback
+.\install.ps1 -Repair      # repair launcher/venv/deps/WebUI/PATH, keeps user data
+.\install.ps1 -Uninstall   # remove BreachPilot-owned components (keeps shared deps)
+.\install.ps1 -InstallDir "D:\Apps\BreachPilot"   # custom per-user location
+.\install.ps1 -Version "v0.68.4" -Channel Stable  # pin release / Stable|Prerelease|Main
+.\install.ps1 -SkipWebUI -SkipDocker -SkipOllama  # opt out of WebUI build / sandbox / Ollama
+```
+
+Default install dir: `%LOCALAPPDATA%\BreachPilot`. Launchers `bp`/`breachpilot`
+go to `%USERPROFILE%\.local\bin` (+ user PATH). Logs:
+`%LOCALAPPDATA%\BreachPilot\logs\installer-*.log`.
+
+What it does: resolves the exact release (Stable/Prerelease/Main SHA, or your
+`-Version` pin) from `braydos-h/BreachPilot`, downloads the pinned archive
+with retries, validates the ZIP (traversal guard + required files), backs up
+the existing install, deploys atomically (rollback on failure), sets up Python
+3.11+ + `.venv` + `requirements.txt`, builds the WebUI (`npm ci` +
+`npm run build`, Node 18+), checks Nmap/Git/provider keys, verifies Docker +
+builds `breachpilot-sandbox:latest` unless `-SkipDocker`, registers the
+launcher/PATH, offers the secure `main.py --setup-api-keys` flow, and runs the
+real `main.py --doctor` gate. `-Check` reports Installed/Latest/Status plus
+every dependency without changing anything.
+
+Docker Desktop (WSL2) is recommended: the sandbox is default-ON and
+fail-closed (`sandbox.fallback_native: false` in code). With `-SkipDocker`
+the installer states the resulting native-execution mode loudly instead of
+hiding it. Ollama is optional (provider-pluggable: Ollama / OpenCode Go /
+ChatGPT) — the installer only requires it when your `config.yaml` selects it.
+
+After install, from any terminal:
+
+```powershell
+bp              # opens the WebUI at http://127.0.0.1:8765
+.\START.bat     # double-click launcher (same, from the install folder)
+python main.py  # direct, from the install folder
+```
+
+Troubleshooting: re-run with `-Repair`; read the printed log path; exit codes
+`0` success / `7` doctor failed / `8` rolled back / `9` reboot needed /
+`10` action required (e.g. provider key). Docker Desktop first-installs often
+need a logout/reboot before the daemon responds.
 
 </details>
 

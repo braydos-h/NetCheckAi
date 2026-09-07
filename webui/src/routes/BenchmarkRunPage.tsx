@@ -211,6 +211,21 @@ export function BenchmarkRunPage() {
       ? isOrphanedRun(run.data?.status, overview.data, runId)
       : false;
 
+  // Single liveness flag for every polling query: run-local active status ORs
+  // the overview's verdict instead of letting a possibly-stale overview veto
+  // live updates. While the run query is still loading, assume live so the
+  // page starts polling immediately; stop only on terminal status, orphaning,
+  // or a settled overview that names a different active run.
+  // Declared BEFORE the queries below — refetchInterval callbacks run eagerly
+  // on mount, so a later declaration throws a TDZ ReferenceError.
+  const runStatus = run.data?.status;
+  const overviewVeto =
+    overviewSettled &&
+    !run.isPlaceholderData &&
+    overview.data?.active != null &&
+    !(overview.data.active.run_id === runId && isActiveState(overview.data.active.state));
+  const live = !!runId && !orphaned && (!runStatus || isRunActive(runStatus)) && !overviewVeto;
+
   const events = useQuery<{ events: BenchmarkEvent[]; latest_sequence?: number }>({
     queryKey: ["benchmarks", "run-events", runId],
     queryFn: async ({ signal }): Promise<{ events: BenchmarkEvent[]; latest_sequence?: number }> => {
@@ -263,19 +278,6 @@ export function BenchmarkRunPage() {
     retry: false,
     refetchInterval: () => (live ? REFRESH_MS : false),
   });
-
-  // Single liveness flag for every polling query: run-local active status ORs
-  // the overview's verdict instead of letting a possibly-stale overview veto
-  // live updates. While the run query is still loading, assume live so the
-  // page starts polling immediately; stop only on terminal status, orphaning,
-  // or a settled overview that names a different active run.
-  const runStatus = run.data?.status;
-  const overviewVeto =
-    overviewSettled &&
-    !run.isPlaceholderData &&
-    overview.data?.active != null &&
-    !(overview.data.active.run_id === runId && isActiveState(overview.data.active.state));
-  const live = !!runId && !orphaned && (!runStatus || isRunActive(runStatus)) && !overviewVeto;
 
   const isActiveRun =
     (overview.data?.active.run_id === runId && isActiveState(overview.data.active.state)) ||
