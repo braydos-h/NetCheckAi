@@ -339,7 +339,13 @@ async def test_vhost_enum_pair_allows_tied_ip(tmp_path, monkeypatch):
     """
     _clear_env(monkeypatch)
     monkeypatch.setenv("EXPLOIT_TARGET_DOMAIN", "example.com")
+    import tools.mcp_tools.domain as domain_tools
     from tools.mcp_shared import add_discovered_target
+
+    # This test covers authorization, not live vhost probing.  Keep it
+    # hermetic so the suite never performs up to four real 10-second HTTP
+    # requests against the host network.
+    monkeypatch.setattr(domain_tools, "_stdlib_fetch", lambda *args, **kwargs: (200, {}, "stub response"))
 
     add_discovered_target("web.example.com", "93.184.216.34", source="enumerate_subdomains")
     mcp = _make_server(tmp_path, require_allowlist=True, allowed_targets=["example.com"])
@@ -379,7 +385,19 @@ async def test_terminal_bare_discovered_ip_still_blocked(tmp_path, monkeypatch):
     """Free-text terminal use of a discovered IP (no hostname context) fails closed."""
     _clear_env(monkeypatch)
     monkeypatch.setenv("EXPLOIT_TARGET_DOMAIN", "example.com")
+    import tools.mcp_tools.terminal.execute as terminal_execute
     from tools.mcp_shared import add_discovered_target
+
+    class _CompletedProcess:
+        """Minimal Popen stand-in: authorization tests must not run a host shell."""
+
+        pid = 999_999
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return b"stub terminal output\n", None
+
+    monkeypatch.setattr(terminal_execute.subprocess, "Popen", lambda *args, **kwargs: _CompletedProcess())
 
     add_discovered_target("web.example.com", "93.184.216.34", source="enumerate_subdomains")
     mcp = _make_server(tmp_path, require_allowlist=True, allowed_targets=["example.com"])

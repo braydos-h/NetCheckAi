@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-**AI Target Exploitation Engine** (also branded "BreachPilot") — an AI-driven, locally-run penetration testing / bug bounty research agent. It is a local-first Python application that uses Ollama LLMs to plan and execute authorized security assessments against targets the operator owns or has explicit written authorization to test.
+**AI Target Exploitation Engine** (also branded "BreachPilot") — an AI-driven, locally-run penetration testing / bug bounty research agent. It is a local-first Python application that uses pluggable LLM providers (Ollama Cloud default model path; lab config uses `opencode_go`; ChatGPT opt-in — see Configuration) to plan and execute authorized security assessments against targets the operator owns or has explicit written authorization to test.
 
 The repo is NOT a generic nmap wrapper. It couples:
 - An assessment controller (`main.py` / `app.py`) that opens an MCP exploit session (`tools/mcp_session.py:open_exploit_mcp_session`, an async context manager emitting `[BOOT]`/`[OK]` markers via `AttackUi.boot_step`) and dispatches tool calls.
@@ -71,10 +71,10 @@ bp --target 10.0.0.50 --mode attack --swarm --critic --reflection --adaptive-exp
 # (equivalent without the launcher: python3 main.py ...)
 ```
 
-### WebUI API daemon (--daemon (legacy alias: --demon) / --web)
+### WebUI API daemon (--daemon / --demon / --web)
 ```bash
 bp --daemon                       # start the local WebUI API on http://127.0.0.1:8765
-bp --daemon --api-port 9000       # custom port (legacy alias: --demon)
+bp --daemon --api-port 9000       # custom port (`--daemon` and `--demon` are equivalent aliases)
 bp --web                          # build webui/ if needed, serve it at /, open a browser
 # Interactive docs: http://127.0.0.1:8765/docs
 # OpenAPI schema:  http://127.0.0.1:8765/openapi.json
@@ -82,7 +82,7 @@ bp --web                          # build webui/ if needed, serve it at /, open 
 # v1 is loopback-only; concurrent runs capped by api.max_concurrent_runs (default 3);
 # bundled WebUI served when api.serve_webui is true.
 ```
-`--web` is shorthand for: build `webui/dist/` if missing (runs `npm install && npm run build` in `webui/`), set `api.serve_webui: true` in memory (not written to `config.yaml`), start the daemon, and open `http://127.0.0.1:8765/` in a browser. The built UI is a Vite + React + TypeScript SPA under `webui/` that talks to the `/api/v1` REST + WebSocket surface. `--web` has the same mutual-exclusion constraints as `--daemon` (legacy alias: `--demon`).
+`--web` is shorthand for: build `webui/dist/` if missing (runs `npm install && npm run build` in `webui/`), set `api.serve_webui: true` in memory (not written to `config.yaml`), start the daemon, and open `http://127.0.0.1:8765/` in a browser. The built UI is a Vite + React + TypeScript SPA under `webui/` that talks to the `/api/v1` REST + WebSocket surface. `--web` has the same mutual-exclusion constraints as `--daemon` / `--demon`.
 
 ### Legacy research CLI (writes to research_workspace/research.db)
 ```bash
@@ -116,16 +116,14 @@ The HTTP transport refuses to bind to non-loopback interfaces unless `--allow-pu
 python3 -m pip install -e ".[dev]"   # includes ruff
 ruff check .                         # must pass (0 errors)
 ruff format --check .                # must pass (0 diffs)
-mypy --follow-imports=skip tools     # must pass (256 files)
-python3 -m coverage run -m pytest tests/ && python3 -m coverage report   # coverage (CI command; pytest-cov is not installed)
+mypy --follow-imports=skip tools     # must pass (~335 files)
+python3 -m coverage run -m pytest tests/ && python3 -m coverage report --fail-under=80   # coverage (CI command; pytest-cov is not installed)
 ```
 
 ## Configuration
 
 Everything behavior-defining lives in **`config.yaml`**. Top-level keys (current state):
-- `ollama` (host, model `glm-5.2:cloud`, 976K context) + `models.registry` (glm/deepseek/deepseek_flash/kimi/minimax/glm3 aliases; `glm3` → `glm-5.3-flash`, 128K context in `models.info`) + `models.default_alias` (glm) + `models.provider` (`ollama` default | `chatgpt` | `opencode_go` — selects the chat/generate provider; absent = Ollama; lab config.yaml uses `opencode_go`) + `models.auto_update` (default true — daemon boot syncs `models.registry` to the newest same-family versions the Ollama API lists via `tools/ollama_models.py`; no pulls, `models.info` stays operator-managed; on demand via `POST /api/v1/models/refresh`)
-- `chatgpt` (opt-in ChatGPT provider; `enabled`, `host`/`port`/`base_url` loopback `127.0.0.1:10531`, `auto_start`, `local_repo` `./oauth`, `runtime` auto=bun-from-source, `default_model` `gpt-5.2`, `models` `[]`=discover from `/v1/models`, `context_window` 128000, login/start/discover timeouts, `oauth_file`) — active only when `models.provider: chatgpt`. Auth is browser OAuth via the vendored `oauth/` proxy; tokens live in `~/.codex/auth.json` and are **never** copied into config or logged. Embeddings stay on Ollama under any provider.
-- `opencode_go` (opt-in OpenCode Go provider, Responses API; `enabled`, `base_url` `https://opencode.ai/zen/go/v1`, `api_key_env` `OPENCODE_GO_API_KEY`, `default_model` `muse-spark-1.2-contributor`, `context_window` 128000) — active only when `models.provider: opencode_go`. API key is env-only, never in config or logs. Canonical shape is `providers.opencode_go` (see `docs/config-reference.md`); the top-level block is the legacy fallback.
+- `models` (`provider` + `registry`/`default_alias`/`auto_update`/`roles`) — `models.provider` selects the chat/generate provider (`ollama` | `opencode_go` | `chatgpt`; lab config.yaml uses `opencode_go`). Provider config lives in `providers.<id>` blocks (legacy top-level `ollama`/`chatgpt`/`opencode_go` blocks still resolve via one normalization layer: `tools/config/loader.get_provider_config`). Built-ins in `tools/providers/`: `ollama` (cloud `https://api.ollama.com` + `OLLAMA_API_KEY`, or local daemon; the ollama Python package is an install extra guarded by `tests/test_no_ollama_regression.py`), `opencode_go` (Responses API at opencode.ai, key env-only), `chatgpt` (vendored `oauth/` loopback proxy at `127.0.0.1:10531`, browser OAuth). Chat dispatches through the provider registry to a canonical `ModelClient` (`tools/providers/types.py`); adding provider #4 = adapter + registration + config metadata + tests, no agent/swarm/doctor/WebUI edits (see `docs/providers.md` / `docs/provider-development.md`). Embeddings are a separate abstraction (`embeddings.provider: ollama` | `none`; local by default). `models.auto_update` (default true) syncs `models.registry` at daemon boot to the newest same-family versions the Ollama API lists via `tools/ollama_models.py` (no pulls; on demand via `POST /api/v1/models/refresh`). OAuth tokens live in `~/.codex/auth.json` and are **never** copied into config or logged.
 - `mcp` (default_transport, http_host/port)
 - `nmap` (path, sudo, priv_fallback)
 - `exploit` (mode, permission, attack_mode, timeouts, workspace_dir, allowed_targets, require_explicit_allowlist, shell, msfconsole_path, disallowed_assets, forbidden_actions) — **lab build: default permission is `full_access`** with `attack_mode: true`; the remaining safeties are the target-IP lock (`require_explicit_allowlist` unions the runtime `--target` via `EXPLOIT_TARGET`) and the mission ScopeGate consult (`forbidden_actions` / `disallowed_assets` deny on the full_access path — Phase 1). Set `permission: read_only` for propose-only recon; a missing key also falls back to `read_only`.
@@ -136,6 +134,12 @@ Everything behavior-defining lives in **`config.yaml`**. Top-level keys (current
 - `killchain` (opt-in kill-chain state machine, **default OFF**: `enabled`, `goal_state` `shell_as_root`, `require_verification`, `graph_db`) — when enabled, `tools/mcp_tools/killchain.py` registers `killchain_status` (graph read, `@audit_tool`), `killchain_attempt` (`@require_allowlist("target")`; runs the edge playbook through the normal MCP tool layer, then **independently verifies success via check probes — state only advances when verification passes**), and `killchain_plan` (BFS over verified edges, stubs excluded). The loop builds a per-target `tools/killchain/` machine and renders a briefing into the system prompt (empty when disabled). Best-effort: any killchain failure degrades to no-op, never breaks the attack path.
 - `snapshots` (opt-in snapshot + rollback, **default OFF**: `enabled`, `provider` `docker`, `auto_before_destructive`, `max_snapshots_per_target`, `vm_map` [target→vm_id, `SNAPSHOT_VM_MAP` env override], `providers.{docker,hyperv,vmware,proxmox,libvirt}`) — `tools/snapshots.py` provides pluggable providers (Docker commit/rollback is the implemented path; Proxmox/libvirt/Hyper-V/VMware best-effort wrappers) behind named wrapper seams (`docker_commit`, `docker_run_from_snapshot`, `_docker`, ... — tests monkeypatch the wrappers, never subprocess) plus a fail-open `SnapshotManager` with a JSON index (`snapshots_index.json`). Wired into all three dispatch funnels — exploit loop (`tools/exploit_agent/runner/_impl.py`, emits a `snapshot_taken` event), swarm bridge (`tools/swarm_bridge.py`), campaign executor (`tools/campaign/executor.py` `_snapshot_before_destructive`) — and three MCP tools (`tools/mcp_tools/snapshots.py`: `snapshot_create` / `snapshot_revert` [empty ref = latest] / `snapshot_list`, all `@require_allowlist("vm_id")`). **Fail-open by contract: a snapshot failure logs and the action proceeds — snapshot infrastructure must never become an attack-path gate.** Provider tokens (`PROXMOX_API_TOKEN`) are env-only, never in config or logs.
 - `replay_simulator.counterfactual` (bool, default false) — exploit-loop counterfactual replay: on a failed exploit action that had a snapshot, the loop reverts the snapshot and retries the mutated payload against the clean state; both outcomes are recorded in `final_result["counterfactual"]` rows (requires `snapshots.enabled` for effect).
+- `sandbox` (default-ON disposable execution worker: `enabled`, `backend` docker, `image` `breachpilot-sandbox:latest`, `fallback_native`, `auto_manage_docker`, resource limits, DNS mode, cleanup) — see Permission Model §Sandbox below; full reference `docs/sandbox.md`
+- `embeddings` (`provider: ollama` | `none`) — separate from chat providers; a zero-Ollama install sets `models.provider: opencode_go` + `embeddings.provider: none`
+- `browser` (Playwright browser agent, OFF by default: `enabled`, `backend: playwright`, `allow_mutating_actions`) — sandboxed Chromium in the browser worker image, target-locked, fail-closed when unconfigured; see `docs/browser-agent-design.md`
+- `plugins` (`enabled` list) — out-of-tree extensions (attack modules, MCP tools, skills, config) managed by `tools/plugins.py`; reference example `plugins/example_recon_report/`; see `docs/plugin-development.md`
+- `benchmark` (`output_dir`, trials, per-trial timeout, `sandbox_required`, baseline path, regression tolerances) — reproducible oracle-verified suites via `bp --benchmark xben`; see `docs/benchmarks.md`
+- `ics` (destructive PLC writes dual-gated behind `allow_write` + `destructive_ics`), `fsm`, `api` (concurrent runs default 3, loopback auth), `orchestrator`
 - `long_session` (opt-in multi-hour attack mode, also enabled by `--long-session`)
 - `skills` (runtime skills system: selection, re-selection, feedback, semantic matching, sanitization)
 
@@ -148,7 +152,7 @@ Two control flows exist: **Flow A is the active engine**; **Flow B is frozen in 
 ### Flow A — Exploitation engine (modern, `main.py` / `app.py`)
 The "what the user actually runs" path. Async, MCP-based, multi-agent-capable.
 
-Both the CLI (`main.async_main`) and the WebUI API daemon (`--daemon` (legacy alias: `--demon`),
+Both the CLI (`main.async_main`) and the WebUI API daemon (`--daemon` / `--demon`,
 `app.py` → `tools/api/`) drive assessments through `AssessmentService`
 (`tools/run_service/service.py`), a transport-neutral preparation + execution
 service. The CLI supplies `TerminalDecisionProvider` / `TerminalEventSink` /
@@ -240,6 +244,19 @@ The exploit MCP server's tool implementations live in a structured subpackage, r
 | `peer_models.py` | `consult_peer_models` (conditionally registered) — multi-model advisory consultation |
 | `killchain.py` | `killchain_status` / `killchain_attempt` / `killchain_plan` (conditionally registered on `killchain.enabled`; backed by `tools/killchain/`) |
 | `snapshots.py` | `snapshot_create` / `snapshot_revert` / `snapshot_list` (conditionally registered on `snapshots.enabled`; backed by `tools/snapshots.py`, `@require_allowlist("vm_id")` on all three) |
+| `sandbox_exec.py` | Sandbox execution funnel — `run_exploit_terminal`, `run_as_root`, `git_clone`, `run_python_file`, Metasploit, scanners route through `run_command_in_sandbox` / `run_argv_in_sandbox` (see Permission Model §Sandbox) |
+| `browser.py` | Sandboxed Chromium agent (`navigate`/`observe`/`discover`/`screenshot` + gated JS/form-submit/request-replay behind `browser.allow_mutating_actions`; conditionally registered on `browser.enabled`) |
+| `mitre.py` | MITRE ATT&CK technique mapping / Navigator layer export |
+| `operator_connection.py` | RCE beacons, listeners, callback management |
+| `ad.py` | Active Directory modules (BloodHound CE, AS-REP roast, pass-the-hash, ADCS/Certipy, SMB signing checks) |
+| `hitl.py` | `propose_finding` / `hitl_decide` / `list_proposed` — agents propose candidates (`PROPOSED`); humans Approve/Reject in the WebUI Evidence tab; only `APPROVED` becomes a finding |
+| `retest.py` | `retest_finding` — re-runs a confirmed finding's stored PoC probe (`STILL_OPEN` / `FIXED` / `INCONCLUSIVE`) |
+| `verify.py` | `verify_finding` — re-proves a candidate's stored probe N/N times (`VERIFIED` / `HOLDING` / `INCONCLUSIVE` + proof capsule) |
+| `assessment_state.py` | Per-target `AssessmentState` (`record_hypothesis` / `update_task`, allowlist re-validated before writes) |
+| `parallel_agents.py` | Parallel sub-agent dispatch |
+| `poc_verifier.py` | PoC probe verification |
+| `replay_simulator.py` | Counterfactual replay (requires `snapshots.enabled`) |
+| `egress_guard.py` | Egress analysis helpers (see `tools/command_analyzer.py`) |
 
 **Flow A CLI orchestration layer** (extracted from `main.py` into top-level `tools/*.py` during the cleanup):
 - `mcp_session.py` — `open_exploit_mcp_session`, the MCP boot async context manager (see Boot Sequence).
@@ -337,7 +354,7 @@ Three levels, defined in `tools/exploit_agent/policy.py`:
 It is enforced at the MCP tool layer, not the policy:
 - `tools/mcp_shared._allowed_target_list` unions `os.environ["EXPLOIT_TARGET"]` (set to the runtime `--target` in `tools/mcp_session.py`) with `exploit.allowed_targets`. **Domain targeting** (Phase 4) also unions `EXPLOIT_TARGET_IP` (the resolved IP for a domain `--target`), `EXPLOIT_TARGET_DOMAIN` (the domain string), and `EXPLOIT_DISCOVERED_TARGETS` (comma-separated hosts/IPs discovered mid-run by subdomain expansion via `tools/mcp_shared.add_discovered_target`). The lock now locks to a *set* of operator-authorized hosts (primary target + resolved IP + discovered subdomains) instead of a single IP; every member is still operator-authorized and gated through `is_target_in_allowlist` (which supports domains + `*.wildcard` + CIDR by design).
 - The target-IP lock is enforced by `tools/mcp_tools/terminal._target_lock_block`, gated by `ctx.require_allowlist` (driven by `exploit.require_explicit_allowlist` + a non-empty allowlist via `registry.make_require_allowlist`) and run on every target-touching tool. It extracts every destination (URL authorities, `/dev/tcp` hosts, LHOST/RHOST, scanner-verb targets, bare IPs, **and hostnames**) via `command_analyzer._extract_destinations` / `extract_ips_from_command` / `_SCANNER_TARGET_RE` and refuses any not in `is_target_in_allowlist`. Operator-authorized callback/C2 hosts are added via `exploit.allowed_targets`.
-- The autonomous orchestrator's no-MCP "Path B" (`tools/autonomous_orchestrator.py` `AttackModuleExecutor`) is target-locked by its `scope_gate.check_scope(asset=task.target)` — that is why its scope/risk/critic gates were **kept** (removing the scope_gate would lose the Path-B target lock). Its `max_pivot_depth` defaults to 0 (no host-pivoting recursion). **Domain targeting**: when the operator gives a domain, the orchestrator runs subdomain expansion after recon (`_phase_reconnaissance`), auto-authorizing each discovered `(subdomain, ip)` pair via `add_discovered_target`. `AttackState` carries `original_target` / `resolved_ip` / `discovered_subdomains`.
+- The autonomous orchestrator's no-MCP "Path B" (`tools/autonomous_orchestrator.py` `AttackModuleExecutor`) is target-locked by its `scope_gate.check_scope(asset=task.target)` — that is why its scope/risk/critic gates were **kept** (removing the scope_gate would lose the Path-B target lock). Its `autonomous.max_pivot_depth` defaults to 0 (no host-pivoting recursion; note `exploit.max_pivot_depth` is 2 in the lab config). **Domain targeting**: when the operator gives a domain, the orchestrator runs subdomain expansion after recon (`_phase_reconnaissance`), auto-authorizing each discovered `(subdomain, ip)` pair via `add_discovered_target`. `AttackState` carries `original_target` / `resolved_ip` / `discovered_subdomains`.
 
 **Domain targeting (Phase 4).** The operator may pass `--target example.com` (a domain) instead of a bare IP. `main.py` resolves the domain via `tools/validation_utils.resolve_target_to_ip` (system resolver, never raises) and threads both `original_target` (the domain) and `resolved_ip` through `run_exploit_session` → `open_exploit_mcp_session` → the MCP server env vars. The `validate_ipv4` pre-gates on every exploit MCP tool were relaxed to `validate_target_or_ip` (accepts IP or FQDN); the allowlist matcher (`is_target_in_allowlist`) and scope gate (`scope_gate._classify_target_type`/`_rule_matches`) already supported domains + wildcards + CIDR by design. Five new domain MCP tools live in `tools/mcp_tools/domain.py`: `resolve_domain`, `enumerate_subdomains` (auto-authorizes discovered hosts + flags dangling-CNAME takeover), `dns_recon` (AXFR/DNSSEC/SPF/DMARC/NS-version), `vhost_enum` (Host-header rotation), `domain_whois`. A `DOMAIN TARGET BRIEFING` is injected into the agent system prompt (`tools/exploit_agent/prompt.build_domain_briefing`) telling the agent to use the domain for Host/SNI and the IP for nmap/metasploit. The `attacking-domains-end-to-end` skill (`skills/`) orchestrates the full domain attack flow.
 
@@ -347,6 +364,31 @@ hiding were removed (`tools/mcp_tools/registry.py:read_workspace`,
 `tools/mcp_tools/workspace.py`). `write_python_file` accepts arbitrary
 paths/sizes/code (absolute paths write anywhere on the operator box);
 `read_workspace_file` reads any path (including `/etc/hosts`, the vault keyfile).
+
+### Sandbox — disposable execution worker (default ON, fail-closed)
+
+Attack commands do not run on the operator host when the sandbox is enabled
+(`config.yaml sandbox.enabled: true`). `run_exploit_terminal`, `run_as_root`,
+`git_clone`, `run_python_file`, Metasploit, and the scanners funnel through
+`tools/mcp_tools/sandbox_exec.py` (`run_command_in_sandbox` /
+`run_argv_in_sandbox`) into a disposable Docker worker (`tools/sandbox/`:
+manager, docker backend/lifecycle, network) created per run and destroyed
+afterward: non-root, `--cap-drop ALL`, `no-new-privileges`, read-only rootfs,
+CPU/memory/PID limits, output clamping, no Docker socket, no host mounts
+beyond the run workspace. A default-DROP netns firewall authorizes ONLY the
+effective target allowlist (the same list the application layer enforces,
+resolved host-side for domains); cloud metadata, the Docker gateway, host LAN,
+and the open internet are unreachable. Sandbox failures fail closed as
+structured `SANDBOX_*` blocks — **NEVER run agent-generated commands via host
+`subprocess` on new paths, and NEVER add a host-execution fallback for sandbox
+failures.** The worker image must be built: `docker build -t
+breachpilot-sandbox:latest docker/sandbox` (CI `sandbox` job does this and
+runs the 7 sandbox test files against real Docker). The one boot-time
+exception is `sandbox.fallback_native` (whole-session degrade to legacy
+uncontained native mode when Docker is unusable — the checked-in lab config
+sets it `false`; README describes `true` as default, which is currently
+inconsistent). `sandbox.enabled: false` is the explicit operator opt-out.
+Full architecture/threat model: `docs/sandbox.md`.
 
 Operational guards that remain regardless of mode: command timeouts (default
 300s terminal / 300s python / 600s msf), full JSONL audit trail
@@ -364,10 +406,10 @@ searchsploit/metasploit/hydra/crackmapexec/impacket; Windows attacker = Python-o
 
 ## Testing Notes
 
-- **~250** test files in `tests/` (verify via `python3 -c "import pathlib; print(len(list(pathlib.Path('tests').glob('test_*.py'))))"`, all mock subprocess/network). No fixtures for live Nmap; everything mocks subprocess / network.
+- **~340** test files in `tests/` (verify via `python3 -c "import pathlib; print(len(list(pathlib.Path('tests').glob('test_*.py'))))"`, all mock subprocess/network except `-m integration` files). No fixtures for live Nmap; everything mocks subprocess / network.
 - New safety-relevant code needs regression tests in `test_scope_gate.py`, `test_safety_reviewer.py`, `test_validate_target.py` (or a new file if the surface is new).
-- `pyproject.toml` configures pytest with `asyncio_mode = "auto"` and `testpaths = ["tests"]`. Coverage is configured in `[tool.coverage.run]` with `source = ["tools", "main", "cli"]`; run it the way CI does — `python3 -m coverage run -m pytest tests/` then `python3 -m coverage report` (pytest-cov is NOT a dependency, so `pytest --cov` fails).
-- Lint / type-check are CI-enforced repo-wide: `ruff check .` (0 errors) + `ruff format --check .` (0 diffs) and `mypy --follow-imports=skip tools` (256 files, 0 errors with current `disable_error_code` masks; see `.github/workflows/ci.yml`). `pyproject.toml` has `ruff` line-length 120 `select = ["E","F","W","I"]` `ignore = ["E501"]` (`pyproject.toml:102-106`) and `mypy` configs. Keep security-sensitive diffs readable.
+- `pyproject.toml` configures pytest with `asyncio_mode = "auto"` and `testpaths = ["tests"]`. Coverage is configured in `[tool.coverage.run]` with `source = ["tools", "main", "cli", "legacy"]`; run it the way CI does — `python3 -m coverage run -m pytest tests/` then `python3 -m coverage report` (pytest-cov is NOT a dependency, so `pytest --cov` fails).
+- Lint / type-check are CI-enforced repo-wide: `ruff check .` (0 errors) + `ruff format --check .` (0 diffs) and `mypy --follow-imports=skip tools` (~335 files, 0 errors with current `disable_error_code` masks; see `.github/workflows/ci.yml`). `pyproject.toml` has `ruff` line-length 120 `select = ["E","F","W","I"]` (`pyproject.toml:127-174`, with `ignore` + per-file-ignores documenting intentional patterns) and `mypy` configs with strict zero-disable tiers (`validation_utils`, `exceptions`, `mcp_shared`, `kernel.*`, `sandbox.*`). Keep security-sensitive diffs readable.
 
 ## Things To Watch Out For
 
@@ -379,7 +421,7 @@ searchsploit/metasploit/hydra/crackmapexec/impacket; Windows attacker = Python-o
 - **The model backend is Ollama Cloud by default** (`ollama.host: https://api.ollama.com` + `OLLAMA_API_KEY`; the ollama client attaches the bearer token automatically). A local daemon works by pointing `ollama.host` at it (`http://localhost:11434`) — no code change; embeddings always use `ollama.embed_host` (local by default). An unreachable/unauthenticated model backend surfaces as a `[WARN]` on the recon path or a hard fail on the attack path.
 - **ChatGPT provider is opt-in and provider-agnostic by design.** `models.provider: chatgpt` swaps the chat/generate client at the single seam `tools/model_router.py::_build_model_client` (injects a `ChatGptProxyClient` from `tools/providers/chatgpt_provider.py` instead of `ollama.Client`); every consumer already receives a `ModelClient` and is untouched. **OAuth tokens live in `~/.codex/auth.json` — never copy them into `config.yaml` or logs; `is_authenticated()` checks file existence only, never reads it.** The proxy is loopback-only (`127.0.0.1:10531`); lifecycle uses openai-oauth's own `--detach`/`stop` CLI — never Popen+kill `serve`, and never stop a proxy we didn't start (`_we_started`). **This is a provider integration, not an auth-scope change: do not weaken the target-IP allowlist, permission model, MCP target locks, or recon restrictions.** Embeddings stay on Ollama under either provider. Default `provider: ollama` behavior is byte-identical to pre-provider code (the `raw_client is None` branch), so `monkeypatch.setattr(model_router, "OllamaClient", ...)` tests stay green.
 - **Kill-chain and snapshot MCP families are conditional** (the `replay_simulate`/`peer_models` precedent): `tools/mcp_tools/killchain.py` registers nothing unless `killchain.enabled`, `tools/mcp_tools/snapshots.py` unless `snapshots.enabled` (both default OFF in schema + `config.yaml`). The loop's snapshot/counterfactual helpers (`_should_snapshot_for_action`, `_build_snapshot_manager`, `_counterfactual_enabled` in `runner/_impl.py`) are package-root patchables — extend `_sync_patchable_symbols` if you add more (see the exploit-agent patch seam rule) — and every snapshot consumer is **fail-open by contract**: a snapshot/revert failure logs a warning and the attack path proceeds. `PROXMOX_API_TOKEN` and other provider credentials are env-only, never in `config.yaml`, never logged.
-- **CI runs on every push/PR** (`.github/workflows/ci.yml` + codeql + dependency-review, `.github/dependabot.yml`): mocked test suite on Python 3.11-3.13 (`tests/`: ~250 files), coverage (`python3 -m coverage run -m pytest tests/` on Python 3.12), repo-wide `ruff check .` + `ruff format --check .` + `mypy --follow-imports=skip tools` (see README §CI), package build (`python3 -m build` + `twine check`), WebUI build+tests (`npm ci` + `tsc -b && vite build` + `vitest`), and the mocked eval suite (`.github/workflows/eval.yml`). Before a PR run `python3 -m pytest tests/ -v`, `ruff check .`, `ruff format --check .`, and `mypy --follow-imports=skip tools`, and verify README flags/config still match reality.
+- **CI runs on every push/PR** (`.github/workflows/ci.yml` + codeql + dependency-review, `.github/dependabot.yml`): 9 jobs — mocked test suite on Python 3.11-3.13, sandbox integration (real Docker, builds `breachpilot-sandbox:latest`), browser integration (Playwright + Chromium), coverage (`python3 -m coverage run -m pytest tests/` + `coverage report --fail-under=80` on 3.12), lint (repo-wide `ruff check .` + `ruff format --check .` plus guards: MCP bare-except grep, god-file budget, config-schema/YAML sync, requirements/pyproject sync, `doctor --json` shape, docs-truth guard on no-args startup), types (`mypy --follow-imports=skip tools` + strict hot files/subsystems + debt gate via `scripts/mypy_debt.py`), package build (`python3 -m build` + `twine check` + installed-wheel smoke), WebUI build+tests (`npm ci` + `tsc -b && vite build` + `vitest`), and dependency audit (pip-audit). The mocked eval suite runs separately (`.github/workflows/eval.yml`). Before a PR run `python3 -m pytest tests/ -v`, `ruff check .`, `ruff format --check .`, and `mypy --follow-imports=skip tools`, and verify README flags/config still match reality.
 - **The README is the canonical user-facing doc**. When adding a CLI flag, MCP tool, or config key, update the relevant section there. There is no `CHANGELOG.md`; release history is the git history plus the version in `pyproject.toml` / `main.__version__`.
 - **`pyproject.toml` and `requirements.txt` are synced** — both list runtime + dev (`pip install -e ".[dev]" == pip install -r requirements.txt`). `requirements.txt` header says “Synced from pyproject.toml”. The `opencode.jsonc` file configures an Ollama Cloud provider for the opencode.ai editor, not for the app itself.
 - **`tools/mcp_tools/registry.py` is the central wiring point** for all exploit MCP tools — add tools there with the `@audit_tool` / `@require_allowlist()` decorators; `mcp_exploit_server.py` auto-discovers every `register_*_tools` via `collect_tools()` (pkgutil + AST validation, fails CI if a decorator is missing), so no manual list edit is needed.
