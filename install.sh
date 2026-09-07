@@ -1115,6 +1115,7 @@ install_system_dependencies() {
         kali | debian)
             local base_pkgs=(nmap python3-venv tmux curl git)
             if ! apt_install_missing "${base_pkgs[@]}"; then
+                local IFS=' '
                 record_error "base OS packages incomplete — install manually: sudo apt install -y ${base_pkgs[*]}"
             fi
             # Kali arsenal (modern NetExec names first, legacy fallback).
@@ -1156,10 +1157,13 @@ install_system_dependencies() {
             done
             if [[ "${#missing_brew[@]}" -gt 0 ]]; then
                 if is_dry_run; then
+                    local IFS=' '
                     info "[dry-run] would brew-install: ${missing_brew[*]}"
                 elif ! brew install "${missing_brew[@]}" >>"$BP_LOG_FILE" 2>&1; then
+                    local IFS=' '
                     record_error "brew install failed for: ${missing_brew[*]}"
                 else
+                    local IFS=' '
                     ok "installed: ${missing_brew[*]}"
                 fi
             fi
