@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { AUTH_EXPIRED_EVENT, getStoredToken, setStoredToken } from "@/api/client";
+import { AUTH_EXPIRED_EVENT, expireSession, getStoredToken, setStoredToken } from "@/api/client";
 import { useCapabilities } from "@/api/hooks";
 import { ApiError } from "@/api/client";
+import { queryClient } from "@/api/queryClient";
 
 interface TokenGateProps {
   children: React.ReactNode;
@@ -64,9 +65,12 @@ export function TokenGate({ children }: TokenGateProps) {
   };
 
   const signOut = () => {
-    setStoredToken("");
+    // Same teardown as a 401: expireSession clears the token + toasts, and
+    // removeQueries drops cached data so the next auth in this tab replays
+    // fresh instead of resuming stale run events.
+    expireSession("Signed out. Enter a token to reconnect.");
+    queryClient.removeQueries();
     setTokenInput("");
-    capabilities.refetch();
     navigate("/");
   };
 

@@ -180,7 +180,7 @@ export function RunPage() {
         <div className="text-destructive">{notFound ? "Run not found." : "Failed to load run."}</div>
         <div className="flex gap-2">
           <Button asChild variant="outline" size="sm">
-            <Link to="/runs">Back to runs</Link>
+            <Link to="/sessions">Back to runs</Link>
           </Button>
           <Button size="sm" onClick={() => run.refetch()}>Retry</Button>
         </div>
