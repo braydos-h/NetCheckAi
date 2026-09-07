@@ -599,9 +599,10 @@ async def test_responder_relay_keeps_domain_cidr_verbatim(monkeypatch, tmp_path:
     argv = cap["argv"]
     tf = argv[argv.index("-tf") + 1]
     tf_content = Path(tf).read_text()
-    assert "corp.example.com" in tf_content
-    assert "10.0.1.0/24" in tf_content
-    assert "10.0.1.5" in tf_content
+    tf_lines = {line.strip() for line in tf_content.splitlines() if line.strip()}
+    assert "corp.example.com" in tf_lines
+    assert "10.0.1.0/24" in tf_lines
+    assert "10.0.1.5" in tf_lines
 
 
 # ── registration ─────────────────────────────────────────────────────────────
