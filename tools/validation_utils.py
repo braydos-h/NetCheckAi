@@ -271,6 +271,42 @@ def _resolve_via_system(host: str, family: int) -> str | None:
         return None
 
 
+# ponytail: short-TTL multi-address DNS cache for resolve_all_addresses'
+# system-resolver path. Dict + lock + hard cap, not lru_cache, so entries
+# expire (a stale address set must not outlive 5 min), failures cache as []
+# (a dead domain shouldn't cost a DNS timeout on every policy build), and a
+# runaway enumerator can't grow the cache without bound (oldest evicted).
+_RESOLVE_ALL_TTL_S = 300.0
+_RESOLVE_ALL_MAX_ENTRIES = 2000
+_RESOLVE_ALL_CACHE: dict[str, tuple[float, list[str]]] = {}
+_resolve_all_lock = threading.Lock()
+
+
+def _resolve_all_cache_get(host: str) -> list[str] | None:
+    now = time.monotonic()
+    with _resolve_all_lock:
+        hit = _RESOLVE_ALL_CACHE.get(host)
+        if hit is not None and now - hit[0] < _RESOLVE_ALL_TTL_S:
+            return list(hit[1])
+        if hit is not None:
+            _RESOLVE_ALL_CACHE.pop(host, None)
+    return None
+
+
+def _resolve_all_cache_put(host: str, addrs: list[str]) -> None:
+    with _resolve_all_lock:
+        if host not in _RESOLVE_ALL_CACHE and len(_RESOLVE_ALL_CACHE) >= _RESOLVE_ALL_MAX_ENTRIES:
+            oldest = min(_RESOLVE_ALL_CACHE, key=lambda k: _RESOLVE_ALL_CACHE[k][0])
+            _RESOLVE_ALL_CACHE.pop(oldest, None)
+        _RESOLVE_ALL_CACHE[host] = (time.monotonic(), list(addrs))
+
+
+def clear_resolve_all_cache() -> None:
+    """Drop all cached multi-address resolutions (tests, run boundaries)."""
+    with _resolve_all_lock:
+        _RESOLVE_ALL_CACHE.clear()
+
+
 def resolve_all_addresses(
     host: str,
     *,
@@ -284,11 +320,14 @@ def resolve_all_addresses(
     ``[]``.
 
     ``resolver_fn(host) -> list[str]`` may be injected for testing (the same
-    injectable-resolver pattern as :func:`resolve_target_to_ip`); otherwise
-    the system resolver is used via ``socket.getaddrinfo`` with
-    ``AF_UNSPEC`` so both families are returned. This is the provenance
-    source for discovered-host authorization: authorizing a hostname must
-    consider every address it resolves to, not just the first A record.
+    injectable-resolver pattern as :func:`resolve_target_to_ip`, bypassing
+    the cache so tests stay deterministic); otherwise the system resolver is
+    used via ``socket.getaddrinfo`` with ``AF_UNSPEC`` so both families are
+    returned, cached for ``_RESOLVE_ALL_TTL_S`` seconds in a bounded cache.
+    This is the provenance source for discovered-host authorization:
+    authorizing a hostname must consider every address it resolves to, not
+    just the first A record — and a DNS change takes effect at most one TTL
+    after it happens.
     """
     if not host or not isinstance(host, str):
         return []
@@ -310,9 +349,13 @@ def resolve_all_addresses(
         except (OSError, socket.gaierror, ValueError):
             return []
     else:
+        cached = _resolve_all_cache_get(host)
+        if cached is not None:
+            return cached
         try:
             infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except (OSError, socket.gaierror, ValueError):
+            _resolve_all_cache_put(host, [])
             return []
         raw = [str(info[4][0]) for info in infos if info[4]]
     out: list[str] = []
@@ -327,6 +370,8 @@ def resolve_all_addresses(
         except ValueError:
             continue
         out.append(addr)
+    if resolver_fn is None:
+        _resolve_all_cache_put(host, out)
     return out
 
 

@@ -389,3 +389,139 @@ async def test_terminal_bare_discovered_ip_still_blocked(tmp_path, monkeypatch):
     # ...while the hostname form keeps working.
     text2 = _text(await mcp.call_tool("run_exploit_terminal", {"command": "curl https://web.example.com/"}))
     assert "not in the explicit allowlist" not in text2
+
+
+# ── Multi-address system resolution: A/AAAA, cache, TTL, changes ──────────
+
+
+@pytest.fixture
+def _clean_dns_cache(monkeypatch):
+    from tools.validation_utils import clear_resolve_all_cache
+
+    clear_resolve_all_cache()
+    yield
+    clear_resolve_all_cache()
+
+
+def _addrinfo(*addrs: str):
+    import socket as _sock
+
+    return [(_sock.AF_INET6 if ":" in a else _sock.AF_INET, _sock.SOCK_STREAM, 6, "", (a, 0)) for a in addrs]
+
+
+def test_system_resolver_returns_all_a_and_aaaa(monkeypatch, _clean_dns_cache):
+    """getaddrinfo answers with 2xA + 2xAAAA (+dup) → all four, deduped."""
+    import socket as _sock
+
+    monkeypatch.setattr(
+        _sock,
+        "getaddrinfo",
+        lambda *a, **k: _addrinfo("93.184.216.34", "93.184.216.35", "2606:2800:220:1::1", "93.184.216.34"),
+    )
+    from tools.validation_utils import resolve_all_addresses
+
+    assert resolve_all_addresses("example.com") == [
+        "93.184.216.34",
+        "93.184.216.35",
+        "2606:2800:220:1::1",
+    ]
+
+
+def test_system_resolver_scope_id_stripped(monkeypatch, _clean_dns_cache):
+    import socket as _sock
+
+    monkeypatch.setattr(_sock, "getaddrinfo", lambda *a, **k: _addrinfo("fe80::1%eth0"))
+    from tools.validation_utils import resolve_all_addresses
+
+    assert resolve_all_addresses("example.com") == ["fe80::1"]
+
+
+def test_system_resolver_failure_caches_empty(monkeypatch, _clean_dns_cache):
+    """A dead domain resolves once, then serves the cached [] (no DNS storm)."""
+    import socket as _sock
+
+    calls = {"n": 0}
+
+    def _fail(*a, **k):
+        calls["n"] += 1
+        raise _sock.gaierror("no such host")
+
+    monkeypatch.setattr(_sock, "getaddrinfo", _fail)
+    from tools.validation_utils import resolve_all_addresses
+
+    assert resolve_all_addresses("dead.example.com") == []
+    assert resolve_all_addresses("dead.example.com") == []
+    assert calls["n"] == 1
+
+
+def test_cache_hit_avoids_second_lookup(monkeypatch, _clean_dns_cache):
+    import socket as _sock
+
+    calls = {"n": 0}
+
+    def _once(*a, **k):
+        calls["n"] += 1
+        return _addrinfo("93.184.216.34")
+
+    monkeypatch.setattr(_sock, "getaddrinfo", _once)
+    from tools.validation_utils import resolve_all_addresses
+
+    assert resolve_all_addresses("example.com") == ["93.184.216.34"]
+    assert resolve_all_addresses("example.com") == ["93.184.216.34"]
+    assert calls["n"] == 1
+
+
+def test_cache_expiry_re_resolves(monkeypatch, _clean_dns_cache):
+    """Past the TTL the system resolver is consulted again (DNS changes flow)."""
+    import socket as _sock
+    import tools.validation_utils as vu
+
+    answers = {"example.com": ["10.0.0.1"]}
+    monkeypatch.setattr(_sock, "getaddrinfo", lambda h, *a, **k: _addrinfo(*answers[h]))
+    assert vu.resolve_all_addresses("example.com") == ["10.0.0.1"]
+    answers["example.com"] = ["10.0.0.2"]
+    # Still cached...
+    assert vu.resolve_all_addresses("example.com") == ["10.0.0.1"]
+    # ...until the TTL passes.
+    monkeypatch.setattr(vu.time, "monotonic", lambda: 10**9)
+    assert vu.resolve_all_addresses("example.com") == ["10.0.0.2"]
+
+
+def test_injected_resolver_bypasses_cache(monkeypatch, _clean_dns_cache):
+    """Deterministic tests never touch the cache in either direction."""
+    import socket as _sock
+
+    from tools.validation_utils import resolve_all_addresses
+
+    monkeypatch.setattr(_sock, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no DNS")))
+    assert resolve_all_addresses("example.com", resolver_fn=lambda h: ["1.2.3.4"]) == ["1.2.3.4"]
+    assert resolve_all_addresses("example.com", resolver_fn=lambda h: ["5.6.7.8"]) == ["5.6.7.8"]
+
+
+def test_sandbox_policy_picks_up_changed_resolution(monkeypatch, _clean_dns_cache):
+    """End-to-end: changed DNS answers change the firewall on policy rebuild."""
+    import socket as _sock
+    import tools.sandbox.policy as policy
+
+    answers = {"example.com": ["10.0.0.1", "2001:db8::1"]}
+    monkeypatch.setattr(_sock, "getaddrinfo", lambda h, *a, **k: _addrinfo(*answers[h]))
+    monkeypatch.setattr(policy, "RESEARCH_HOSTS", ())
+
+    net1 = policy.build_network_policy(_sandbox_config())
+    assert "10.0.0.1" in net1.authorized_destinations
+    assert "2001:db8::1" in net1.authorized_destinations
+    assert net1.resolved_domain_addresses["example.com"] == ["10.0.0.1", "2001:db8::1"]
+
+    # DNS moves the host; within the TTL the policy still sees the old set
+    # (bounded staleness, not unbounded), then converges after expiry.
+    answers["example.com"] = ["10.0.0.2"]
+    net2 = policy.build_network_policy(_sandbox_config())
+    assert "10.0.0.1" in net2.authorized_destinations
+
+    import tools.validation_utils as vu
+
+    monkeypatch.setattr(vu.time, "monotonic", lambda: 10**9)
+    clear_discovered()
+    net3 = policy.build_network_policy(_sandbox_config())
+    assert "10.0.0.2" in net3.authorized_destinations
+    assert "10.0.0.1" not in net3.authorized_destinations
