@@ -474,6 +474,7 @@ def test_cache_hit_avoids_second_lookup(monkeypatch, _clean_dns_cache):
 def test_cache_expiry_re_resolves(monkeypatch, _clean_dns_cache):
     """Past the TTL the system resolver is consulted again (DNS changes flow)."""
     import socket as _sock
+
     import tools.validation_utils as vu
 
     answers = {"example.com": ["10.0.0.1"]}
@@ -501,6 +502,7 @@ def test_injected_resolver_bypasses_cache(monkeypatch, _clean_dns_cache):
 def test_sandbox_policy_picks_up_changed_resolution(monkeypatch, _clean_dns_cache):
     """End-to-end: changed DNS answers change the firewall on policy rebuild."""
     import socket as _sock
+
     import tools.sandbox.policy as policy
 
     answers = {"example.com": ["10.0.0.1", "2001:db8::1"]}
