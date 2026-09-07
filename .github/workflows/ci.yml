@@ -30,10 +30,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Install project + dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Run test suite (offline/mocked)
         run: python -m pytest tests/ -q -n 2 -m "not integration and not live_llm"
 
@@ -50,10 +51,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Install project + dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Build sandbox worker image
         run: docker build -t breachpilot-sandbox:latest docker/sandbox
       - name: Sandbox unit + integration tests (real Docker containment)
@@ -79,10 +81,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Install project + dev + browser dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,browser]"
+          python -m pip install -c constraints-dev.txt -e ".[dev,browser]"
       - name: Cache Playwright Chromium
         uses: actions/cache@v4
         with:
@@ -122,10 +125,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Install project + dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Run tests with coverage
         run: python -m coverage run -m pytest tests/ -q -m "not integration and not live_llm"
       - name: Terminal coverage report
@@ -153,6 +157,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Cache ruff
         uses: actions/cache@v4
         with:
@@ -163,7 +168,7 @@ jobs:
       - name: Install project + dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Ruff check
         run: ruff check .
       - name: Ruff format
@@ -274,6 +279,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Cache mypy
         uses: actions/cache@v4
         with:
@@ -284,7 +290,7 @@ jobs:
       - name: Install project + dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Debug mypy env
         run: |
           mypy --version
@@ -318,6 +324,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.txt
+            constraints-dev.txt
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip

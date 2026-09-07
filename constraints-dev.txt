@@ -1,0 +1,99 @@
+# Pinned CI/dev environment for BreachPilot.
+#
+# Compatibility RANGES live in pyproject.toml ([project.dependencies] +
+# [project.optional-dependencies]); this file pins the exact versions CI and
+# developers install so builds are reproducible. It is a *constraints* file,
+# not a second dependency declaration: install with
+#
+#   python -m pip install -c constraints-dev.txt -e ".[dev]"
+#
+# which keeps pyproject.toml as the single source of declared ranges while
+# pip resolves every transitive version to the pins below.
+#
+# Refresh (after changing pyproject.toml ranges, or monthly for security
+# patches) from a clean venv on the OLDEST supported Python (3.11), then run
+# the full suite + lint + typecheck before committing:
+#
+#   python3.11 -m venv /tmp/refresh && /tmp/refresh/bin/pip install -e ".[dev]"
+#   /tmp/refresh/bin/pip list --format=freeze | grep -vi "^pip==" | sort > constraints-dev.txt
+#   # re-add this header, then:
+#   python -m pytest tests/ -q -m "not integration" && ruff check . && mypy --follow-imports=skip tools
+#
+# CI validates these pins on Python 3.11, 3.12, and 3.13 (tests matrix), so a
+# refresh must install cleanly on all three before merge.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+ast_serialize==0.9.0
+attrs==26.1.0
+build==1.6.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+coverage==7.16.0
+cryptography==50.0.1
+docutils==0.23
+execnet==2.1.2
+fastapi==0.141.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+id==1.6.1
+idna==3.19
+iniconfig==2.3.0
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+jeepney==0.9.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+keyring==25.7.0
+librt==0.15.0
+markdown-it-py==4.2.0
+mcp==1.29.1
+mdurl==0.1.2
+more-itertools==11.1.0
+mypy==2.3.1
+mypy_extensions==1.1.0
+nh3==0.3.7
+numpy==2.5.3
+ollama==0.6.2
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.6.0
+prompt_toolkit==3.0.53
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+pydantic-settings==2.15.0
+Pygments==2.21.0
+PyJWT==2.13.0
+pyproject_hooks==1.2.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-timeout==2.4.0
+pytest-xdist==3.8.0
+python-dotenv==1.2.3
+python-multipart==0.0.32
+PyYAML==6.0.3
+questionary==2.1.1
+readme_renderer==46.0
+referencing==0.37.0
+requests==2.34.2
+requests-toolbelt==1.0.0
+rfc3986==2.0.0
+rich==15.0.0
+rpds-py==2026.6.3
+ruff==0.16.6
+SecretStorage==3.5.0
+sse-starlette==3.4.11
+starlette==1.6.0
+twine==7.0.0
+typing_extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.7.0
+uvicorn==0.52.4
+wcwidth==0.8.3
+websockets==17.1

@@ -195,6 +195,8 @@ See `docs/extension-guide.md` for the full edit-point table. Summary:
 
 Keep `pyproject.toml` and `requirements.txt` synced — header says "Synced from pyproject.toml" (`pip install -e ".[dev]" == pip install -r requirements.txt`).
 
+**Reproducible installs:** compatibility ranges live in `pyproject.toml`; the exact CI/dev environment is pinned in `constraints-dev.txt` (install with `pip install -c constraints-dev.txt -e ".[dev]"` — CI does this on 3.11/3.12/3.13). Refresh it from a clean venv on Python 3.11 after changing ranges (full procedure in the file header), then run tests + lint + typecheck before committing. WebUI uses `npm ci` (lockfile-enforced; `npm ci` fails when `package-lock.json` is out of sync, so keep the lock committed and consistent).
+
 ## 7. Code style and constraints
 
 - **Ruff**: line-length 120, `select = ["E","F","W","I"]`, `ignore = ["E501"]` (`pyproject.toml:102`). Per-file ignores document intentional patterns (e.g. `tools/mcp_tools/*.py` star-import helpers, `tools/exploit_agent/__init__.py` facade re-exports). Keep security-sensitive diffs readable.
