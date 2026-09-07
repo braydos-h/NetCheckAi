@@ -19,10 +19,40 @@ from tools.mcp_shared import _check_allowlist, _run_with_pgrp_timeout
 # ── _check_allowlist: CIDR / wildcard via is_target_in_allowlist (M1) ─────────
 
 
-def test_check_allowlist_short_circuits_when_not_required():
+def test_check_allowlist_permissive_only_when_union_empty():
+    # Empty union + flag off: nothing to enforce against (unchanged legacy).
     allowed, reason = _check_allowlist("10.0.0.50", {"exploit": {"require_explicit_allowlist": False}})
     assert allowed is True
-    assert "not required" in reason
+    assert "no allowlist configured" in reason
+
+
+def test_check_allowlist_flag_false_still_enforces_env_union(monkeypatch):
+    """Flag-false + EXPLOIT_ALLOWED_TARGETS must NOT yield unrestricted targeting.
+
+    Regression: the flag used to short-circuit every check while the env
+    silently widened the lock — any host passed. Now the union enforces.
+    """
+    from tools.kernel.allowlist import allowlist_env_audit_extra
+
+    for key in (
+        "EXPLOIT_TARGET",
+        "EXPLOIT_TARGET_IP",
+        "EXPLOIT_TARGET_DOMAIN",
+        "EXPLOIT_DISCOVERED_TARGETS",
+        "EXPLOIT_ALLOWED_TARGETS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("EXPLOIT_ALLOWED_TARGETS", "10.0.0.50")
+    cfg = {"exploit": {"require_explicit_allowlist": False, "allowed_targets": []}}
+    allowed, reason = _check_allowlist("10.0.0.99", cfg)
+    assert allowed is False
+    assert "10.0.0.99" in reason
+    # the widening is named, never silent
+    assert "10.0.0.50" in reason
+    allowed, _ = _check_allowlist("10.0.0.50", cfg)
+    assert allowed is True
+    # ... and it is an explicit audit-tree event
+    assert allowlist_env_audit_extra(cfg) == {"allowlist_env_union": ["10.0.0.50"]}
 
 
 def test_check_allowlist_blocks_empty_allowlist():
