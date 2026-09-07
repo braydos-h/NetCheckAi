@@ -35,6 +35,21 @@ Union of:
 
 `add_discovered_target` runtime-extends the allowlist for subdomains discovered by `enumerate_subdomains`; each host is still gated through `is_target_in_allowlist`, it only widens the operator-authorized set.
 
+**Provenance (no global raw-IP authorization):** only the discovered
+*hostname* is appended to `EXPLOIT_DISCOVERED_TARGETS`. A resolved IP is
+recorded in the provenance store (`tools/kernel/discovered.py`: hostname,
+addresses, resolution timestamp, TTL/expiry, source/reason) and is usable
+bare only when the IP itself is explicitly allowlisted — otherwise only in
+a hostname-tied context: the sandbox policy (which resolves each
+authorized hostname host-side to ALL its A/AAAA addresses and records the
+full mapping in `NetworkPolicy.resolved_domain_addresses` + the audit
+payload's `discovered_provenance`), or structured IP+hostname tools via the
+`@require_allowlist(host_param=...)` pair check (e.g. `vhost_enum` with a
+`Host:` header / SNI context). Entries expire (`DISCOVERY_TTL_S`, default
+600s), so DNS changes fail closed instead of lingering. Authorizing one
+hostname therefore never silently authorizes its shared-hosting/CDN IP for
+unrelated use.
+
 Env vars are threaded into the MCP server process by `open_exploit_mcp_session` (`tools/mcp_session.py:256-272`) via `StdioServerParameters(env=env)` and `Popen(env=env)`.
 
 ## Matching — `is_target_in_allowlist`
