@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { PermissionControl } from "@/components/permission/PermissionControl";
-import { useConnections, useRuns } from "@/api/hooks";
-import { isActiveState, type DecisionListRow } from "@/api/types";
+import { useConnections, useHostPlatform, useRuns } from "@/api/hooks";
+import { isActiveState, type DecisionListRow, type HostPlatform } from "@/api/types";
 import { clearStoredToken } from "@/api/client";
 import { useNavigate } from "react-router-dom";
 import { autoAnswerFor, usePermissionMode, type PermissionMode } from "@/lib/permissionMode";
@@ -54,6 +54,19 @@ function demoAnswer(d: typeof DEMO_DECISIONS[number], mode: PermissionMode): str
   return autoAnswerFor(d as DecisionListRow, mode) ?? "\u2014 waits for operator";
 }
 
+// ponytail: keyed lookup, no switch/if-chain. macOS ("darwin") falls back to
+// "Local" \u2014 the sidebar label only distinguishes Linux vs Windows operators.
+const PLATFORM_LABELS: Record<HostPlatform, string> = {
+  windows: "Windows",
+  linux: "Linux",
+  darwin: "Local",
+  unknown: "Local",
+};
+
+export function platformLabel(platform: HostPlatform | undefined): string {
+  return platform ? (PLATFORM_LABELS[platform] ?? "Local") : "Local";
+}
+
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -67,6 +80,17 @@ export function Layout() {
   const [showHelp, setShowHelp] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+
+  // Backend OS for the sidebar badge (same source as WindowsPerformanceWarning:
+  // platform.system(), never the browser UA). Falls back to "Local" while
+  // loading or when the query is unavailable.
+  let hostPlatform: HostPlatform | undefined;
+  try {
+    hostPlatform = useHostPlatform().data?.platform;
+  } catch {
+    hostPlatform = undefined;
+  }
+  const consoleLabel = `${platformLabel(hostPlatform)} console`;
 
   // The mobile drawer is navigation chrome — always close it when a link
   // inside it moves the user to a new route.
@@ -199,7 +223,7 @@ export function Layout() {
               <span className="text-foreground">AI</span>
             </span>
             <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              v{__APP_VERSION__} beta · Local console
+              v{__APP_VERSION__} beta · {consoleLabel}
             </span>
           </div>
         </div>
@@ -257,7 +281,7 @@ export function Layout() {
                 <span className="text-foreground">AI</span>
               </SheetTitle>
               <SheetDescription className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                v{__APP_VERSION__} beta · Local console
+                v{__APP_VERSION__} beta · {consoleLabel}
               </SheetDescription>
             </div>
           </SheetHeader>

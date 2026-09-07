@@ -11,6 +11,7 @@ vi.mock("@/api/hooks", () => ({
   useRuns: vi.fn(),
   useConnections: vi.fn(),
   useModels: vi.fn(),
+  useHostPlatform: vi.fn(),
 }));
 
 vi.mock("@/components/ProviderSetup", async () => {
@@ -29,13 +30,14 @@ vi.mock("@/lib/sessionTokens", async () => {
   };
 });
 
-import { useConnections, useModels, useRuns } from "@/api/hooks";
+import { useConnections, useHostPlatform, useModels, useRuns } from "@/api/hooks";
 import { useProviderStatus } from "@/components/ProviderSetup";
 import { useSessionTokens } from "@/lib/sessionTokens";
 
 const runsMock = vi.mocked(useRuns);
 const connectionsMock = vi.mocked(useConnections);
 const modelsMock = vi.mocked(useModels);
+const hostPlatformMock = vi.mocked(useHostPlatform);
 const providerStatusMock = vi.mocked(useProviderStatus);
 const sessionTokensMock = vi.mocked(useSessionTokens);
 
@@ -54,6 +56,11 @@ function setup({ activeRuns = [] as Array<{ id: string; state: string; target: s
     data: { provider: "ollama", default_alias: "glm" },
     isLoading: false,
     error: null,
+  } as never);
+  hostPlatformMock.mockReturnValue({
+    data: { platform: "linux" },
+    isLoading: false,
+    isError: false,
   } as never);
   providerStatusMock.mockReturnValue({
     provider: "ollama",
