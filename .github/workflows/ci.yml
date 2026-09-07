@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run test suite (offline/mocked)
-        run: python -m pytest tests/ -q -n 2 -m "not integration"
+        run: python -m pytest tests/ -q -n 2 -m "not integration and not live_llm"
 
   sandbox:
     name: Sandbox integration (Docker)
@@ -127,7 +127,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run tests with coverage
-        run: python -m coverage run -m pytest tests/ -q -m "not integration"
+        run: python -m coverage run -m pytest tests/ -q -m "not integration and not live_llm"
       - name: Terminal coverage report
         run: python -m coverage report --fail-under=80
       - name: XML coverage report

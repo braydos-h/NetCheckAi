@@ -201,7 +201,11 @@ class KillChainMachine:
             args = {k: resolve_placeholders(v, ctx) for k, v in (step.get("args") or {}).items()}
             try:
                 output = await self._run_tool(tool_name, args)
-            except Exception as exc:  # noqa: BLE001
+            except _EXC_GROUP_CATCH as exc:
+                # _EXC_GROUP_CATCH, not bare Exception: anyio task groups raise
+                # BaseExceptionGroup (not an Exception subclass) on MCP
+                # subprocess death — missing it crashed killchain_attempt.
+                _log_nested_exceptions(exc)
                 steps.append({"tool": tool_name, "args": args, "error": str(exc)})
                 return {
                     "success": False,
@@ -222,7 +226,9 @@ class KillChainMachine:
             resolved_spec = _resolve_check_spec(spec, ctx)
             try:
                 result = await asyncio_to_thread(verify_flag_check, resolved_spec, executor)
-            except Exception as exc:  # noqa: BLE001
+            except _EXC_GROUP_CATCH as exc:
+                # Same MCP-death group hazard as the playbook steps above.
+                _log_nested_exceptions(exc)
                 checks.append({"flag_id": str(spec.get("id", "")), "passed": False, "detail": f"check error: {exc}"})
                 all_passed = False
                 continue
