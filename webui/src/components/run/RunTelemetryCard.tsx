@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Cpu } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, OctagonAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTokens } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -22,10 +22,10 @@ function ctxLevel(pct: number): Level {
   return "critical";
 }
 
-const LEVEL_META: Record<Level, { bar: string; label: string; badge: "success" | "warn" | "danger" }> = {
-  normal: { bar: "bg-emerald-500", label: "Normal", badge: "success" },
-  high: { bar: "bg-yellow-500", label: "Getting high", badge: "warn" },
-  critical: { bar: "bg-red-500", label: "Critical", badge: "danger" },
+const LEVEL_META: Record<Level, { bar: string; label: string; badge: "success" | "warn" | "danger"; icon: typeof CheckCircle2 }> = {
+  normal: { bar: "bg-primary", label: "Normal", badge: "success", icon: CheckCircle2 },
+  high: { bar: "bg-primary", label: "Getting high", badge: "warn", icon: AlertTriangle },
+  critical: { bar: "bg-primary", label: "Critical", badge: "danger", icon: OctagonAlert },
 };
 
 /**
@@ -69,7 +69,8 @@ export const RunTelemetryCard = memo(function RunTelemetryCard({
           <Cpu className="h-3.5 w-3.5 text-primary" aria-hidden />
           Telemetry
           {meta && (
-            <Badge variant={meta.badge} className="ml-auto text-[9px] leading-none">
+            <Badge variant={meta.badge} className="ml-auto gap-1 text-[9px] leading-none">
+              <meta.icon className="h-3 w-3" aria-hidden />
               {meta.label}
             </Badge>
           )}

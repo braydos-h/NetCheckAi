@@ -32,9 +32,11 @@ IFS=$'\n\t'
 # ---------------------------------------------------------------------------
 BP_INSTALLER_VERSION="1.0.0"
 BP_REPO="braydos-h/BreachPilot"
+# shellcheck disable=SC2034 # informational: shown in update/version displays
 BP_GITHUB="https://github.com/${BP_REPO}"
 BP_API="https://api.github.com/repos/${BP_REPO}"
 BP_TARBALL_BASE="https://codeload.github.com/${BP_REPO}/tar.gz"
+# shellcheck disable=SC2034 # informational: the curl|bash one-liner base URL
 BP_RAW_BASE="https://raw.githubusercontent.com/${BP_REPO}"
 BP_DEFAULT_BRANCH="main"
 BP_MIN_PYTHON_MAJOR=3
@@ -431,6 +433,7 @@ cleanup() {
 }
 
 on_interrupt() {
+    # shellcheck disable=SC2034 # observability flag for future handlers/tests
     BP_INTERRUPTED=1
     warn "interrupted — cleaning up temporary files."
     log_to_file "interrupted by signal"
@@ -575,6 +578,7 @@ detect_platform() {
         # shellcheck disable=SC1091
         . /etc/os-release
         BP_OS_NAME="${PRETTY_NAME:-${NAME:-Linux}}"
+        # shellcheck disable=SC2034 # recorded in .install-info platform field
         BP_OS_VERSION="${VERSION_ID:-}"
         local id="${ID:-}" id_like="${ID_LIKE:-}"
         if [[ "$id" == "kali" ]]; then
@@ -1447,11 +1451,12 @@ setup_ollama() {
         (nohup ollama serve >"$HOME/.local/state/breachpilot/ollama-serve.log" 2>&1 &) || true
         echo $! >"$HOME/.local/state/breachpilot/ollama-serve.pid" 2>/dev/null || true
     fi
-    local i=0
+    local i=""
     for i in $(seq 1 20); do
         ollama_api_ok "http://localhost:11434" && break
         sleep 1
     done
+    debug "ollama readiness probes used: ${i:-0}/20"
     if ollama_api_ok "http://localhost:11434"; then
         ok "ollama daemon running"
     else
@@ -1686,7 +1691,9 @@ ensure_path_block() {
         */bash) rc_file="$HOME/.bashrc" ;;
         *) rc_file="$HOME/.profile" ;;
     esac
-    if grep -q "Added by BreachPilot install.sh" "$rc_file" 2>/dev/null; then
+    # Match any BreachPilot-owned block (current + legacy "setup" markers) so
+    # re-runs never stack duplicate PATH blocks.
+    if grep -q "Added by BreachPilot" "$rc_file" 2>/dev/null; then
         ok "$bin_dir already wired into $rc_file"
         return 0
     fi
@@ -1702,14 +1709,19 @@ remove_path_blocks() {
     local rc=""
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
         [[ -f "$rc" ]] || continue
-        if grep -q "Added by BreachPilot install.sh" "$rc" 2>/dev/null; then
+        if grep -q "Added by BreachPilot" "$rc" 2>/dev/null; then
             if is_dry_run; then
                 info "[dry-run] would remove PATH block from $rc"
                 continue
             fi
-            sed -i "/# >>> Added by BreachPilot install.sh >>>/,/# <<< Added by BreachPilot install.sh <<</d" "$rc" \
-                && ok "removed PATH block from $rc" \
-                || warn "could not edit $rc — remove the BreachPilot block manually."
+            # Remove every BreachPilot-owned marker variant (current + legacy).
+            sed -i "/# >>> Added by BreachPilot install.sh >>>/,/# <<< Added by BreachPilot install.sh <<</d" "$rc"
+            sed -i "/# >>> Added by BreachPilot setup >>>/,/# <<< Added by BreachPilot setup <<</d" "$rc"
+            if grep -q "Added by BreachPilot" "$rc" 2>/dev/null; then
+                warn "could not fully edit $rc — remove the BreachPilot block manually."
+            else
+                ok "removed PATH block from $rc"
+            fi
         fi
     done
 }
@@ -1839,13 +1851,14 @@ preserve_user_data() {
     # preserve_user_data <live_dir> <stage_dir> — copy persistent items from
     # the live install into the staged tree BEFORE activation.
     local live="$1" stage="$2" item=""
+    [[ -n "$stage" && "$stage" != "/" ]] || fatal "preserve_user_data: unsafe stage dir"
     for item in "${BP_PRESERVE_ITEMS[@]}"; do
         if [[ -e "$live/$item" ]]; then
             debug "preserving $item"
             if is_dry_run; then
                 continue
             fi
-            rm -rf "$stage/$item" 2>/dev/null || true
+            rm -rf "${stage:?}/${item:?}" 2>/dev/null || true
             if ! cp -a "$live/$item" "$stage/$item" 2>>"$BP_LOG_FILE"; then
                 warn "could not preserve $item — continuing (your live copy is untouched)."
             fi

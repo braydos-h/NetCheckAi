@@ -1,4 +1,4 @@
-import { Crosshair, GitMerge } from "lucide-react";
+import { AlertTriangle, Bug, CheckCircle2, Crosshair, GitMerge } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { GraphSummaryResponse } from "@/features/graph/graphTypes";
@@ -17,6 +17,7 @@ interface StatChip {
   value: number;
   tone?: ChipTone;
   onClick?: () => void;
+  icon?: React.ComponentType<{ className?: string }>;
 }
 
 // Compact investigation summary: real counts only (from the backend /summary
@@ -29,9 +30,9 @@ export function GraphStats({ summary, onFocusNode, onOpenConflicts }: GraphStats
   const chips: StatChip[] = [
     { key: "nodes", label: "Nodes", value: summary.summary.total_nodes },
     { key: "edges", label: "Edges", value: summary.summary.total_edges },
-    { key: "findings", label: "Findings", value: stats.findings, tone: "accent" },
-    { key: "vulns", label: "Vulns", value: stats.vulnerability_candidates, tone: "danger" },
-    { key: "confirmed", label: "Confirmed", value: stats.confirmed, tone: "emerald" },
+    { key: "findings", label: "Findings", value: stats.findings, tone: "accent", icon: AlertTriangle },
+    { key: "vulns", label: "Vulns", value: stats.vulnerability_candidates, tone: "danger", icon: Bug },
+    { key: "confirmed", label: "Confirmed", value: stats.confirmed, tone: "emerald", icon: CheckCircle2 },
   ];
   if (stats.conflict_count > 0) {
     chips.push({
@@ -54,7 +55,7 @@ export function GraphStats({ summary, onFocusNode, onOpenConflicts }: GraphStats
           value={c.value}
           tone={c.tone}
           onClick={c.onClick}
-          icon={c.key === "conflicts" ? GitMerge : undefined}
+          icon={c.icon ?? (c.key === "conflicts" ? GitMerge : undefined)}
         />
       ))}
       {hub && (
