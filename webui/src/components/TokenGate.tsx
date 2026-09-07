@@ -111,8 +111,9 @@ export function TokenGate({ children }: TokenGateProps) {
               </Button>
             </form>
             <p className="mt-4 text-xs text-muted-foreground">
-              The token is stored only in this browser session and is sent to{" "}
-              <code className="rounded bg-muted px-1 py-0.5">127.0.0.1</code> only.
+              The token is held in memory only (never stored in the browser) and is sent to{" "}
+              <code className="rounded bg-muted px-1 py-0.5">127.0.0.1</code> only. Refreshing
+              this page signs you out.
             </p>
           </CardContent>
         </Card>

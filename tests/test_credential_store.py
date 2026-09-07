@@ -545,16 +545,17 @@ async def test_read_workspace_file_reads_credentials_store_lab(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_list_workspace_shows_credentials_subtree_lab(monkeypatch, tmp_path):
-    """LAB BUILD: the credentials/ subtree is no longer hidden -- list_workspace
-    shows it (operator-box filesystem is unrestricted)."""
+async def test_list_workspace_redacts_credentials_subtree_and_keyfile(monkeypatch, tmp_path):
+    """list_workspace redacts the credentials/ subtree (count shown, names
+    hidden) and never lists vault keyfile names anywhere in the tree."""
     monkeypatch.delenv("AI_NMAP_VAULT_KEY", raising=False)
+    monkeypatch.setenv("BREACHPILOT_VAULT_DIR", str(tmp_path / "vault_home"))
     mcp = _make_server(tmp_path)
     await mcp.call_tool("cred_store_add", {"target_ip": "10.0.0.50", "username": "admin", "password": _CLEARTEXT})
     listed = _text(await mcp.call_tool("list_workspace", {}))
-    assert "credentials" in listed.lower()  # subtree is shown
+    assert "credentials/ (" in listed and "redacted" in listed  # subtree counted, not shown
+    assert "credentials.jsonl" not in listed
     assert ".vault_key" not in listed  # keyfile names are never listed
-    assert "credentials.jsonl" in listed
 
 
 @pytest.mark.asyncio
@@ -714,7 +715,8 @@ async def test_list_workspace_shows_credentials_via_link_alias_lab(monkeypatch, 
         pytest.skip("link/junction creation unavailable in this environment")
     listed = _text(await mcp.call_tool("list_workspace", {}))
     low = listed.lower()
-    # the real credentials/ subtree is shown (the lab build does not hide it)
+    # the credentials/ subtree is counted, never enumerated (followlinks=False
+    # also keeps the symlink alias from leaking names)
     assert "credentials" in low
     assert ".vault_key" not in listed  # keyfile names are never listed
-    assert "credentials.jsonl" in listed
+    assert "credentials.jsonl" not in listed

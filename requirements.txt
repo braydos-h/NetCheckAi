@@ -1,6 +1,8 @@
 # Synced from pyproject.toml — keep in sync with [project.dependencies] + [project.optional-dependencies].
 # This file = core deps + the optional `ollama` extra + the dev extra, so
 # `pip install -r requirements.txt` equals `pip install -e ".[ollama,dev]"`.
+# Reproducible install (exact pins, CI-enforced): `pip install -c constraints-dev.txt -r requirements.txt`
+# (pins live in constraints-dev.txt; the `audit` CI job fails on drift or known CVEs via pip-audit).
 # The Ollama Python SDK is an OPTIONAL provider dependency: a non-Ollama
 # provider (models.provider: opencode_go / chatgpt) imports successfully
 # without it (tools/model_router must import cleanly with no ollama package).

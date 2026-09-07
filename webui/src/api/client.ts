@@ -4,23 +4,19 @@ import type {
 } from "@/api/types";
 import { toast } from "@/hooks/use-toast";
 
-const TOKEN_KEY = "breachpilot.apiToken.v1";
+// The bearer token lives in module memory ONLY — never in
+// sessionStorage/localStorage, where any XSS payload could replay it against
+// the loopback API. Trade-off: a page refresh drops the session and the
+// TokenGate re-prompts (accepted: the token is one paste away in
+// .webui_secret_key).
+let inMemoryToken = "";
 
 export function getStoredToken(): string {
-  try {
-    return sessionStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
+  return inMemoryToken;
 }
 
 export function setStoredToken(token: string): void {
-  try {
-    if (token) sessionStorage.setItem(TOKEN_KEY, token);
-    else sessionStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // Ignore storage failures (private mode, etc.).
-  }
+  inMemoryToken = token || "";
 }
 
 export function clearStoredToken(): void {
