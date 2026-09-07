@@ -279,14 +279,14 @@ export function HelpPage() {
                           return;
                         }
                         if (t.route) {
-                          // internal route: navigate via scroll if on same page anchor exists, else use Link behavior via location
-                          // For file-only topics that have both anchor and route, prefer anchor scroll when the section is visible.
-                          const anchorEl = document.getElementById(t.anchor.replace(/^#/, ""));
-                          if (anchorEl) {
-                            scrollToAnchor(t.anchor);
-                          } else {
-                            window.location.hash = t.anchor;
-                          }
+                          // Cross-page topic: route first, then scroll to the
+                          // anchor once the new page has mounted. Same-page
+                          // topics just scroll in place.
+                          navigate(t.route);
+                          const id = t.anchor.replace(/^#/, "");
+                          requestAnimationFrame(() =>
+                            setTimeout(() => scrollToAnchor(`#${id}`), 100),
+                          );
                         } else {
                           scrollToAnchor(t.anchor);
                         }
