@@ -69,7 +69,7 @@ def _allowed_target_list(config: dict[str, Any] | None) -> list[str]:
     return allowed
 
 
-def add_discovered_target(host: str, ip: str | None = None) -> None:
+def add_discovered_target(host: str, ip: str | None = None, *, source: str = "") -> None:
     """Runtime-extend the allowlist with a discovered subdomain (hardened).
 
     Allowlist-checked: the discovered host must be either directly allowlisted
@@ -81,6 +81,14 @@ def add_discovered_target(host: str, ip: str | None = None) -> None:
     false the check is skipped (legacy). An empty existing allowlist denies
     expansion (no base to authorize from). Validated targets only; malformed
     hosts are dropped.
+
+    Provenance (no global raw-IP authorization): only the *hostname* is
+    appended to ``EXPLOIT_DISCOVERED_TARGETS``. A resolved ``ip`` is recorded
+    in the provenance store (:mod:`tools.kernel.discovered`) tied to that
+    hostname — it is usable bare only when the IP itself is explicitly
+    allowlisted, otherwise only in a hostname-tied context (sandbox policy,
+    IP+hostname pair checks). Authorizing ``allowed.example.com`` therefore
+    never silently authorizes its shared-hosting/CDN IP for unrelated use.
     """
     import logging
 
@@ -155,19 +163,22 @@ def add_discovered_target(host: str, ip: str | None = None) -> None:
                     allowed_domains,
                 )
                 return
-        # If ip provided, it inherits host's authorization when host is a valid
-        # subdomain expansion; a resolved A record for an allowed subdomain does
-        # not itself need to be in a CIDR allowlist. Direct-host IPs that are not
-        # otherwise allowlisted are still added as they map to an authorized host.
-        if ip and not is_target_in_allowlist(ip, existing_allowed):
-            pass
+        # Provenance, not global authorization: a resolved IP inherits the
+        # host's authorization ONLY in a hostname-tied context. It is recorded
+        # against the hostname (see tools.kernel.discovered) and is NEVER
+        # appended to EXPLOIT_DISCOVERED_TARGETS as a bare reusable entry —
+        # otherwise authorizing one hostname would silently authorize its
+        # shared-hosting/CDN IP for unrelated use.
 
     vals = [t.strip() for t in os.environ.get("EXPLOIT_DISCOVERED_TARGETS", "").split(",") if t.strip()]
     if host not in vals:
         vals.append(host)
-    if ip and ip not in vals and ip != host:
-        vals.append(ip)
     os.environ["EXPLOIT_DISCOVERED_TARGETS"] = ",".join(vals)
+
+    if ip and ip != host:
+        from tools.kernel.discovered import record_discovered_host
+
+        record_discovered_host(host, [ip], source=source or "add_discovered_target")
 
 
 def _check_allowlist(target_ip: str, config: dict[str, Any] | None) -> tuple[bool, str]:

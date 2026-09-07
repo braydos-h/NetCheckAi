@@ -284,6 +284,27 @@ All subprocess calls use list args (no `shell=True`), `cwd=local_repo`
 > openai-oauth's own `--detach`/`stop` CLI machinery is the only reliable
 > cross-platform lifecycle.
 
+### Bootstrap pins (reproducibility + safety)
+
+First-run setup lives in `tools/chatgpt_bootstrap.py`, the single home for
+the third-party pins:
+
+- **Bun `1.3.11`** — installed only via the pinned npm package
+  (`npm install -g bun@1.3.11`). BreachPilot never pipes a remote script
+  into a shell (no `curl | bash`, no `irm | iex`); if bun is absent and npm
+  cannot install it, setup fails with a manual-install message.
+- **openai-oauth `v2.0.0`** (commit `4be9c04…`) — cloned with
+  `git clone --depth 1 --branch v2.0.0`, and `HEAD` is verified against the
+  pinned commit via `git rev-parse` before `bun install` / `bun run build`
+  ever execute. A checkout at any other revision fails closed (delete
+  `oauth/` and re-run for a fresh pinned clone).
+- **`bun install --frozen-lockfile`** — the vendored `bun.lock` pins every
+  transitive dependency, so installs are reproducible.
+
+To refresh the pins, update the constants in `tools/chatgpt_bootstrap.py`,
+verify the new tag contains `packages/openai-oauth/src/cli.ts` and a
+`bun.lock`, and run `pytest tests/test_chatgpt_bootstrap.py`.
+
 ### Model discovery
 
 `discover_models(base_url)` does `GET /v1/models`, cached for

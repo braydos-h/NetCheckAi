@@ -257,7 +257,46 @@ def _extract_audit_target(bound: "inspect.BoundArguments") -> str:
 
 
 def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
-    def require_allowlist(target_param: str = "target_ip", *, audit: bool = True):
+    def require_allowlist(target_param: str = "target_ip", *, audit: bool = True, host_param: str | None = None):
+        """Gate a tool on the target-IP allowlist.
+
+        ``host_param`` names an optional second bound argument holding a
+        hostname that gives the target its context (e.g. ``vhost_enum``'s
+        ``domain`` for the ``Host:`` header / TLS SNI). When the primary
+        target alone is not allowlisted, the pair is accepted iff the
+        hostname is allowlisted AND the provenance store ties the target IP
+        to that hostname (see :mod:`tools.kernel.discovered`). A resolved
+        IP is therefore usable only in a context tied to its hostname,
+        unless the IP itself is explicitly allowlisted. ``None`` (the
+        default) preserves the legacy single-target gate.
+        """
+        from tools.kernel.discovered import get_discovered_host, is_pair_authorized
+        from tools.validation_utils import is_target_in_allowlist
+
+        def _pair_fallback(target_ip: Any, bound: "inspect.BoundArguments") -> tuple[bool, str] | None:
+            """Pair-aware second chance after the flat gate denies. None = no pair context."""
+            if not host_param:
+                return None
+            hostname = bound.arguments.get(host_param, "")
+            if not isinstance(hostname, str) or not hostname.strip():
+                return None
+            if not isinstance(target_ip, str) or not target_ip.strip():
+                return None
+            from tools.kernel.allowlist import _allowed_target_list
+
+            allowed_targets = _allowed_target_list(config)
+            if not is_target_in_allowlist(hostname.strip(), allowed_targets):
+                return None
+            if is_pair_authorized(target_ip, hostname, allowed=allowed_targets):
+                entry = get_discovered_host(hostname)
+                via = (
+                    f" via {hostname.strip()} ({entry.source})"
+                    if entry and entry.source
+                    else f" via {hostname.strip()}"
+                )
+                return True, f"target in allowlist{via}"
+            return None
+
         def decorator(fn):
             sig = inspect.signature(fn)
             if inspect.iscoroutinefunction(fn):
@@ -268,6 +307,10 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                     bound.apply_defaults()
                     target_ip = bound.arguments.get(target_param, "")
                     allowed, reason = _check_allowlist(target_ip, config)
+                    if not allowed:
+                        pair = _pair_fallback(target_ip, bound)
+                        if pair is not None:
+                            allowed, reason = pair
                     if audit:
                         _audit_log(
                             workspace / "exploit_audit.jsonl",
@@ -304,6 +347,10 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                     bound.apply_defaults()
                     target_ip = bound.arguments.get(target_param, "")
                     allowed, reason = _check_allowlist(target_ip, config)
+                    if not allowed:
+                        pair = _pair_fallback(target_ip, bound)
+                        if pair is not None:
+                            allowed, reason = pair
                     if audit:
                         _audit_log(
                             workspace / "exploit_audit.jsonl",

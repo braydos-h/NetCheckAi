@@ -43,6 +43,16 @@ from tools.kernel.audit import (
     make_require_allowlist,
 )
 from tools.kernel.config import load_config  # re-export for back-compat
+from tools.kernel.discovered import (
+    clear_discovered,
+    get_discovered_host,
+    is_pair_authorized,
+    record_discovered_host,
+    resolved_ips_for_host,
+)
+from tools.kernel.discovered import (
+    snapshot as discovered_snapshot,
+)
 from tools.kernel.workspace import (
     _attempt_dir,
     _find_file,
@@ -84,6 +94,12 @@ __all__ = [  # re-exports for backwards compat (F401 suppression via __all__)
     "_result_is_blocked",
     "add_discovered_target",
     "check_targets_allowlist",
+    "clear_discovered",
+    "discovered_snapshot",
+    "get_discovered_host",
+    "is_pair_authorized",
+    "record_discovered_host",
+    "resolved_ips_for_host",
     "make_audit_tool",
     "load_config",
     "make_require_allowlist",

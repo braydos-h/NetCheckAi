@@ -271,6 +271,65 @@ def _resolve_via_system(host: str, family: int) -> str | None:
         return None
 
 
+def resolve_all_addresses(
+    host: str,
+    *,
+    resolver_fn: Callable[[str], Sequence[str]] | None = None,
+) -> list[str]:
+    """Resolve a hostname to ALL its addresses (A + AAAA). Never raises.
+
+    Returns a deduplicated, order-preserving list of IP-literal strings
+    (IPv4 and IPv6, scope-id suffixes stripped). An IP-literal input is
+    returned as the single-element list. Unresolvable/invalid input yields
+    ``[]``.
+
+    ``resolver_fn(host) -> list[str]`` may be injected for testing (the same
+    injectable-resolver pattern as :func:`resolve_target_to_ip`); otherwise
+    the system resolver is used via ``socket.getaddrinfo`` with
+    ``AF_UNSPEC`` so both families are returned. This is the provenance
+    source for discovered-host authorization: authorizing a hostname must
+    consider every address it resolves to, not just the first A record.
+    """
+    if not host or not isinstance(host, str):
+        return []
+    host = host.strip()
+    if not host:
+        return []
+    # IP literal — the full address set is itself.
+    try:
+        ipaddress.ip_address(host)
+        return [host]
+    except ValueError:
+        pass
+    if not is_fqdn(host):
+        return []
+    raw: Sequence[str] = ()
+    if resolver_fn is not None:
+        try:
+            raw = resolver_fn(host) or ()
+        except (OSError, socket.gaierror, ValueError):
+            return []
+    else:
+        try:
+            infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except (OSError, socket.gaierror, ValueError):
+            return []
+        raw = [str(info[4][0]) for info in infos if info[4]]
+    out: list[str] = []
+    for addr in raw:
+        if not isinstance(addr, str):
+            continue
+        addr = addr.strip().split("%")[0]
+        if not addr or addr in out:
+            continue
+        try:
+            ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        out.append(addr)
+    return out
+
+
 def resolve_target(
     host: str, *, resolver_fn: Callable[[str], Sequence[str]] | None = None
 ) -> tuple[str | None, str | None]:

@@ -23,7 +23,7 @@ from typing import Any
 
 from tools.kernel.allowlist import _allowed_target_list
 from tools.sandbox.models import NetworkPolicy
-from tools.validation_utils import is_fqdn, is_target_in_allowlist
+from tools.validation_utils import is_fqdn
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ def build_network_policy(config: dict[str, Any] | None, *, gateway: str = "") ->
     explicit_blocks = list(METADATA_DESTINATIONS)
     authorized: list[str] = []
     resolved_domains: dict[str, str] = {}
+    resolved_domain_addresses: dict[str, list[str]] = {}
     unresolved: list[str] = []
 
     loopback_hits = False
@@ -129,13 +130,20 @@ def build_network_policy(config: dict[str, Any] | None, *, gateway: str = "") ->
         if tok.startswith("*."):
             unresolved.append(tok)
             continue
-        # FQDN: resolve host-side, validate against the allowlist, record mapping.
+        # FQDN: resolve host-side (ALL A/AAAA addresses), validate against
+        # the allowlist, record the full hostname-tied mapping. This is the
+        # hostname-tied context: these IPs are authorized *because* they are
+        # the current resolution of this specific authorized hostname, and
+        # the provenance (hostname, addresses, timestamp, source) is recorded
+        # for the audit trail — never as bare reusable entries.
         if is_fqdn(tok):
             resolved = _resolve_authorized(tok, config)
             for ip in resolved:
                 _append_unique(authorized, ip)
-                resolved_domains[tok] = ip
-            if not resolved:
+            if resolved:
+                resolved_domains[tok] = resolved[0]
+                resolved_domain_addresses[tok] = list(resolved)
+            else:
                 unresolved.append(tok)
             continue
         # Unknown shape: record as unresolved so audits show what was NOT authorized.
@@ -158,8 +166,10 @@ def build_network_policy(config: dict[str, Any] | None, *, gateway: str = "") ->
             ips = _resolve_authorized(host, config, _skip_allowlist=True)
             for ip in ips:
                 _append_unique(authorized, ip)
-                resolved_domains[host] = ip
-            if not ips:
+            if ips:
+                resolved_domains[host] = ips[0]
+                resolved_domain_addresses[host] = list(ips)
+            else:
                 unresolved.append(f"{host} (unresolved at policy build)")
 
     # Controlled DNS: docker's embedded resolver listens on the container's
@@ -174,6 +184,7 @@ def build_network_policy(config: dict[str, Any] | None, *, gateway: str = "") ->
         allow_dns=allow_dns,
         dns_servers=dns_servers,
         resolved_domains=resolved_domains,
+        resolved_domain_addresses=resolved_domain_addresses,
         unresolved_targets=unresolved,
         enforced=bool(network_cfg.get("enforce", True)),
     )
@@ -185,27 +196,33 @@ def _append_unique(lst: list[str], value: str) -> None:
 
 
 def _resolve_authorized(domain: str, config: dict[str, Any] | None, *, _skip_allowlist: bool = False) -> list[str]:
-    """Resolve a domain host-side and return only its allowed IPs.
+    """Resolve a domain host-side and return ALL its allowed IPs (A+AAAA).
 
-    Uses the project resolver (system resolver, never raises). Every resolved
-    IP is validated against the SAME allowlist the domain came from, so the
-    sandbox policy only ever receives operator-authorized destinations --
-    except for the pinned RESEARCH_HOSTS set (``_skip_allowlist=True``), whose
-    authorization comes from the fixed list rather than the target allowlist.
+    Uses :func:`tools.validation_utils.resolve_all_addresses` (system
+    resolver, never raises) so every current address of an authorized
+    hostname is considered — a single first-A-record lookup would silently
+    drop IPv6 / round-robin siblings.
+
+    Callers only pass operator-authorized hostnames here: union tokens from
+    :func:`_allowed_target_list` (config ``allowed_targets`` + runtime
+    target env, each gated at entry) or the pinned RESEARCH_HOSTS set
+    (``_skip_allowlist=True`` — authorization comes from the fixed list, not
+    the target allowlist). Unlisted domains never reach this function, so
+    there is nothing further to validate against — and re-checking the
+    domain against the union it came from would be a tautology.
+
+    The full hostname-tied mapping is recorded in the provenance store
+    (hostname, addresses, timestamp, source) so the audit trail shows *why*
+    each firewall IP is authorized.
     """
-    from tools.validation_utils import resolve_target_to_ip
+    from tools.kernel.discovered import record_discovered_host
+    from tools.validation_utils import resolve_all_addresses
 
-    resolved: list[str] = []
-    ip = resolve_target_to_ip(domain)
-    if not ip:
+    addrs = resolve_all_addresses(domain)
+    if not addrs:
         return []
-    if not _skip_allowlist:
-        allowed = _allowed_target_list(config)
-        if allowed and not is_target_in_allowlist(ip, allowed) and not is_target_in_allowlist(domain, allowed):
-            logger.warning("sandbox policy: resolved %s -> %s failed allowlist validation; skipping", domain, ip)
-            return []
-    resolved.append(ip)
-    return resolved
+    record_discovered_host(domain, addrs, source="sandbox:policy")
+    return list(addrs)
 
 
 def authorize_destinations(destinations: list[str], config: dict[str, Any] | None) -> tuple[bool, str]:
@@ -223,11 +240,15 @@ def authorize_destinations(destinations: list[str], config: dict[str, Any] | Non
 
 def audit_policy_payload(policy: NetworkPolicy) -> dict[str, Any]:
     """Sandbox-context dict for the audit trail (secret-free by construction)."""
+    from tools.kernel.discovered import snapshot
+
     return {
         "authorized_destinations": list(policy.authorized_destinations),
         "explicitly_blocked": list(policy.explicitly_blocked),
         "allow_dns": policy.allow_dns,
         "resolved_domains": dict(policy.resolved_domains),
+        "resolved_domain_addresses": {k: list(v) for k, v in policy.resolved_domain_addresses.items()},
+        "discovered_provenance": snapshot(),
         "unresolved_targets": list(policy.unresolved_targets),
         "enforced": policy.enforced,
         "fingerprint": policy.fingerprint(),

@@ -793,10 +793,10 @@ def register_domain_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     ip = None
             if ip:
                 resolved_pairs.append((sub, ip))
-                add_discovered_target(sub, ip)
+                add_discovered_target(sub, ip, source="enumerate_subdomains")
             else:
                 # Unresolvable subdomain -- potential dangling CNAME / takeover.
-                add_discovered_target(sub)
+                add_discovered_target(sub, source="enumerate_subdomains")
                 # Check for a CNAME pointing at a known deprovisioned service.
                 cname_target = ""
                 try:
@@ -1059,8 +1059,13 @@ def register_domain_tools(mcp: Any, *, ctx: ToolContext) -> None:
     # ------------------------------------------------------------------
     # 4. vhost_enum -- virtual host enumeration
     # ------------------------------------------------------------------
+    # ``host_param="domain"``: the probe target is an IP but every request
+    # carries a ``Host:`` header (and SNI context) derived from ``domain``.
+    # A discovered shared-hosting IP is therefore accepted when provenance
+    # ties it to the allowlisted ``domain`` — bare-IP use stays denied
+    # unless the IP itself is explicitly allowlisted.
     @mcp.tool()
-    @require_allowlist()
+    @require_allowlist(host_param="domain")
     def vhost_enum(
         target_ip: str,
         port: int = 80,

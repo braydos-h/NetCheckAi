@@ -174,7 +174,7 @@ async def _phase_reconnaissance(self, state: AttackState) -> None:
                         ip = resolve_target_to_ip(sub)
                         if ip:
                             state.discovered_subdomains.append({"subdomain": sub, "ip": ip})
-                            add_discovered_target(sub, ip)
+                            add_discovered_target(sub, ip, source="campaign:subdomain_expansion")
                 except Exception as exc:
                     logger.warning(f"[RECON] Subdomain expansion failed for {dom}: {exc}")
                 if state.discovered_subdomains:

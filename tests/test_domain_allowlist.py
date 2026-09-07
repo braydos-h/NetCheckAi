@@ -100,12 +100,16 @@ def test_add_discovered_target_adds_host(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv("EXPLOIT_TARGET", "example.com")
     monkeypatch.setenv("EXPLOIT_TARGET_DOMAIN", "example.com")
-    from tools.mcp_shared import _allowed_target_list, add_discovered_target
+    from tools.mcp_shared import _allowed_target_list, add_discovered_target, get_discovered_host
 
     add_discovered_target("new.example.com", "5.6.7.8")
     result = _allowed_target_list({"exploit": {"allowed_targets": []}})
     assert "new.example.com" in result
-    assert "5.6.7.8" in result
+    # Provenance, not global IP authorization: the resolved IP is tied to the
+    # hostname in the provenance store, never a bare reusable allowlist entry.
+    assert "5.6.7.8" not in result
+    entry = get_discovered_host("new.example.com")
+    assert entry is not None and "5.6.7.8" in entry.addresses
 
 
 def test_add_discovered_target_deduplicates(monkeypatch):
@@ -118,7 +122,7 @@ def test_add_discovered_target_deduplicates(monkeypatch):
     add_discovered_target("sub.example.com", "1.2.3.4")  # duplicate
     result = _allowed_target_list({"exploit": {"allowed_targets": []}})
     assert result.count("sub.example.com") == 1
-    assert result.count("1.2.3.4") == 1
+    assert "1.2.3.4" not in result
 
 
 def test_add_discovered_target_appends_to_existing(monkeypatch):
@@ -126,13 +130,15 @@ def test_add_discovered_target_appends_to_existing(monkeypatch):
     monkeypatch.setenv("EXPLOIT_TARGET", "example.com")
     monkeypatch.setenv("EXPLOIT_TARGET_DOMAIN", "example.com")
     monkeypatch.setenv("EXPLOIT_DISCOVERED_TARGETS", "existing.example.com")
-    from tools.mcp_shared import _allowed_target_list, add_discovered_target
+    from tools.mcp_shared import _allowed_target_list, add_discovered_target, get_discovered_host
 
     add_discovered_target("new.example.com", "9.10.11.12")
     result = _allowed_target_list({"exploit": {"allowed_targets": []}})
     assert "existing.example.com" in result
     assert "new.example.com" in result
-    assert "9.10.11.12" in result
+    assert "9.10.11.12" not in result
+    entry = get_discovered_host("new.example.com")
+    assert entry is not None and "9.10.11.12" in entry.addresses
 
 
 def test_is_target_in_allowlist_matches_domain():

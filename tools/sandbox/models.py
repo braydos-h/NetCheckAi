@@ -197,7 +197,11 @@ class NetworkPolicy:
     explicitly_blocked: list[str] = field(default_factory=list)
     allow_dns: str = "controlled"
     dns_servers: list[str] = field(default_factory=list)
-    resolved_domains: dict[str, str] = field(default_factory=dict)  # domain -> resolved IP (audit)
+    resolved_domains: dict[str, str] = field(default_factory=dict)  # domain -> primary IP (audit)
+    # domain -> ALL resolved addresses (A+AAAA) authorizing the firewall IPs.
+    # The primary-IP map above is kept for backwards compat; this map is the
+    # hostname-tied provenance (see tools.kernel.discovered).
+    resolved_domain_addresses: dict[str, list[str]] = field(default_factory=dict)
     unresolved_targets: list[str] = field(default_factory=list)  # wildcards/etc (audit)
     enforced: bool = True
     # Whether the Docker bridge gateway (path to host-published services and
