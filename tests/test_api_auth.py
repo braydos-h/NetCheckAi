@@ -78,21 +78,21 @@ def test_token_file_created_with_restrictive_perms(tmp_path):
 
 
 def test_token_file_atomic_no_partial_write(tmp_path, monkeypatch):
-    """A crash mid-write must not leave a half-written credential file."""
+    """A crash before publish must not leave a half-written credential file."""
     import os as _os
 
     token_file = tmp_path / ".webui_secret_key"
-    real_replace = _os.replace
 
-    def _crash_before_rename(src, dst):
-        raise OSError("simulated crash before rename")
+    def _crash_before_publish(src, dst):
+        raise OSError("simulated crash before publish")
 
-    monkeypatch.setattr(_os, "replace", _crash_before_rename)
+    monkeypatch.setattr(_os, "link", _crash_before_publish)
     with pytest.raises(OSError, match="simulated crash"):
         load_or_create_token(token_file, env_override="")
-    # The target was never created; only a temp file may remain (and it must
-    # not be at the credential path).
+    # The target was never created; temp files (if any) must not be at the
+    # credential path.
     assert not token_file.exists()
+    assert not any(p.name == token_file.name for p in tmp_path.iterdir())
     monkeypatch.undo()
     # Recovery works: a fresh call creates a valid token file.
     token = load_or_create_token(token_file, env_override="")
