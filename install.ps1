@@ -816,7 +816,356 @@ function Expand-ValidatedArchive {
     return $root
 }
 
-# __PART3__
+# ---------------------------------------------------------------------------
+# Pure helpers (no side effects — covered by Pester tests in tests/Test-*.ps1)
+# ---------------------------------------------------------------------------
+
+function Compare-SemVersion {
+    <#
+    .SYNOPSIS
+        Compare two version strings. Returns -1, 0, or 1.
+    .DESCRIPTION
+        Tolerates a leading 'v', missing minor/patch (treated as 0), and a
+        trailing pre-release/build suffix ('-beta', '+build'). Numeric parts
+        compare numerically; a release beats its own prerelease
+        ('1.2.3' -gt '1.2.3-beta'). Non-numeric garbage returns $null.
+    #>
+    param([string]$A, [string]$B)
+    $parse = {
+        param([string]$V)
+        $s = $V.Trim()
+        if ($s.StartsWith("v") -or $s.StartsWith("V")) { $s = $s.Substring(1) }
+        $pre = ""
+        $m = [regex]::Match($s, "^(?<core>[0-9][0-9A-Za-z.\s]*?)(?<suffix>[-+].*)?$")
+        if (-not $m.Success) { return $null }
+        $core = $m.Groups["core"].Value.Trim()
+        $suffix = $m.Groups["suffix"].Value
+        $nums = @()
+        foreach ($tok in ($core -split "\.")) {
+            $t = $tok.Trim()
+            if ($t -notmatch "^\d+$") { return $null }
+            $nums += [long]$t
+        }
+        while ($nums.Count -lt 3) { $nums += [long]0 }
+        return @{ Nums = $nums; Pre = $suffix }
+    }
+    $pa = & $parse $A
+    $pb = & $parse $B
+    if ($null -eq $pa -or $null -eq $pb) { return $null }
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($pa.Nums[$i] -lt $pb.Nums[$i]) { return -1 }
+        if ($pa.Nums[$i] -gt $pb.Nums[$i]) { return 1 }
+    }
+    $aPre = -not [string]::IsNullOrEmpty($pa.Pre)
+    $bPre = -not [string]::IsNullOrEmpty($pb.Pre)
+    if ($aPre -and -not $bPre) { return -1 }
+    if ($bPre -and -not $aPre) { return 1 }
+    return [string]::Compare([string]$pa.Pre, [string]$pb.Pre, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Select-GitHubRelease {
+    <#
+    .SYNOPSIS
+        Pick the newest release for a channel from GitHub API release objects.
+    .DESCRIPTION
+        Stable: newest non-draft, non-prerelease. Prerelease: newest non-draft
+        (prereleases included). Drafts never selected; deleted releases never
+        appear in the API list. Returns $null when nothing qualifies.
+    #>
+    param(
+        [array]$Releases,
+        [ValidateSet("Stable", "Prerelease")][string]$WantedChannel = "Stable"
+    )
+    if ($null -eq $Releases) { return $null }
+    $usable = @($Releases | Where-Object { $_ -ne $null -and (-not [bool]$_.draft) })
+    if ($WantedChannel -eq "Stable") {
+        $usable = @($usable | Where-Object { (-not [bool]$_.prerelease) })
+    }
+    if ($usable.Count -eq 0) { return $null }
+    return ($usable | Sort-Object -Property published_at -Descending | Select-Object -First 1)
+}
+
+function Test-PythonVersionSupported {
+    <#
+    .SYNOPSIS
+        True when a `python --version`-style string is >= 3.11.
+    #>
+    param([string]$VersionText)
+    if ([string]::IsNullOrWhiteSpace($VersionText)) { return $false }
+    $m = [regex]::Match($VersionText, "(\d+)\.(\d+)(?:\.(\d+))?")
+    if (-not $m.Success) { return $false }
+    try {
+        $v = New-Object Version([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$(if ($m.Groups[3].Success) { $m.Groups[3].Value } else { "0" }))
+        return ($v -ge $script:MinPython)
+    } catch {
+        return $false
+    }
+}
+
+function Get-NodeMajorVersion {
+    <#
+    .SYNOPSIS
+        Parse `node --version` output ('v22.11.0') to its major number, else -1.
+    #>
+    param([string]$VersionText)
+    if ([string]::IsNullOrWhiteSpace($VersionText)) { return -1 }
+    $m = [regex]::Match($VersionText.Trim(), "v?(\d+)\.(\d+)\.(\d+)")
+    if (-not $m.Success) { return -1 }
+    return [int]$m.Groups[1].Value
+}
+
+function Test-NodeVersionSupported {
+    param([string]$VersionText)
+    return ((Get-NodeMajorVersion -VersionText $VersionText) -ge $script:MinNodeMajor)
+}
+
+function Join-NormalizedPath {
+    <#
+    .SYNOPSIS
+        Case-insensitive PATH dedup: append $Entry unless already present.
+    .OUTPUTS
+        @{ Path = <new PATH string>; Changed = <bool> } ($null on oversize).
+    .DESCRIPTION
+        Normalizes trailing backslashes, compares case-insensitively (Windows
+        PATH semantics), preserves existing entries byte-for-byte, refuses to
+        grow PATH past 32767 chars (Windows environment-size sanity).
+    #>
+    param([string]$CurrentPath, [string]$Entry)
+    $clean = $Entry.Trim().TrimEnd("\")
+    if ([string]::IsNullOrWhiteSpace($clean)) { return @{ Path = $CurrentPath; Changed = $false } }
+    $existing = @()
+    if (-not [string]::IsNullOrWhiteSpace($CurrentPath)) {
+        $existing = @($CurrentPath -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    foreach ($e in $existing) {
+        if ($e.Trim().TrimEnd("\").Equals($clean, [StringComparison]::OrdinalIgnoreCase)) {
+            return @{ Path = ($existing -join ";"); Changed = $false }
+        }
+    }
+    $joined = (($existing + @($clean)) -join ";")
+    if ($joined.Length -gt 32767) { return $null }
+    return @{ Path = $joined; Changed = $true }
+}
+
+function Test-GitRemoteMatches {
+    <#
+    .SYNOPSIS
+        True when a `git remote -v`-style origin URL belongs to braydos-h/BreachPilot.
+    #>
+    param([string]$RemoteUrl)
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) { return $false }
+    $u = $RemoteUrl.Trim()
+    return ($u -match "(?i)github\.com[:/]braydos-h/BreachPilot(\.git)?\s*(\(fetch\))?\s*$")
+}
+
+# ---------------------------------------------------------------------------
+# Platform / environment detection (read-only)
+# ---------------------------------------------------------------------------
+
+function Get-PlatformInfo {
+    $info = [ordered]@{
+        OSVersion        = ""
+        OSBuild          = ""
+        Architecture     = ""
+        PSEdition        = ""
+        PSVersion        = ""
+        User             = ""
+        IsAdmin          = $false
+        IsRemote         = $false
+        TempWritable     = $false
+        FreeDiskGB       = -1
+        GitHubReachable  = $false
+        WingetPresent    = $false
+    }
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $info.OSVersion = [string]$os.Caption
+        $info.OSBuild = [string]$os.BuildNumber
+    } catch {
+        try {
+            $info.OSVersion = [string](Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).ProductName
+            $info.OSBuild = [string](Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).CurrentBuildNumber
+        } catch {
+            $info.OSVersion = [string][Environment]::OSVersion
+        }
+    }
+    try {
+        if ([Environment]::Is64BitOperatingSystem) {
+            $arch = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+            # 9 = x64, 12 = ARM64 per Win32_Processor.Architecture.
+            if ($arch -eq 12 -or $env:PROCESSOR_ARCHITECTURE -eq "ARM64") { $info.Architecture = "ARM64" }
+            else { $info.Architecture = "x64" }
+        } else {
+            $info.Architecture = "x86"
+        }
+    } catch {
+        $info.Architecture = $env:PROCESSOR_ARCHITECTURE
+    }
+    try { $info.PSEdition = $PSVersionTable.PSEdition } catch { $info.PSEdition = "Desktop" }
+    try { $info.PSVersion = [string]$PSVersionTable.PSVersion } catch { $info.PSVersion = "unknown" }
+    try { $info.User = [string][Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { $info.User = $env:USERNAME }
+    $info.IsAdmin = Test-IsAdministrator
+    if (-not [string]::IsNullOrWhiteSpace($env:SSH_CONNECTION) -or -not [string]::IsNullOrWhiteSpace($env:SSH_CLIENT)) {
+        $info.IsRemote = $true
+    }
+    try {
+        if ($null -ne $PSSenderInfo) { $info.IsRemote = $true }
+    } catch { }
+    try {
+        $probe = Join-Path ([System.IO.Path]::GetTempPath()) ("bp-write-test-" + [guid]::NewGuid().ToString("N") + ".tmp")
+        [System.IO.File]::WriteAllText($probe, "ok")
+        Remove-Item -LiteralPath $probe -Force
+        $info.TempWritable = $true
+    } catch {
+        $info.TempWritable = $false
+    }
+    $info.WingetPresent = ($null -ne (Get-Command winget -ErrorAction SilentlyContinue))
+    return [pscustomobject]$info
+}
+
+function Test-PlatformSupported {
+    param([pscustomobject]$Platform)
+    # Windows 10+ == build >= 10240. Anything older cannot be supported.
+    $build = 0
+    if (-not [int]::TryParse([string]$Platform.OSBuild, [ref]$build)) { $build = 0 }
+    if ($build -ne 0 -and $build -lt 10240) {
+        Write-Fail "Unsupported Windows build $($Platform.OSBuild): BreachPilot requires Windows 10 or later."
+        return $false
+    }
+    if ($Platform.Architecture -eq "x86") {
+        Write-Fail "32-bit Windows (x86) is not supported: Python/Node/Docker vendors no longer ship x86 builds."
+        return $false
+    }
+    if (-not $Platform.TempWritable) {
+        Write-Fail "TEMP directory is not writable ($([System.IO.Path]::GetTempPath())). Downloads and staging cannot proceed."
+        return $false
+    }
+    return $true
+}
+
+function Get-InstallDriveFreeGB {
+    param([string]$Path)
+    try {
+        $root = [System.IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path)
+        if ([string]::IsNullOrWhiteSpace($root)) { $root = [System.IO.Path]::GetPathRoot($Path) }
+        $drive = New-Object System.IO.DriveInfo($root)
+        if ($drive.IsReady) {
+            return [math]::Round($drive.AvailableFreeSpace / 1GB, 1)
+        }
+    } catch { }
+    return -1
+}
+
+function Test-NetworkConnectivity {
+    # Lightweight HTTPS probe (no version logic): api.github.com over TLS.
+    # Never disables certificate validation; honors -Offline by skipping.
+    if ($Offline) { return $false }
+    try {
+        $prev = $ProgressPreference
+        $ProgressPreference = "SilentlyContinue"
+        try {
+            $r = Invoke-WebRequest -Uri "https://api.github.com/rate_limit" -UseBasicParsing -TimeoutSec 15 `
+                -Headers @{ "User-Agent" = $script:UserAgent } -ErrorAction Stop
+            return ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500)
+        } finally {
+            $ProgressPreference = $prev
+        }
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -like "*401*" -or $msg -like "*403*" -or $msg -like "*429*") { return $true }
+        Write-Log "Connectivity probe failed: $msg" -Level "WARN"
+        return $false
+    }
+}
+
+function Resolve-InstallDir {
+    param([string]$Requested, [string]$ScriptRoot)
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $full = $Requested.Trim()
+        try { $full = [System.IO.Path]::GetFullPath($full) } catch {
+            Write-Fail "Invalid -InstallDir '$Requested': not a valid Windows path."
+            exit $script:ExitInvalidArgs
+        }
+        try {
+            $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd("\") + "\"
+            if (($full.TrimEnd("\") + "\").StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                Write-Fail "-InstallDir must not point inside TEMP ($tempRoot): staged archives extract there during install."
+                exit $script:ExitInvalidArgs
+            }
+        } catch { }
+        return $full
+    }
+    # Running from inside an existing BreachPilot checkout? Install there —
+    # the operator already chose that location (never move their repo).
+    if (-not [string]::IsNullOrWhiteSpace($ScriptRoot)) {
+        $probe = Join-Path $ScriptRoot "main.py"
+        $cfg = Join-Path $ScriptRoot "config.yaml"
+        if ((Test-Path -LiteralPath $probe) -and (Test-Path -LiteralPath $cfg)) {
+            Write-Log "Script is running from an existing checkout; using it as InstallDir: $ScriptRoot" -Level "INFO"
+            return ([System.IO.Path]::GetFullPath($ScriptRoot))
+        }
+    }
+    $base = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($base)) {
+        Write-Fail "LOCALAPPDATA is not set and no -InstallDir was given; cannot choose a per-user install path."
+        exit $script:ExitUnsupported
+    }
+    return (Join-Path $base "BreachPilot")
+}
+
+function Get-CheckoutStatus {
+    <#
+    .SYNOPSIS
+        Inspect a directory for a Git checkout and report remote/branch/commit/dirt.
+    .DESCRIPTION
+        Read-only. Never runs reset/clean/checkout. Returns $null when $Dir is
+        not a git working tree or git is unavailable.
+    #>
+    param([string]$Dir)
+    if ([string]::IsNullOrWhiteSpace($Dir)) { return $null }
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir ".git"))) { return $null }
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ IsGit = $true; GitAvailable = $false }
+    }
+    try {
+        $origin = (Invoke-ExternalCommand -Command "git" -Arguments @("-C", $Dir, "remote", "get-url", "origin") -TimeoutSeconds 15 -AllowFailure).StdOut.Trim()
+        $branch = (Invoke-ExternalCommand -Command "git" -Arguments @("-C", $Dir, "rev-parse", "--abbrev-ref", "HEAD") -TimeoutSeconds 15 -AllowFailure).StdOut.Trim()
+        $sha = (Invoke-ExternalCommand -Command "git" -Arguments @("-C", $Dir, "rev-parse", "HEAD") -TimeoutSeconds 15 -AllowFailure).StdOut.Trim()
+        $status = (Invoke-ExternalCommand -Command "git" -Arguments @("-C", $Dir, "status", "--porcelain") -TimeoutSeconds 30 -AllowFailure).StdOut.Trim()
+        return [pscustomobject]@{
+            IsGit          = $true
+            GitAvailable   = $true
+            Origin         = $origin
+            OriginMatches  = (Test-GitRemoteMatches -RemoteUrl $origin)
+            Branch         = $branch
+            Sha            = $sha
+            IsDirty        = (-not [string]::IsNullOrWhiteSpace($status))
+            UntrackedHint  = $status
+        }
+    } catch {
+        Write-Log "Get-CheckoutStatus failed for $Dir`: $($_.Exception.Message)" -Level "WARN"
+        return [pscustomobject]@{ IsGit = $true; GitAvailable = $true }
+    }
+}
+
+function Test-CheckoutSafe {
+    <#
+    .SYNOPSIS
+        Decide whether an update may touch a git checkout (never destructive).
+    #>
+    param([pscustomobject]$Checkout, [string]$Dir)
+    if ($null -eq $Checkout -or -not $Checkout.IsGit) { return @{ Safe = $true; Reason = "not a git checkout" } }
+    if (-not $Checkout.GitAvailable) { return @{ Safe = $true; Reason = "git unavailable; treating as plain directory" } }
+    if (-not $Checkout.OriginMatches) {
+        return @{ Safe = $false; Reason = "directory is a git checkout whose origin ('$($Checkout.Origin)') is NOT $script:SourceFull. Refusing to touch a foreign repository — choose a different -InstallDir." }
+    }
+    if ($Checkout.IsDirty) {
+        return @{ Safe = $false; Reason = "git checkout has uncommitted changes (branch $($Checkout.Branch), $($Checkout.Sha)). Commit or stash them first, or re-run with -Force to update anyway (a backup is still taken; `git reset --hard` / `git clean -fdx` are NEVER run automatically)." }
+    }
+    return @{ Safe = $true; Reason = "clean checkout of $script:SourceFull ($($Checkout.Branch)@$($Checkout.Sha))" }
+}
+
+# __PART4__
 
 # ---------------------------------------------------------------------------
 # Bootstrap: help, arg validation, logging, UX helpers
