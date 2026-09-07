@@ -1,3 +1,7 @@
+# Built distribution artifacts — never commit; CI builds from a clean tree
+# (package job: python -m build + twine check) and uploads dist/* as a
+# release artifact.
+dist/
 __pycache__/
 *.py[cod]
 *$py.class
