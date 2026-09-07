@@ -516,3 +516,102 @@ async def test_run_as_root_no_longer_double_logs_raw_command(tmp_path: Path):
     assert statuses == {"started", "completed"}
     completed = [r for r in rr if r["status"] == "completed"]
     assert completed[0]["approved"] is True
+
+
+# ── Live terminal results are secret-masked before return/emit (Fix 6) ────────
+
+
+@pytest.mark.asyncio
+async def test_run_exploit_terminal_masks_secret_command_and_output(tmp_path: Path):
+    """COMMAND_ORIGINAL/SANITIZED + OUTPUT tails must be masked in the live
+    result — not just in the persisted terminal.log."""
+    import unittest.mock as _mock
+
+    # Mock the host-path Popen funnel: the "command" carries a bearer token,
+    # the "output" carries an NTLM hash + a second token.
+    import subprocess as _subprocess
+
+    class _FakeProc:
+        returncode = 0
+        pid = 12345
+
+        def communicate(self, timeout=None):
+            return (
+                b"uid=0(root)\nNTLM: aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0\n"
+                b"Authorization: Bearer live-output-token-abc123\n",
+                None,
+            )
+
+    leaked = "live-output-token-abc123"
+    token = "live-command-token-xyz789"
+    mcp = _make_server(tmp_path, require_allowlist=False)
+    with _mock.patch.object(_subprocess, "Popen", lambda *a, **k: _FakeProc()):
+        result = await mcp.call_tool(
+            "run_exploit_terminal",
+            {"command": f"echo 10.0.0.5 && curl -H 'Authorization: Bearer {token}' http://10.0.0.5/"},
+        )
+    text = "".join(
+        getattr(c, "text", str(c)) for c in (result[0].content if hasattr(result[0], "content") else result[0])
+    )
+    assert "TERMINAL_RESULT" in text
+    assert token not in text  # secret-bearing command masked in COMMAND_* lines
+    assert leaked not in text  # secret-bearing output masked in OUTPUT tail
+    assert "aad3b435b51404ee" not in text  # dumped hash masked
+    assert _REDACTED in text
+    assert "10.0.0.5" in text  # the allowlisted target itself is not a secret
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_masks_secrets(tmp_path: Path):
+    """The loop's ``tool_result`` WS event payload must be masked even when the
+    tool itself returned verbatim text (defense in depth at the emit layer)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from tools.exploit_agent import ExploitPermission, ExploitPolicy, ExploitSettings, run_exploit_agent
+
+    secret_out = (
+        "TERMINAL_RESULT: completed\nCOMMAND_ORIGINAL: echo hi\nOUTPUT:\n"
+        "Authorization: Bearer event-token-999\nNTLM: aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0\n"
+    )
+    settings = ExploitSettings(
+        enabled=True,
+        permission=ExploitPermission.FULL_ACCESS,
+        attack_mode=True,
+        attack_max_rounds=1,
+        attack_max_commands=5,
+        outcome_judgment_flow_a=False,
+        workspace_root=tmp_path,
+        target_ip="10.0.0.50",
+    )
+    policy = ExploitPolicy(settings, tmp_path)
+    client = MagicMock()
+    client.chat.side_effect = [
+        {"message": {"content": "", "tool_calls": [{"function": {"name": "run_exploit_terminal", "arguments": {"command": "exploit"}}}]}},
+        {"message": {"content": "done", "tool_calls": []}},
+    ]
+    session = AsyncMock()
+    session.call_tool.return_value = MagicMock(content=[MagicMock(text=secret_out)])
+    emitted: list[tuple[str, dict]] = []
+
+    class _Sink:
+        async def emit(self, event_type: str, payload: dict) -> None:
+            emitted.append((event_type, payload))
+
+    with patch("tools.exploit_agent._stream_ollama", new_callable=AsyncMock) as stream:
+        stream.return_value = {"role": "assistant", "content": "done"}
+        await run_exploit_agent(
+            client=client,
+            model="glm",
+            session=session,
+            exploit_tools=[{"type": "function", "function": {"name": "run_exploit_terminal"}}],
+            policy=policy,
+            target_ip="10.0.0.50",
+            reports_dir=tmp_path / "reports",
+            config={"agent": {"decision_log_enabled": False}, "outcome_judgment": {"flow_a": False}},
+            event_sink=_Sink(),
+        )
+    results = [p for t, p in emitted if t == "tool_result"]
+    assert results, "expected a tool_result event"
+    assert "event-token-999" not in results[0]["result"]
+    assert "aad3b435b51404ee" not in results[0]["result"]
+    assert _REDACTED in results[0]["result"]

@@ -13,11 +13,14 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 from tools.attack_ui import get_ui
 from tools.exceptions import _EXC_GROUP_CATCH, _is_exception_group, _log_nested_exceptions
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from tools.runtime_context import RuntimeContext
 
 ui = get_ui()
 
@@ -67,6 +70,7 @@ async def _elapsed_ticker(
     *,
     interval: float = 15.0,
     heartbeat: "_RunHeartbeat | None" = None,
+    ctx: "RuntimeContext | None" = None,
 ) -> None:
     """Print elapsed-time info lines every `interval` seconds.
 
@@ -75,18 +79,22 @@ async def _elapsed_ticker(
     When a ``heartbeat`` holder is supplied, each line also shows the current
     round / action count / phase, so a 30-minute run says "round 8, 23 actions,
     service_enumeration" instead of a bare "still running".
+
+    ``ctx`` selects the UI explicitly (see ``RuntimeContext``); omitted means
+    the module-global UI (back-compat for existing tests/callers).
     """
+    _ui = ctx.ui if ctx is not None else ui
     start = time.monotonic()
     while True:
         await asyncio.sleep(interval)
         m, s = divmod(int(time.monotonic() - start), 60)
         if heartbeat is not None:
-            ui.info(
+            _ui.info(
                 f"{label} still running… {m}:{s:02d} elapsed "
                 f"(round {heartbeat.round}, {heartbeat.action} actions, {heartbeat.phase})"
             )
         else:
-            ui.info(f"{label} still running… {m}:{s:02d} elapsed")
+            _ui.info(f"{label} still running… {m}:{s:02d} elapsed")
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +141,7 @@ async def open_exploit_mcp_session(
     original_target: str | None = None,
     resolved_ip: str | None = None,
     boot_cb: Callable[[str, bool, bool], None] | None = None,
+    ctx: "RuntimeContext | None" = None,
 ) -> AsyncIterator[Any]:
     """Open the requested transport, falling back during HTTP startup only.
 
@@ -141,6 +150,10 @@ async def open_exploit_mcp_session(
     startup/readiness/initialization failures and keeps the same loopback-only
     server environment and target scope. ``soft_fail=True`` still yields
     ``None`` only when both the requested transport and any fallback fail.
+
+    ``ctx`` (a ``RuntimeContext``) selects the UI and boot timeout explicitly
+    so concurrent runs don't share module-global state; omitted means the
+    module globals (back-compat for existing tests/callers).
     """
     common = {
         "config_path": config_path,
@@ -153,6 +166,7 @@ async def open_exploit_mcp_session(
         "original_target": original_target,
         "resolved_ip": resolved_ip,
         "boot_cb": boot_cb,
+        "ctx": ctx,
     }
     if transport != "http" or not fallback_to_stdio:
         async with _open_exploit_mcp_session_once(
@@ -180,7 +194,7 @@ async def open_exploit_mcp_session(
     if http_session_started:
         return
 
-    ui.warning("Local MCP HTTP startup failed; falling back to stdio transport.")
+    (ctx.ui if ctx is not None else ui).warning("Local MCP HTTP startup failed; falling back to stdio transport.")
     stdio_session_started = False
     try:
         async with _open_exploit_mcp_session_once(
@@ -216,6 +230,7 @@ async def _open_exploit_mcp_session_once(
     original_target: str | None = None,
     resolved_ip: str | None = None,
     boot_cb: Callable[[str, bool, bool], None] | None = None,
+    ctx: "RuntimeContext | None" = None,
 ) -> AsyncIterator[Any]:
     """Open one MCP client session without transport fallback.
 
@@ -235,6 +250,16 @@ async def _open_exploit_mcp_session_once(
         startup_soft_fail = soft_fail
     if startup_errors is None:
         startup_errors = []
+    # Explicit per-run dependencies (see ``tools.runtime_context``): when a
+    # context is given, its UI/timeout shadow the module globals as function
+    # locals, so concurrent runs stay isolated without touching the ~30
+    # ``ui`` / timeout references below. Omitted ``ctx`` keeps the legacy
+    # module-global behavior (back-compat for existing tests/callers).
+    if ctx is not None:
+        ui = ctx.ui
+        _boot_timeout = ctx.mcp_boot_timeout_seconds
+    else:
+        _boot_timeout = MCP_BOOT_TIMEOUT_SECONDS
     try:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -348,7 +373,7 @@ async def _open_exploit_mcp_session_once(
                         try:
                             await asyncio.wait_for(
                                 session.initialize(),
-                                timeout=MCP_BOOT_TIMEOUT_SECONDS,
+                                timeout=_boot_timeout,
                             )
                             _boot_step(_stdio_label, ok=True)
                         except asyncio.TimeoutError as exc:
@@ -356,7 +381,7 @@ async def _open_exploit_mcp_session_once(
                             if startup_soft_fail:
                                 ui.warning(
                                     f"MCP server boot timed out after "
-                                    f"{MCP_BOOT_TIMEOUT_SECONDS:.0f}s — "
+                                    f"{_boot_timeout:.0f}s — "
                                     f"subprocess did not finish initializing."
                                 )
                                 boot_failed[0] = True
@@ -364,7 +389,7 @@ async def _open_exploit_mcp_session_once(
                                 stdio_yielded = True
                                 yield None
                                 return
-                            raise RuntimeError(f"MCP server boot timed out after {MCP_BOOT_TIMEOUT_SECONDS:.0f}s")
+                            raise RuntimeError(f"MCP server boot timed out after {_boot_timeout:.0f}s")
                         # The boot spinner's ``with`` block encloses ``yield session``
                         # below, so without this the redraw thread would keep printing
                         # ``[STATUS] Booting MCP server (stdio)... X.Xs`` for the
@@ -417,7 +442,7 @@ async def _open_exploit_mcp_session_once(
     _boot_deadline = time.monotonic() + MCP_BOOT_TOTAL_BUDGET_SECONDS
 
     def _boot_remaining() -> float:
-        return max(1.0, min(MCP_BOOT_TIMEOUT_SECONDS, _boot_deadline - time.monotonic()))
+        return max(1.0, min(_boot_timeout, _boot_deadline - time.monotonic()))
 
     with ui.spinner(
         f"Starting MCP HTTP server on port {exploit_port}...",
@@ -527,7 +552,7 @@ async def _open_exploit_mcp_session_once(
                         if startup_soft_fail:
                             ui.warning(
                                 f"MCP HTTP session init timed out after "
-                                f"{MCP_BOOT_TIMEOUT_SECONDS:.0f}s."
+                                f"{_boot_timeout:.0f}s."
                                 f"{_server_log_tail(http_log_path, secret_values=http_log_secrets)}"
                             )
                             # M19: yield before returning (see the matching
@@ -538,7 +563,7 @@ async def _open_exploit_mcp_session_once(
                             return
                         raise RuntimeError(
                             f"MCP HTTP session init timed out after "
-                            f"{MCP_BOOT_TIMEOUT_SECONDS:.0f}s"
+                            f"{_boot_timeout:.0f}s"
                             f"{_server_log_tail(http_log_path, secret_values=http_log_secrets)}"
                         )
                     except _EXC_GROUP_CATCH as exc:
@@ -740,7 +765,7 @@ async def _streamable_http_transport(
     # read must exceed the longest tool timeout (600s msf / some terminal
     # commands) plus agent idle time between calls, or a slow tool call trips
     # the SSE/POST read timeout and kills the whole MCP session.
-    timeout = httpx.Timeout(MCP_BOOT_TIMEOUT_SECONDS, read=1800.0)
+    timeout = httpx.Timeout(_boot_timeout, read=1800.0)
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers=headers,

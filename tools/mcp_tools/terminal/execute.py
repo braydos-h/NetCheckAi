@@ -21,8 +21,9 @@ pipes, and redirects keep working; ``run_as_root`` runs
 ``bash -c "sudo <command> 2>&1"``. No other tool in this family uses a shell
 (``git_clone`` host path is a pure argv list). Secrets are never capped
 (RULE-NO-CAP-SECRETS): the only size bound on commands is an MB-scale
-anti-fill cap; persisted logs are secret-masked + capped while live OUTPUT
-stays verbatim (cracking workflows need the recovered plaintext).
+anti-fill cap; persisted logs AND live results (COMMAND_*/OUTPUT) are
+secret-masked before return/emit. Cracking workflows recover plaintext via
+the ``run_hash_crack`` tool result, not by scraping terminal output.
 """
 
 from __future__ import annotations
@@ -119,8 +120,9 @@ def _sandbox_terminal_ok(result: Any) -> tuple[str, str, int | None, float]:
             ``exit_code`` / ``duration_seconds``.
 
     Returns:
-        Tuple of status, verbatim OUTPUT tail (marked when trimmed),
-        exit code, and duration.
+        Tuple of status, raw OUTPUT tail (marked when trimmed -- callers
+        mask with ``_mask_secret_content`` before return), exit code, and
+        duration.
 
     Gates:
         None (renders the contained execution -- the sandbox already gated).
@@ -228,7 +230,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             Executes the sanitized command (sandbox worker when enabled, fail
             closed -- else the host wrapper-script shell funnel, preserving
             ``&&`` chaining/pipes/redirects); writes terminal.log
-            (secret-masked, capped). Live OUTPUT stays verbatim.
+            (secret-masked, capped). Live COMMAND_*/OUTPUT in the returned
+            block are secret-masked before return/emit.
         """
         if not command or not command.strip():
             return "BLOCKED: empty command."
@@ -241,13 +244,17 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return (
                 "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
                 "ATTEMPT_ID: preflight\n"
-                f"COMMAND_ORIGINAL: {original_command}\n"
-                f"COMMAND_SANITIZED: {preflight['sanitized_command']}\n"
+                f"COMMAND_ORIGINAL: {_mask_secret_content(original_command)}\n"
+                f"COMMAND_SANITIZED: {_mask_secret_content(preflight['sanitized_command'])}\n"
                 f"BLOCKED_REASON: {preflight['blocked_reason']}"
             )
 
         sanitized_command = preflight["sanitized_command"]
         corrections = preflight["corrections"]
+        # Live-result display values: secrets are masked BEFORE return/emit
+        # (the raw commands above still drive execution + the lock gate).
+        shown_original = _mask_secret_content(original_command)
+        shown_sanitized = _mask_secret_content(sanitized_command)
 
         # RULE-LOCK-FIRST: the gate sees the FULL sanitized command -- never a
         # truncated prefix (an off-target host past any display cap must block).
@@ -256,8 +263,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return (
                 "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
                 "ATTEMPT_ID: preflight\n"
-                f"COMMAND_ORIGINAL: {original_command}\n"
-                f"COMMAND_SANITIZED: {sanitized_command}\n"
+                f"COMMAND_ORIGINAL: {shown_original}\n"
+                f"COMMAND_SANITIZED: {shown_sanitized}\n"
                 f"BLOCKED_REASON: {_lock_reason}"
             )
 
@@ -287,8 +294,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 return (
                     "TERMINAL_RESULT: blocked (exit_code=None, duration=0.0s)\n"
                     f"ATTEMPT_ID: {attempt_id}\n"
-                    f"COMMAND_ORIGINAL: {original_command}\n"
-                    f"COMMAND_SANITIZED: {sanitized_command}\n"
+                    f"COMMAND_ORIGINAL: {shown_original}\n"
+                    f"COMMAND_SANITIZED: {shown_sanitized}\n"
                     f"{preflight_note}"
                     f"{sandbox_error_block(exc, tool_name='run_exploit_terminal')}"
                 )
@@ -304,10 +311,9 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     _hint = loopback_hint(_primary, config)
             except Exception:  # ponytail: bare except intentional -- hint is advisory only
                 _hint = ""
-            # Persisted logs are masked: raw stdout may carry dumped hashes,
-            # tokens, or key material that must not sit on disk in the clear.
-            # (The live OUTPUT below stays verbatim -- cracking workflows need
-            # the recovered plaintext.)
+            # Persisted AND live outputs are masked: raw stdout may carry
+            # dumped hashes, tokens, or key material that must neither sit on
+            # disk nor echo verbatim in results/events in the clear.
             _logged = _mask_secret_content((result.stdout or "") + ("\n" + result.stderr if result.stderr else ""))
             log_path.write_text(
                 f"{'=' * 60}\nCOMMAND: {_mask_secret_content(sanitized_command)}\n{'=' * 60}\n"
@@ -319,14 +325,14 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return (
                 f"TERMINAL_RESULT: {_sstatus} (exit_code={_exit_code}, duration={_elapsed:.1f}s)\n"
                 f"ATTEMPT_ID: {attempt_id}\n"
-                f"COMMAND_ORIGINAL: {original_command}\n"
-                f"COMMAND_SANITIZED: {sanitized_command}\n"
+                f"COMMAND_ORIGINAL: {shown_original}\n"
+                f"COMMAND_SANITIZED: {shown_sanitized}\n"
                 f"{preflight_note}"
                 f"{_sandbox_status_line(ctx.sandbox)}"
                 f"{_opsec_advisory}"
                 f"{_hint}"
                 f"WORKSPACE: {attempt_dir}\n"
-                f"OUTPUT:\n{_output_tail}"
+                f"OUTPUT:\n{_mask_secret_content(_output_tail)}"
             )
 
         start = time.monotonic()
@@ -413,16 +419,16 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     encoding="utf-8",
                     errors="replace",
                 )
-                # Live OUTPUT stays verbatim (marked tail) -- the persisted log
-                # above is the masked copy.
-                output_tail = _tail(text, _OUTPUT_CHARS)
+                # Live OUTPUT is masked before return (same as the persisted
+                # log above) -- secrets must not echo verbatim in results.
+                output_tail = _mask_secret_content(_tail(text, _OUTPUT_CHARS))
             except Exception:  # ponytail: bare except intentional -- decode failure keeps prior (empty) tail
                 pass
         elif log_path.exists():
             # cmd.exe path appends raw output to terminal.log via shell
-            # redirect: show it verbatim, then mask the persisted copy.
+            # redirect: mask before return, then mask the persisted copy.
             raw_text = log_path.read_text(encoding="utf-8", errors="replace")
-            output_tail = _tail(raw_text, _OUTPUT_CHARS)
+            output_tail = _mask_secret_content(_tail(raw_text, _OUTPUT_CHARS))
             try:
                 log_path.write_text(
                     _tail(_mask_secret_content(raw_text), _MAX_LOG_FILE_CHARS),
@@ -437,8 +443,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         return (
             f"TERMINAL_RESULT: {status} (exit_code={exit_code}, duration={elapsed:.1f}s)\n"
             f"ATTEMPT_ID: {attempt_id}\n"
-            f"COMMAND_ORIGINAL: {original_command}\n"
-            f"COMMAND_SANITIZED: {sanitized_command}\n"
+            f"COMMAND_ORIGINAL: {shown_original}\n"
+            f"COMMAND_SANITIZED: {shown_sanitized}\n"
             f"{preflight_note}"
             f"{sandbox_fallback_notice(ctx)}"
             f"{_opsec_advisory}"
@@ -469,7 +475,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         Side-effects:
             Executes ``sudo <sanitized-command>`` (container root when
             sandboxed, fail closed -- else host ``bash -c``, preserving
-            ``&&`` chaining). Live OUTPUT stays verbatim.
+            ``&&`` chaining). Live COMMAND/OUTPUT in the returned block are
+            secret-masked before return/emit.
         """
         if not command or not command.strip():
             return "BLOCKED: empty command."
@@ -478,8 +485,13 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
         original_command = command
         preflight = preflight_command_check(command)
         if not preflight["valid"]:
-            return f"ROOT_CMD_RESULT: blocked (preflight: {preflight['blocked_reason']})\nCOMMAND: {original_command}"
+            return (
+                f"ROOT_CMD_RESULT: blocked (preflight: {preflight['blocked_reason']})\n"
+                f"COMMAND: {_mask_secret_content(original_command)}"
+            )
         sanitized_command = preflight["sanitized_command"]
+        # Live-result display value: masked before return (raw drives execution).
+        shown_command = _mask_secret_content(original_command)
         # RULE-LOCK-FIRST: lock on the FULL sanitized command, before the sudo
         # pivot, so an off-target command reports the lock (not the pivot).
         _lock_reason = _target_lock_block(sanitized_command, config)
@@ -504,8 +516,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 merged = f"{merged}\n{result.stderr}" if merged else result.stderr
             return (
                 f"ROOT_CMD_RESULT: {result.status} (exit_code={result.exit_code}, sandbox)\n"
-                f"COMMAND: {original_command}\nSUDO: not required (executed as container root)\n"
-                f"OUTPUT:\n{_tail(merged, _OUTPUT_CHARS)}"
+                f"COMMAND: {shown_command}\nSUDO: not required (executed as container root)\n"
+                f"OUTPUT:\n{_mask_secret_content(_tail(merged, _OUTPUT_CHARS))}"
             )
         cmd = f"sudo {sanitized_command} 2>&1"
         try:
@@ -516,14 +528,14 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            output = _tail(((out or "") + "\n" + (err or "")), _OUTPUT_CHARS)
+            output = _mask_secret_content(_tail(((out or "") + "\n" + (err or "")), _OUTPUT_CHARS))
             status = "completed" if returncode == 0 else "failed"
             return (
                 f"{sandbox_fallback_notice(ctx)}"
-                f"ROOT_CMD_RESULT: {status} (exit_code={returncode})\nCOMMAND: {original_command}\nOUTPUT:\n{output}"
+                f"ROOT_CMD_RESULT: {status} (exit_code={returncode})\nCOMMAND: {shown_command}\nOUTPUT:\n{output}"
             )
         except subprocess.TimeoutExpired:
-            return f"{sandbox_fallback_notice(ctx)}ROOT_CMD_RESULT: timed_out\nCOMMAND: {original_command}"
+            return f"{sandbox_fallback_notice(ctx)}ROOT_CMD_RESULT: timed_out\nCOMMAND: {shown_command}"
         except Exception as exc:  # ponytail: bare except intentional -- run failure is data, not a crash
             return f"{sandbox_fallback_notice(ctx)}ROOT_CMD_RESULT: error - {exc}"
 
@@ -599,8 +611,8 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 merged = f"{merged}\n{result.stderr}" if merged else result.stderr
             return (
                 f"{preflight_note}GIT_CLONE_RESULT: {result.status} (exit_code={result.exit_code}, sandbox)\n"
-                f"REPO: {url}\nPATH: {clone_dir} (container: /workspace/{dir_name})\n"
-                f"OUTPUT:\n{_tail(merged, _GIT_OUTPUT_CHARS)}"
+                f"REPO: {_mask_secret_content(url)}\nPATH: {clone_dir} (container: /workspace/{dir_name})\n"
+                f"OUTPUT:\n{_mask_secret_content(_tail(merged, _GIT_OUTPUT_CHARS))}"
             )
 
         try:
@@ -611,13 +623,16 @@ def _register_execute_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            output = _tail(((out or "") + "\n" + (err or "")), _GIT_OUTPUT_CHARS)
+            output = _mask_secret_content(_tail(((out or "") + "\n" + (err or "")), _GIT_OUTPUT_CHARS))
             status = "completed" if returncode == 0 else "failed"
             return (
                 f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: {status} (exit_code={returncode})\n"
-                f"REPO: {url}\nPATH: {clone_dir}\nOUTPUT:\n{output}"
+                f"REPO: {_mask_secret_content(url)}\nPATH: {clone_dir}\nOUTPUT:\n{output}"
             )
         except subprocess.TimeoutExpired:
-            return f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: timed_out\nREPO: {url}"
+            return (
+                f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: timed_out\n"
+                f"REPO: {_mask_secret_content(url)}"
+            )
         except Exception as exc:  # ponytail: bare except intentional -- run failure is data, not a crash
             return f"{preflight_note}{sandbox_fallback_notice(ctx)}GIT_CLONE_RESULT: error - {exc}"

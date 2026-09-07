@@ -106,11 +106,17 @@ _MASK_PY_AUTH_TUPLE_RE = re.compile(
     re.IGNORECASE,
 )
 # `password: hunter2` / `"password": "hunter2"` colon forms (YAML/JSON/tool
-# output) -- the `=`-only KV mask above misses them.
+# output) -- the `=`-only KV mask above misses them. NTLM covers secretsdump
+# `NTLM: <lm>:<nt>` lines; bare `32hex:32hex` pairs (no label) are caught by
+# _MASK_NTLM_PAIR_RE below.
 _MASK_KV_COLON_RE = re.compile(
-    r"\b((?:PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY)\s*:\s*[\"']?)[^\s,\"']+",
+    r"\b((?:PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|NTLM(?:_HASH)?)\s*:\s*[\"']?)[^\s,\"']+",
     re.IGNORECASE,
 )
+# Bare NTLM hash pairs with no label (secretsdump `user:rid:lm:nt:::` lines,
+# hashcat Potfile `hash:plain` leftovers): 32 hex, colon, 32 hex. Specific
+# enough to avoid false positives on UUIDs/SHAs (neither is 32:32).
+_MASK_NTLM_PAIR_RE = re.compile(r"\b[\da-fA-F]{32}:[\da-fA-F]{32}\b")
 # PEM blocks pasted into commands/logs (heredoc'd keys) -- the whole block is
 # key material.
 _MASK_PEM_RE = re.compile(
@@ -128,6 +134,7 @@ _MASK_RES = (
     _MASK_NTLM_FLAG_RE,
     _MASK_KV_SECRET_RE,
     _MASK_KV_COLON_RE,
+    _MASK_NTLM_PAIR_RE,
     _MASK_PEM_RE,
     _MASK_AUTH_HDR_RE,
     _MASK_PY_AUTH_TUPLE_RE,
@@ -141,7 +148,8 @@ def _mask_secret_content(value: Any) -> Any:
         return value
     out = value
     for rx in _MASK_RES:
-        if rx is _MASK_URL_AUTH_RE or rx is _MASK_PEM_RE:
+        if rx is _MASK_URL_AUTH_RE or rx is _MASK_PEM_RE or rx is _MASK_NTLM_PAIR_RE:
+            # Group-less whole-match masks: replace the match itself.
             out = rx.sub(_REDACTED, out)
         elif rx is _MASK_PY_AUTH_TUPLE_RE:
             out = rx.sub(rf"\1{_REDACTED}\2", out)
