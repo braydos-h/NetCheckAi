@@ -33,7 +33,8 @@ export function Sparkline({ label, values, format, className }: SparklineProps) 
           {format ? format(values[values.length - 1] ?? 0) : (values[values.length - 1] ?? 0).toLocaleString()}
         </span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-7 w-full" role="img" aria-label={`${label} over time`}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-7 w-full" role="img" aria-label={`${label} over time: min ${min.toLocaleString()}, max ${max.toLocaleString()}, latest ${(values[values.length - 1] ?? 0).toLocaleString()}`}>
+        <title>{`${label}: min ${min.toLocaleString()}, max ${max.toLocaleString()}, latest ${(values[values.length - 1] ?? 0).toLocaleString()}`}</title>
         <polyline
           points={points}
           fill="none"

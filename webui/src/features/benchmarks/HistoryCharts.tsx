@@ -64,7 +64,8 @@ export function HistoryChart({ runs, extract, format, label }: ChartProps) {
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
         <span className="text-sm font-medium tabular-nums">{format ? format(latest) : latest.toLocaleString()}</span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="mt-2 h-16 w-full" role="img" aria-label={`${label} over benchmark runs`}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="mt-2 h-16 w-full" role="img" aria-label={`${label} over benchmark runs: latest ${format ? format(latest) : latest.toLocaleString()}, range ${range}`}>
+        <title>{`${label}: latest ${format ? format(latest) : latest.toLocaleString()} (${range})`}</title>
         <polyline
           points={points}
           fill="none"

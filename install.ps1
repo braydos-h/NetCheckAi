@@ -195,7 +195,6 @@ $script:SourceOwner = "braydos-h"
 $script:SourceRepo = "BreachPilot"
 $script:SourceFull = "$script:SourceOwner/$script:SourceRepo"
 $script:GitHubApiBase = "https://api.github.com"
-$script:GitHubRawBase = "https://raw.githubusercontent.com"
 $script:UserAgent = "BreachPilot-Windows-Installer/1.0.0 (https://github.com/braydos-h/BreachPilot)"
 $script:MetadataFileName = ".breachpilot-install.json"
 $script:StateFileName = ".breachpilot-install.state"
@@ -2641,9 +2640,11 @@ function Remove-Shortcuts {
 # ---------------------------------------------------------------------------
 
 function Invoke-BreachPilotDoctor {
+    # Doctor must run with CWD=install dir so main.py resolves the INSTALL's
+    # config.yaml, not whatever directory the launcher was invoked from.
     param([string]$VenvPython, [string]$InstallDir)
     Write-Prog "Running real health check: main.py --doctor ..."
-    $r = Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--doctor") -TimeoutSeconds 600 -AllowFailure
+    $r = Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--doctor") -TimeoutSeconds 600 -AllowFailure -WorkingDirectory $InstallDir
     $combined = ($r.StdOut + "`n" + $r.StdErr)
     if (-not [string]::IsNullOrWhiteSpace($combined)) {
         Write-Host $combined
@@ -2653,16 +2654,30 @@ function Invoke-BreachPilotDoctor {
 }
 
 function Get-DoctorJson {
-    param([string]$VenvPython)
+    param([string]$VenvPython, [string]$InstallDir = "")
     try {
-        $r = Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--doctor", "--json") -TimeoutSeconds 300 -AllowFailure
+        $psiArgs = @("main.py", "--doctor", "--json")
+        if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+            $r = Invoke-ExternalCommand -Command $VenvPython -Arguments $psiArgs -TimeoutSeconds 300 -AllowFailure
+        } else {
+            $r = Invoke-ExternalCommand -Command $VenvPython -Arguments $psiArgs -TimeoutSeconds 300 -AllowFailure -WorkingDirectory $InstallDir
+        }
         if ($r.ExitCode -ne 0 -and [string]::IsNullOrWhiteSpace($r.StdOut)) { return $null }
-        # Stdout may carry log lines before the JSON; take the last {...} block.
+        # Stdout may carry log lines before the JSON. Find the FIRST "{" that
+        # parses as a complete balanced object (LastIndexOf("{") would grab a
+        # trailing log brace instead).
         $text = $r.StdOut
-        $start = $text.LastIndexOf("{")
-        if ($start -lt 0) { return $null }
-        $candidate = $text.Substring($start)
-        return ($candidate | ConvertFrom-Json)
+        $idx = 0
+        while ($true) {
+            $start = $text.IndexOf("{", $idx)
+            if ($start -lt 0) { return $null }
+            try {
+                return ($text.Substring($start) | ConvertFrom-Json)
+            } catch {
+                $idx = $start + 1
+                if ($idx -ge $text.Length) { return $null }
+            }
+        }
     } catch {
         Write-Log "doctor --json parse failed: $($_.Exception.Message)" -Level "WARN"
         return $null
@@ -2885,7 +2900,7 @@ function Invoke-CheckMode {
     Write-Step "BreachPilot doctor (read-only)"
     if ((Test-Path -LiteralPath $venvPy) -and (Test-Path -LiteralPath (Join-Path $InstallDir "main.py"))) {
         $dr = Invoke-BreachPilotDoctor -VenvPython $venvPy -InstallDir $InstallDir
-        $dj = Get-DoctorJson -VenvPython $venvPy
+        $dj = Get-DoctorJson -VenvPython $venvPy -InstallDir $InstallDir
         $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
         Write-Info "Doctor classification: $($cls.Status) — $($cls.Detail)"
     } else {
@@ -3007,7 +3022,7 @@ function Invoke-RepairMode {
     Request-ApiKeySetup -InstallDir $InstallDir -VenvPython $venvPy
     Write-InstallState -InstallDir $InstallDir -State "validating"
     $dr = Invoke-BreachPilotDoctor -VenvPython $venvPy -InstallDir $InstallDir
-    $dj = Get-DoctorJson -VenvPython $venvPy
+    $dj = Get-DoctorJson -VenvPython $venvPy -InstallDir $InstallDir
     $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
     if ($cls.Status -eq "fail") {
         Write-Fail "Doctor still reports hard failures after repair: $($cls.Detail)"
@@ -3383,7 +3398,7 @@ function Invoke-Main {
     Write-Step "Doctor"
     Write-InstallState -InstallDir $installDir -State "validating"
     $dr = Invoke-BreachPilotDoctor -VenvPython $venvPython -InstallDir $installDir
-    $dj = Get-DoctorJson -VenvPython $venvPython
+    $dj = Get-DoctorJson -VenvPython $venvPython -InstallDir $installDir
     $cls = Test-DoctorResult -DoctorJson $dj -ExitCode $dr.ExitCode
     $doctorStatus = ""
     $finalCode = $script:ExitSuccess
@@ -3396,9 +3411,9 @@ function Invoke-Main {
     if ($cls.Status -eq "fail") {
         # Critical validation failed AFTER replacing files: roll back (update) or
         # fail loudly (fresh install has no backup to restore).
-        if ((-not [string]::IsNullOrWhiteSpace($backupDir)) -and (Test-Path -LiteralPath $backupDir)) {
+        if ((-not [string]::IsNullOrWhiteSpace($deployBackupDir)) -and (Test-Path -LiteralPath $deployBackupDir)) {
             try {
-                Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $backupDir
+                Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $deployBackupDir
                 Write-InstallState -InstallDir $installDir -State "rollback"
                 Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
                     -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `

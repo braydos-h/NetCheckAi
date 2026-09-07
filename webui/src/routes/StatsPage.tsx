@@ -79,20 +79,20 @@ interface StateMeta {
   barClass: string;
 }
 
-// Active states share one hue deliberately — they collapse to a single
-// "Active" identity; distinct hues are reserved for distinct outcomes.
+// Each state gets a distinct fixed-order hue — sharing one amber across four
+// distinct actives made color meaningless; identity is dot + label regardless.
 const STATE_META: Record<RunState, StateMeta> = {
   draft: { label: "Draft", barClass: "bg-muted-foreground/45" },
   preparing: { label: "Preparing", barClass: "bg-muted-foreground/50" },
-  awaiting_confirmation: { label: "Active", barClass: "bg-amber-500/80" },
-  queued: { label: "Queued", barClass: "bg-muted-foreground/50" },
-  running: { label: "Active", barClass: "bg-amber-500/80" },
-  awaiting_input: { label: "Active", barClass: "bg-amber-500/80" },
+  awaiting_confirmation: { label: "Awaiting confirmation", barClass: "bg-amber-500/80" },
+  queued: { label: "Queued", barClass: "bg-sky-500/75" },
+  running: { label: "Running", barClass: "bg-primary/80" },
+  awaiting_input: { label: "Awaiting input", barClass: "bg-violet-500/75" },
   completed: { label: "Completed", barClass: "bg-emerald-500/85" },
   failed: { label: "Failed", barClass: "bg-destructive/85" },
   cancelled: { label: "Cancelled", barClass: "bg-slate-500/75" },
   interrupted: { label: "Interrupted", barClass: "bg-orange-500/80" },
-  cancelling: { label: "Active", barClass: "bg-amber-500/80" },
+  cancelling: { label: "Cancelling", barClass: "bg-amber-500/60" },
 };
 
 const STATE_ORDER: RunState[] = [

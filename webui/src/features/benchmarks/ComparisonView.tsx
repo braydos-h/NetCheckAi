@@ -1,7 +1,7 @@
 // BreachPilot by @braydos-h — https://github.com/braydos-h/BreachPilot
 // Comparison view: two benchmark runs side by side (metric deltas + per-scenario rollup).
 import { useMemo, useState } from "react";
-import { ArrowLeftRight, Loader2 } from "lucide-react";
+import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, Loader2, Minus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn, formatRelative } from "@/lib/utils";
 import { formatCost, formatDuration, formatPct } from "@/features/benchmarks/MetricCards";
@@ -162,14 +162,27 @@ export function ComparisonView({ runs }: ComparisonViewProps) {
                     <td className="px-3 py-2">{METRIC_LABELS[row.metric] ?? row.metric}</td>
                     <td className="px-3 py-2 tabular-nums">{formatMetricValue(row.metric, row.baseline)}</td>
                     <td className="px-3 py-2 tabular-nums">{formatMetricValue(row.metric, row.current)}</td>
-                    <td
-                      className={cn(
-                        "px-3 py-2 tabular-nums",
-                        row.direction === "improved" && "text-emerald-500",
-                        row.direction === "regressed" && "text-red-500",
-                      )}
-                    >
-                      {formatDelta(row.metric, row)}
+                    <td className="px-3 py-2 tabular-nums">
+                      <span className="inline-flex items-center gap-1">
+                        {row.direction === "improved" && (
+                          <>
+                            <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-label="improved" />
+                            <span className="text-emerald-700 dark:text-emerald-300">{formatDelta(row.metric, row)}</span>
+                          </>
+                        )}
+                        {row.direction === "regressed" && (
+                          <>
+                            <ArrowDownRight className="h-3.5 w-3.5 text-red-600 dark:text-red-400" aria-label="regressed" />
+                            <span className="text-red-700 dark:text-red-300">{formatDelta(row.metric, row)}</span>
+                          </>
+                        )}
+                        {row.direction !== "improved" && row.direction !== "regressed" && (
+                          <>
+                            <Minus className="h-3.5 w-3.5 text-muted-foreground" aria-label="unchanged" />
+                            <span className="text-muted-foreground">{formatDelta(row.metric, row) || "—"}</span>
+                          </>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -179,14 +192,9 @@ export function ComparisonView({ runs }: ComparisonViewProps) {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {Object.entries(comparison.comparison.categories).map(([category, ids]) => (
               <div key={category} className="rounded-lg border p-3">
-                <div
-                  className={cn(
-                    "text-xs font-medium uppercase tracking-wide",
-                    category === "regressed" && "text-red-500",
-                    category === "newly_solved" && "text-emerald-500",
-                    (category === "still_solved" || category === "still_failing") && "text-muted-foreground",
-                  )}
-                >
+                <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {category === "regressed" && <ArrowDownRight className="h-3.5 w-3.5 text-red-600 dark:text-red-400" aria-hidden />}
+                  {category === "newly_solved" && <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />}
                   {CATEGORY_LABELS[category] ?? category}
                 </div>
                 <div className="mt-1 text-xl font-semibold tabular-nums">{ids.length}</div>
@@ -227,7 +235,7 @@ export function ComparisonView({ runs }: ComparisonViewProps) {
                             row.category === "newly_solved"
                               ? "VERIFIED"
                               : row.category === "regressed"
-                                ? "FALSE_POSITIVE"
+                                ? "REGRESSED"
                                 : row.category === "still_solved"
                                   ? "VERIFIED"
                                   : "FAILED"

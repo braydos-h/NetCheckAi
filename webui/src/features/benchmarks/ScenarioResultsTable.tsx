@@ -8,16 +8,19 @@ import { cn } from "@/lib/utils";
 import { formatCost, formatDuration } from "@/features/benchmarks/MetricCards";
 import type { Trial } from "@/features/benchmarks/types";
 
+// COMPLETED (unverified) is neutral/sky — VERIFIED alone owns emerald. REGRESSED
+// is the comparison-view category badge, distinct from FALSE_POSITIVE triage.
 export const STATUS_META: Record<string, { label: string; className: string }> = {
-  VERIFIED: { label: "Verified", className: "bg-emerald-500/15 text-emerald-500" },
-  COMPLETED: { label: "Completed", className: "bg-emerald-500/15 text-emerald-500" },
-  FAILED: { label: "Failed", className: "bg-red-500/15 text-red-500" },
-  FALSE_POSITIVE: { label: "False positive", className: "bg-amber-500/15 text-amber-500" },
-  TIMEOUT: { label: "Timeout", className: "bg-orange-500/15 text-orange-500" },
-  INFRASTRUCTURE_ERROR: { label: "Infra error", className: "bg-sky-500/15 text-sky-500" },
-  RUNNING: { label: "Running", className: "bg-yellow-500/15 text-yellow-500" },
+  VERIFIED: { label: "Verified", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+  COMPLETED: { label: "Completed", className: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+  FAILED: { label: "Failed", className: "bg-red-500/15 text-red-700 dark:text-red-300" },
+  FALSE_POSITIVE: { label: "False positive", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+  REGRESSED: { label: "Regressed", className: "bg-red-500/15 text-red-700 dark:text-red-300" },
+  TIMEOUT: { label: "Timeout", className: "bg-orange-500/15 text-orange-700 dark:text-orange-300" },
+  INFRASTRUCTURE_ERROR: { label: "Infra error", className: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+  RUNNING: { label: "Running", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
   CANCELLED: { label: "Cancelled", className: "bg-muted text-muted-foreground" },
-  INTERRUPTED: { label: "Interrupted", className: "bg-amber-500/15 text-amber-500" },
+  INTERRUPTED: { label: "Interrupted", className: "bg-orange-500/15 text-orange-700 dark:text-orange-300" },
   SKIPPED: { label: "Skipped", className: "bg-muted text-muted-foreground" },
 };
 

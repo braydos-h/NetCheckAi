@@ -2,12 +2,14 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
+  ATTACK_PATH_COLOR,
   NODE_STATUS_ORDER,
   NODE_TYPE_CATEGORIES,
   edgeMeta,
   nodeTypeMeta,
   statusMeta,
 } from "@/features/graph/graphTransforms";
+import { statusIcon } from "@/features/graph/GraphNodeTypes";
 import type { GraphEdgeType } from "@/features/graph/graphTypes";
 
 export interface GraphLegendProps {
@@ -77,12 +79,15 @@ export function GraphLegend({ onClose, className }: GraphLegendProps) {
         <section className="mb-3">
           <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Status</h4>
           <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-            {NODE_STATUS_ORDER.map((s) => (
-              <span key={s} className="flex items-center gap-1.5 text-[10px]">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: statusMeta(s).color }} aria-hidden />
-                <span className="truncate">{statusMeta(s).label}</span>
-              </span>
-            ))}
+            {NODE_STATUS_ORDER.map((s) => {
+              const StatusIcon = statusIcon(s);
+              return (
+                <span key={s} className="flex items-center gap-1.5 text-[10px]">
+                  <StatusIcon className="h-3 w-3 shrink-0" style={{ color: statusMeta(s).color }} aria-hidden />
+                  <span className="truncate">{statusMeta(s).label}</span>
+                </span>
+              );
+            })}
           </div>
         </section>
 
@@ -105,7 +110,7 @@ export function GraphLegend({ onClose, className }: GraphLegendProps) {
           <div className="space-y-0.5">
             {LEGEND_EDGES.map((e) => {
               const meta = e.edgeType ? edgeMeta(e.edgeType) : null;
-              const stroke = e.path ? "rgb(52,211,153)" : (meta?.color ?? "rgb(148,163,184)");
+              const stroke = e.path ? ATTACK_PATH_COLOR : (meta?.color ?? "rgb(148,163,184)");
               return (
                 <span key={e.key} className="flex items-center gap-1.5 text-[10px]">
                   <svg width="22" height="6" viewBox="0 0 22 6" className="shrink-0" aria-hidden>

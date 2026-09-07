@@ -112,13 +112,17 @@ export const NODE_TYPE_CATEGORIES: Array<{ key: NodeTypeCategory; label: string;
   { key: "defense", label: "Controls & assets", types: ["capability", "security_control", "asset"] },
 ];
 
+export const ATTACK_PATH_COLOR = "rgb(34,211,238)";
+
 const STATUS_META: Record<GraphNodeStatus, { label: string; color: string }> = {
   confirmed: { label: "Confirmed", color: "rgb(52,211,153)" },
   likely: { label: "Likely", color: "rgb(96,165,250)" },
   suspected: { label: "Suspected", color: "rgb(251,191,36)" },
   unknown: { label: "Unknown", color: "rgb(148,163,184)" },
   refuted: { label: "Refuted", color: "rgb(248,113,113)" },
-  exhausted: { label: "Exhausted", color: "rgb(234,179,8)" },
+  // Slate-blue, not amber — the old yellow-600 sat next to suspected amber
+  // below any usable separation floor.
+  exhausted: { label: "Exhausted", color: "rgb(129,140,248)" },
 };
 
 export function statusMeta(status: GraphNodeStatus): { label: string; color: string } {
@@ -248,8 +252,8 @@ export function toFlowEdges(edges: GraphExplorerEdge[]): Edge<FlowEdgeData>[] {
         ...(meta.dashed ? { strokeDasharray: "5 4" } : {}),
       },
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: meta.color },
-      labelStyle: { fontSize: 9, fill: meta.color },
-      labelBgStyle: { fill: "rgba(2,6,23,0.75)", fillOpacity: 1 },
+      labelStyle: { fontSize: 9, fill: "hsl(var(--popover-foreground))" },
+      labelBgStyle: { fill: "hsl(var(--popover))", fillOpacity: 1 },
       labelBgPadding: [3, 2] as [number, number],
       labelBgBorderRadius: 3,
     };
