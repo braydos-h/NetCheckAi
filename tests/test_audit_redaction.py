@@ -511,11 +511,8 @@ async def test_run_as_root_no_longer_double_logs_raw_command(tmp_path: Path):
     rr = [r for r in records if r["tool_name"] == "run_as_root"]
     statuses = {r["status"] for r in rr}
     assert "running" not in statuses  # the manual double-log is removed
-    # M9: run_as_root returns a "ROOT_CMD_RESULT: ..." string on success, which
-    # make_audit_tool now treats as a blocked marker, so the completion record is
-    # written as status="blocked" / approved=False (the call did not raise and the
-    # raw secret still never reaches the audit trail).
-    assert "started" in statuses and "blocked" in statuses
-    assert "completed" not in statuses
-    blocked = [r for r in rr if r["status"] == "blocked"]
-    assert blocked[0]["approved"] is False
+    # A successful ROOT_CMD_RESULT is a normal completion; only the explicit
+    # ``ROOT_CMD_RESULT: blocked`` prefix is classified as blocked.
+    assert statuses == {"started", "completed"}
+    completed = [r for r in rr if r["status"] == "completed"]
+    assert completed[0]["approved"] is True

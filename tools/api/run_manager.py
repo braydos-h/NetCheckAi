@@ -561,6 +561,11 @@ class RunManager:
                 await handle.event_broker.emit("state", {"state": RunState.CANCELLING.value})
             except Exception as exc:
                 event_error = exc
+            # A closed broker is expected when Starlette's TestClient (or any
+            # request-scoped event-loop host) tears down the loop that created
+            # a still-preparing run.  Cancellation must still settle the
+            # persisted run instead of turning that lifecycle race into a 500.
+            stale_broker = isinstance(event_error, RuntimeError) and str(event_error) == "Event broker is closed."
             handle.cancellation.cancel()
             if handle.decision_broker:
                 handle.decision_broker.cancel_all()
@@ -575,7 +580,7 @@ class RunManager:
                 finally:
                     handle.event_broker.close()
                     self._active.pop(run_id, None)
-                if event_error is not None:
+                if event_error is not None and not stale_broker:
                     raise event_error
                 return
             # TestClient creates a fresh portal per request; the prep_task may be
@@ -594,7 +599,7 @@ class RunManager:
                         handle.event_broker.close()
                     except Exception:
                         pass
-                    if event_error is not None:
+                    if event_error is not None and not stale_broker:
                         raise event_error
                     return
             except RuntimeError:
@@ -608,7 +613,7 @@ class RunManager:
                     handle.event_broker.close()
                 except Exception:
                     pass
-                if event_error is not None:
+                if event_error is not None and not stale_broker:
                     raise event_error
                 return
 
@@ -624,7 +629,7 @@ class RunManager:
                     handle.event_broker.close()
                 except Exception:
                     pass
-                if event_error is not None:
+                if event_error is not None and not stale_broker:
                     raise event_error
                 return
             raise
@@ -646,7 +651,7 @@ class RunManager:
                         pass
                     finally:
                         handle.event_broker.close()
-        if event_error is not None:
+        if event_error is not None and not stale_broker:
             raise event_error
 
     async def answer_decision(self, run_id: str, decision_id: str, answer: str) -> dict[str, Any]:
