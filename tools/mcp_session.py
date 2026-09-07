@@ -155,7 +155,7 @@ async def open_exploit_mcp_session(
     so concurrent runs don't share module-global state; omitted means the
     module globals (back-compat for existing tests/callers).
     """
-    common = {
+    common: dict[str, Any] = {
         "config_path": config_path,
         "target_ip": target_ip,
         "exploit_port": exploit_port,
