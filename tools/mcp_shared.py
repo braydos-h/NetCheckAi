@@ -16,10 +16,13 @@ from typing import cast
 from tools.cve_lookup import CVESearchSettings, NVDClient
 from tools.exploit_search import ExploitSearch, ExploitSearchSettings
 from tools.kernel.allowlist import (
+    _MSF_LHOST_RE,
     _MSF_PIVOT_RE,
     _MSF_RHOSTS_RE,
     _allowed_target_list,
     _check_allowlist,
+    _extract_msf_lhosts,
+    _extract_msf_option_hosts,
     _extract_msf_rhosts,
     _extract_scanner_targets,
     add_discovered_target,
@@ -56,6 +59,7 @@ from tools.web_researcher import (
 )
 
 __all__ = [  # re-exports for backwards compat (F401 suppression via __all__)
+    "_MSF_LHOST_RE",
     "_MSF_PIVOT_RE",
     "_MSF_RHOSTS_RE",
     "_REDACTED",
@@ -67,6 +71,8 @@ __all__ = [  # re-exports for backwards compat (F401 suppression via __all__)
     "_audit_log",
     "_check_allowlist",
     "_extract_audit_target",
+    "_extract_msf_lhosts",
+    "_extract_msf_option_hosts",
     "_extract_msf_rhosts",
     "_extract_scanner_targets",
     "_find_file",

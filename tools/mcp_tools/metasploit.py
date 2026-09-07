@@ -9,7 +9,12 @@ import subprocess
 import time
 from typing import Any
 
-from tools.mcp_shared import _attempt_dir, _extract_msf_rhosts, check_targets_allowlist
+from tools.mcp_shared import (
+    _attempt_dir,
+    _extract_msf_option_hosts,
+    _extract_msf_rhosts,
+    check_targets_allowlist,
+)
 from tools.mcp_tools.registry import ToolContext, _platform_system
 from tools.metasploit_bridge import MSF_RECIPES, MetasploitBridge, get_metasploit_bridge, get_msf_recipe
 from tools.validation_utils import validate_target_or_ip
@@ -73,6 +78,15 @@ def register_metasploit_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 set_lines.append(f"set {key} {val}")
         if rejected_opts:
             return f"BLOCKED: options must be key=value pairs; rejected: {rejected_opts}."
+
+        # Tool-layer scope gate: the options text becomes ``set`` lines in the
+        # resource file verbatim, so an options-carried host (``LHOST=evil.com``
+        # callback egress, ``RHOSTS=`` target override) would otherwise bypass
+        # the structured target_ip gate. _extract_msf_rhosts covers RHOSTS,
+        # RHOST, LHOST, and pivot hosts.
+        allowed, reason = check_targets_allowlist(_extract_msf_rhosts("\n".join(set_lines)), config)
+        if not allowed:
+            return f"BLOCKED: {reason}\nTOOL: run_msf_module\nMODULE: {module}"
 
         # Build a msfconsole resource file (one command per line) and invoke
         # msfconsole with an argv list (no shell). This replaces the previous

@@ -68,6 +68,63 @@ def _is_inside_workspace(path: Path, workspace: Path) -> bool:
     return _kernel_is_inside(workspace, path)
 
 
+def _terminate_proc_tree(proc: subprocess.Popen[str]) -> None:
+    """Best-effort teardown of a helper subprocess and its process group.
+
+    Every ``BackgroundJobHelper`` / ``ListenerHelper`` spawn uses
+    ``start_new_session=True``, so ``proc.pid`` leads its own process group and
+    ``os.killpg`` reaps the whole tree (wrapper shell plus children), not just
+    the parent. Any group-kill failure (mock procs without a real pid,
+    already-reaped groups, ``EPERM``) falls back to plain ``proc.terminate()``
+    / ``proc.kill()`` with the same 5s waits. Never raises — teardown must not
+    break ``stop()`` bookkeeping. Windows has no ``killpg`` path here, so it
+    uses direct ``terminate()`` / ``kill()``.
+    """
+    if sys.platform == "win32":
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+    except Exception:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -249,12 +306,7 @@ class BackgroundJobHelper:
             proc = self._jobs.get(name)
             if proc is None:
                 return False
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+            _terminate_proc_tree(proc)
             del self._jobs[name]
             return True
 
@@ -569,12 +621,7 @@ class ListenerHelper:
             proc = self._listeners.get(name)
             if proc is None:
                 return False
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+            _terminate_proc_tree(proc)
             del self._listeners[name]
             return True
 

@@ -10,7 +10,7 @@
 #     ./install.sh
 #     ./install.sh --uninstall   # remove the `breachpilot`/`bp` commands + PATH line
 #
-# Env knobs: PYTHON=python3  VENV=.venv  INSTALL_KALI_TOOLS=1  SKIP_MODEL_PULL=1
+# Env knobs: PYTHON=python3  VENV=.venv  INSTALL_KALI_TOOLS=1  INSTALL_SCANNERS=1  SKIP_MODEL_PULL=1
 #            ADD_TO_PATH=1            # 0 skips installing the `breachpilot`/`bp` commands
 set -euo pipefail
 
@@ -64,21 +64,55 @@ case "$OS_KIND" in
     debian)
         # Only hit apt if something's actually missing — avoids a sudo prompt
         # (and a non-interactive sudo failure aborting the whole script) when
-        # nmap/python3-venv/tmux/curl are already installed.
-        if have nmap && "$PYTHON" -c "import venv" >/dev/null 2>&1 && have tmux && have curl; then
-            echo "  [OK] nmap, python3-venv, tmux, curl already present — skipping apt-get"
+        # nmap/python3-venv/tmux/curl/git are already installed.
+        if have nmap && "$PYTHON" -c "import venv" >/dev/null 2>&1 && have tmux && have curl && have git; then
+            echo "  [OK] nmap, python3-venv, tmux, curl, git already present — skipping apt-get"
         else
             sudo apt-get update \
                 || echo "  [!] apt-get update failed (sudo password? network?). Continuing — install missing prereqs manually if needed."
-            sudo apt-get install -y nmap python3-venv tmux curl \
+            sudo apt-get install -y nmap python3-venv tmux curl git \
                 || echo "  [!] apt-get install failed (sudo password? network?). Continuing — install missing prereqs manually if needed."
         fi
         if [[ "$INSTALL_KALI_TOOLS" == "1" ]]; then
             # Only present on Kali; missing packages are tolerated so this stays
             # safe on plain Ubuntu/Debian. Best-effort: never aborts.
-            sudo apt-get install -y metasploit-framework exploitdb hydra \
-                crackmapexec impacket-scripts 2>/dev/null \
+            # NOTE: CrackMapExec was archived upstream and renamed to NetExec
+            # (binary nxc); impacket-scripts is transitional toward
+            # python3-impacket. Try modern names first, fall back to legacy.
+            # No output suppression: a bare `|| echo` keeps this non-fatal
+            # while still showing WHICH package name failed.
+            sudo apt-get install -y metasploit-framework exploitdb hydra netexec python3-impacket \
+                || sudo apt-get install -y metasploit-framework exploitdb hydra crackmapexec impacket-scripts \
                 || echo "  [--] some Kali-only packages unavailable on this distro (fine if staying in read_only)"
+        fi
+        if [[ "${INSTALL_SCANNERS:-1}" == "1" ]]; then
+            # Web scanners / crackers / wordlists shelled out to by run_web_scan
+            # + run_hash_crack (tools/mcp_tools/web_scan.py, cracking.py).
+            # Per-package attempts: one distro-missing name must not block the
+            # rest. Best-effort: never aborts. Skip with INSTALL_SCANNERS=0.
+            if have nikto && have sqlmap && have gobuster && have whatweb \
+                && have dirb && have hashcat && have john; then
+                echo "  [OK] web scanners + crackers already present — skipping apt-get"
+            else
+                sudo apt-get update \
+                    || echo "  [!] apt-get update failed (sudo password? network?). Scanner installs below may fail."
+                for _pkg in nikto sqlmap gobuster whatweb dirb hashcat john seclists wget; do
+                    if dpkg -s "$_pkg" >/dev/null 2>&1; then
+                        echo "  [OK] $_pkg already installed"
+                    else
+                        sudo apt-get install -y "$_pkg" \
+                            && echo "  [OK] $_pkg installed" \
+                            || echo "  [--] $_pkg unavailable on this distro (the engine will report a hint instead)"
+                    fi
+                done
+                unset _pkg
+                # Not apt-installable anywhere — point at the manual installs.
+                for _tool in nuclei feroxbuster wpscan; do
+                    have "$_tool" \
+                        || echo "  [--] $_tool not on PATH (manual install, optional — see docs/deployment.md)"
+                done
+                unset _tool
+            fi
         fi
         ;;
     macos)

@@ -85,6 +85,12 @@ class TestBuildCreateArgs:
         assert "--read-only" in args
         assert args[args.index("--tmpfs") + 1].startswith("/tmp:")
 
+    def test_custom_tmpfs_size_flows_through(self):
+        args = _build_create_args(_spec(tmpfs_size_mb=512), cap_raw=True, read_only_rootfs=True)
+        assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=512m"
+        args_small = _build_create_args(_spec(tmpfs_size_mb=1), cap_raw=True, read_only_rootfs=True)
+        assert args_small[args_small.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=64m"
+
     def test_writable_rootfs_when_configured(self):
         args = _build_create_args(_spec(), cap_raw=True, read_only_rootfs=False)
         assert "--read-only" not in args

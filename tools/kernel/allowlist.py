@@ -17,6 +17,7 @@ import ipaddress
 import os
 import re
 import shlex
+from collections.abc import Mapping
 from typing import Any
 
 from tools.validation_utils import is_fqdn, is_target_in_allowlist, validate_target
@@ -192,6 +193,9 @@ def _extract_msf_lhosts(text: str) -> list[str]:
     calls back to ``<host>`` — an egress path the target-IP lock must gate the
     same way it gates RHOSTS. Comma/whitespace-separated lists are split;
     ``file:`` indirection is denied outright (never expanded, never returned).
+    The ``0.0.0.0`` listen-all wildcard is skipped: like ``socket.bind`` in the
+    terminal lock (``tools/mcp_tools/terminal/allowlist._BIND_ALL_TOKENS``), a
+    handler listening on all interfaces names no egress target.
     """
     if not text:
         return []
@@ -203,6 +207,45 @@ def _extract_msf_lhosts(text: str) -> list[str]:
         for part in re.split(r"[,\s]+", tok):
             part = part.strip().strip("\"';")
             if not part or part.lower().startswith("file:"):
+                continue
+            if part == "0.0.0.0":
+                continue
+            if part not in out:
+                out.append(part)
+    return out
+
+
+# Options-dict keys whose VALUE is a host the allowlist must gate. LHOST is
+# the reverse-handler callback (egress); RHOST/RHOSTS override the module
+# target — the bridge forwards every options key except its own reserved set,
+# so an options-carried host would otherwise bypass the structured target_ip
+# gate (P0: ``options='LHOST=evil.com'`` staged a handler to an off-list host
+# while target_ip itself was allowlisted).
+_MSF_OPTION_HOST_KEYS = frozenset({"LHOST", "RHOST", "RHOSTS"})
+
+
+def _extract_msf_option_hosts(options: Mapping[str, Any] | None) -> list[str]:
+    """Return allowlist-gatable hosts from a parsed MSF options mapping.
+
+    Values for ``LHOST`` / ``RHOST`` / ``RHOSTS`` keys (case-insensitive);
+    ``RHOSTS`` lists are split on commas/whitespace, ``file:`` indirection is
+    dropped, and the ``0.0.0.0`` listen-all wildcard is skipped for ``LHOST``
+    (mirrors :func:`_extract_msf_lhosts`). Non-string values are stringified;
+    unknown keys are ignored.
+    """
+    out: list[str] = []
+    if not options:
+        return out
+    for key, value in options.items():
+        if not isinstance(key, str) or key.strip().upper() not in _MSF_OPTION_HOST_KEYS:
+            continue
+        if value is None:
+            continue
+        for part in re.split(r"[,\s]+", str(value)):
+            part = part.strip().strip("\"';")
+            if not part or part.lower().startswith("file:"):
+                continue
+            if part == "0.0.0.0" and key.strip().upper() == "LHOST":
                 continue
             if part not in out:
                 out.append(part)

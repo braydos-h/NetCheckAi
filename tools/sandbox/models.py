@@ -73,6 +73,7 @@ class SandboxConfig:
     pids_limit: int = 512
     exec_timeout_seconds: int = 300
     output_max_bytes: int = 2_000_000
+    tmpfs_size_mb: int = 256
     network_enforce: bool = True
     network_fail_closed: bool = True
     allow_dns: str = "controlled"  # "controlled" | "none"
@@ -124,6 +125,7 @@ class SandboxConfig:
             pids_limit=_as_int(resources.get("pids"), 512, minimum=32),
             exec_timeout_seconds=_as_int(resources.get("timeout_seconds"), 300, minimum=5),
             output_max_bytes=_as_int(resources.get("output_max_bytes"), 2_000_000, minimum=1024),
+            tmpfs_size_mb=_as_int(resources.get("tmpfs_size_mb"), 256, minimum=64),
             network_enforce=_as_bool(network.get("enforce"), True),
             network_fail_closed=_as_bool(network.get("fail_closed"), True),
             allow_dns=allow_dns,
@@ -177,6 +179,7 @@ class SandboxSpec:
     cpus: float
     pids_limit: int
     read_only_rootfs: bool
+    tmpfs_size_mb: int = 256
     labels: dict[str, str] = field(default_factory=lambda: {"breachpilot": "true"})
 
 

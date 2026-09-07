@@ -75,13 +75,26 @@ def _target_ports_reachable(host: str, ports: list[int], timeout: float = 1.0) -
 
 
 def _is_loopback_host(host: str) -> bool:
-    """True for loopback targets (container-lo != host-lo under sandbox)."""
+    """True for strict-loopback targets (127.0.0.0/8, ::1, localhost)."""
+    text = str(host or "").strip().lower()
+    if text in ("localhost", "::1"):
+        return True
     try:
-        from tools.validation_utils import is_local_target
+        import ipaddress
 
-        return bool(is_local_target(host))
-    except Exception:  # noqa: BLE001 -- preflight is best-effort, never fatal
-        return str(host or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
+        return ipaddress.ip_address(text.split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _safe_progress(progress: _PROGRESS | None, payload: dict[str, Any]) -> None:
+    """Deliver a progress callback without ever aborting the run."""
+    if progress is None:
+        return
+    try:
+        progress(payload)
+    except Exception:  # noqa: BLE001 -- progress sinks are best-effort
+        pass
 
 
 def _loopback_mapping_enabled(config: dict[str, Any]) -> bool:
@@ -180,15 +193,18 @@ class BenchmarkRunner:
             self.config, self.config_path, model_alias=self.model_alias, run_session=self._run_session
         )
 
+        cancelled = False
         for scenario in scenarios:
             manager = self._make_target_manager()
-            for trial_index in range(max(1, run_config.trials)):
-                if cancel is not None and cancel.is_set():
-                    event_logger.log("run_cancelled", {"reason": "operator cancel"}, level="warn")
-                    break
-                trial_id = f"{scenario.scenario_id}#t{trial_index + 1}"
-                if progress is not None:
-                    progress(
+            try:
+                for trial_index in range(max(1, run_config.trials)):
+                    if cancel is not None and cancel.is_set():
+                        cancelled = True
+                        event_logger.log("run_cancelled", {"reason": "operator cancel"}, level="warn")
+                        break
+                    trial_id = f"{scenario.scenario_id}#t{trial_index + 1}"
+                    _safe_progress(
+                        progress,
                         {
                             "type": "trial_start",
                             "run_id": run_id,
@@ -197,29 +213,32 @@ class BenchmarkRunner:
                             "trials": run_config.trials,
                             "trial_id": trial_id,
                             "phase": "provision",
-                        }
+                        },
                     )
-                trial = await self._run_trial(
-                    scenario,
-                    trial_index,
-                    trial_id,
-                    manager,
-                    mission,
-                    event_logger,
-                    run_id=run_id,
-                    run_dir=run_dir,
-                    sandbox_required=sandbox_required,
-                    sandbox_shortfall=sandbox_shortfall,
-                    progress=progress,
-                )
-                trials.append(trial)
-                self.storage.write_trial(run_config.suite, run_id, trial)
-            manager.destroy_all()
+                    trial = await self._run_trial(
+                        scenario,
+                        trial_index,
+                        trial_id,
+                        manager,
+                        mission,
+                        event_logger,
+                        run_id=run_id,
+                        run_dir=run_dir,
+                        sandbox_required=sandbox_required,
+                        sandbox_shortfall=sandbox_shortfall,
+                        progress=progress,
+                    )
+                    trials.append(trial)
+                    self.storage.write_trial(run_config.suite, run_id, trial)
+                if cancelled:
+                    break
+            finally:
+                manager.destroy_all()
 
         # Aggregate + persist.
         meta = {s.scenario_id: {"name": s.name, "difficulty": s.difficulty, "tags": s.tags} for s in scenarios}
         summary = compute_run_summary(trials, run_id=run_id, suite=run_config.suite, scenario_meta=meta)
-        status = "cancelled" if (cancel is not None and cancel.is_set()) else "completed"
+        status = "cancelled" if cancelled else "completed"
         manifest = build_replay_manifest(
             run_id, run_config.suite, run_config, environment, target_images=environment.target_images
         )

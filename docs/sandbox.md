@@ -271,6 +271,7 @@ sandbox:
     pids: 512
     timeout_seconds: 300       # per-command default
     output_max_bytes: 2000000
+    tmpfs_size_mb: 256         # /tmp tmpfs size (MB, min 64)
   network:
     enforce: true              # false = no netns firewall (NOT containment)
     fail_closed: true
@@ -284,6 +285,8 @@ sandbox:
     remove_stale_on_startup: true
   multi_net_raw: true          # NET_RAW for raw packet scanning
 ```
+
+The worker's `/tmp` is a tmpfs sized by `sandbox.resources.tmpfs_size_mb` (default 256m, minimum 64m; invalid values fall back to the default, never to host execution). Raise it when staging msfvenom payloads or spilling large wordlists to `/tmp`; the `rw,noexec,nosuid` flags stay fixed regardless of size.
 
 ## Threat model coverage
 

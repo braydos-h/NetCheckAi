@@ -282,6 +282,7 @@ class SandboxManager:
                 cpus=self.cfg.cpus,
                 pids_limit=self.cfg.pids_limit,
                 read_only_rootfs=self.cfg.read_only_rootfs,
+                tmpfs_size_mb=self.cfg.tmpfs_size_mb,
                 labels={"run_id": self.run_id},
             )
             self.container_id = self.backend.create_worker(spec, read_only_rootfs=self.cfg.read_only_rootfs)

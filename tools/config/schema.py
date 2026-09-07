@@ -875,6 +875,8 @@ CONFIG_SCHEMA: dict[str, Any] = {
             "pids": 512,
             "timeout_seconds": 300,
             "output_max_bytes": 2000000,
+            # /tmp tmpfs size (MB) for the disposable worker; invalid/low values fall back to 256/64MB floor, never host exec.
+            "tmpfs_size_mb": 256,
         },
         "network": {
             "enforce": True,

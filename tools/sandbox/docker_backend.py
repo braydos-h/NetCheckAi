@@ -228,6 +228,15 @@ def _validate_container_id(container_id: str) -> str:
     return cid
 
 
+def _tmpfs_size_mb(spec: SandboxSpec) -> int:
+    """Clamp the /tmp tmpfs size to >=64MB; invalid values fall back to 256 (fail closed)."""
+    try:
+        size = int(getattr(spec, "tmpfs_size_mb", 256) or 256)
+    except (TypeError, ValueError):
+        return 256
+    return size if size >= 64 else 64
+
+
 def _build_create_args(spec: SandboxSpec, *, cap_raw: bool, read_only_rootfs: bool) -> list[str]:
     """The hardened ``docker create`` argv. Pure function -- fully unit-tested.
 
@@ -274,7 +283,7 @@ def _build_create_args(spec: SandboxSpec, *, cap_raw: bool, read_only_rootfs: bo
         "--pids-limit",
         str(int(spec.pids_limit)),
         "--tmpfs",
-        "/tmp:rw,noexec,nosuid,size=256m",
+        f"/tmp:rw,noexec,nosuid,size={_tmpfs_size_mb(spec)}m",
         "-v",
         f"{src}:/workspace:rw",
         "-w",
