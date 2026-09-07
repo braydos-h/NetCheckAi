@@ -2239,7 +2239,8 @@ perform_uninstall() {
         ok "removed $target"
     fi
     # Restore preserved data next to the install location.
-    local restore_base="$(dirname "$target")/breachpilot-user-data"
+    local restore_base=""
+    restore_base="$(dirname "$target")/breachpilot-user-data"
     if [[ -n "$(ls -A "$keep" 2>/dev/null)" ]]; then
         mkdir -p "$restore_base" 2>/dev/null || true
         cp -a "$keep/." "$restore_base/" 2>/dev/null || warn "could not restore user data — staged copy retained."
