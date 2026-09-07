@@ -39,7 +39,7 @@ def _default_ui() -> Any:
 def _default_config_loader(path: Path | str) -> dict[str, Any]:
     from tools.kernel.config import load_config
 
-    return load_config(path)
+    return load_config(Path(path))
 
 
 def _default_open_mcp_session(**kwargs: Any) -> Any:
