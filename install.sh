@@ -1734,6 +1734,12 @@ validate_installation() {
     info "[9/9] Validation"
     local failures=0
 
+    # Dry-run: state what WOULD be validated, check nothing.
+    if is_dry_run; then
+        info "[dry-run] would validate: tree + venv imports + config + launcher + WebUI + doctor"
+        return 0
+    fi
+
     # 1. Expected tree.
     local f=""
     for f in main.py pyproject.toml requirements.txt config.yaml mission.yaml tools mcp_server.py mcp_exploit_server.py; do
@@ -1744,12 +1750,17 @@ validate_installation() {
     done
     [[ "$failures" == "0" ]] && ok "repository structure"
 
-    # 2. Venv interpreter + core imports.
-    if [[ ! -x "$BP_RUN_PY" ]]; then
-        record_error "venv interpreter missing: $BP_RUN_PY"
+    # 2. Venv interpreter + core imports (resolve default .venv when the
+    #    caller left the system python as RUN_PY, e.g. checkout installs).
+    local validate_py="$BP_RUN_PY"
+    if [[ ! -x "$validate_py" && -x "$BP_SOURCE_DIR/${VENV:-.venv}/bin/python" ]]; then
+        validate_py="$BP_SOURCE_DIR/${VENV:-.venv}/bin/python"
+    fi
+    if [[ ! -x "$validate_py" ]]; then
+        record_error "venv interpreter missing: $validate_py"
         failures=$((failures + 1))
-    elif ! "$BP_RUN_PY" -c 'import yaml, mcp, uvicorn, fastapi, websockets, questionary, numpy, cryptography' >>"$BP_LOG_FILE" 2>&1; then
-        record_error "core Python imports failed in $BP_RUN_PY"
+    elif ! "$validate_py" -c 'import yaml, mcp, uvicorn, fastapi, websockets, questionary, numpy, cryptography' >>"$BP_LOG_FILE" 2>&1; then
+        record_error "core Python imports failed in $validate_py"
         failures=$((failures + 1))
     else
         ok "venv + core imports"
@@ -1791,10 +1802,6 @@ validate_installation() {
 
     # 6. --doctor --json: machine-readable verdict (excluding AI-provider auth
     #    and sandbox-image states, which need keys/docker at runtime).
-    if is_dry_run; then
-        info "[dry-run] would run: python main.py --doctor"
-        return 0
-    fi
     local doctor_json=""
     doctor_json="$(make_temp_dir doctor)/doctor.json"
     local doctor_rc=0

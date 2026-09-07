@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -115,6 +115,7 @@ function isTypingTarget(el: Element | null) {
 export function HelpPage() {
   const [query, setQuery] = useState("");
   const [showResults, setShowResults] = useState(false);
+  const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const searchWrapRef = useRef<HTMLDivElement>(null);
   const [expandedTrouble, setExpandedTrouble] = useState<Set<string>>(new Set());
