@@ -25,6 +25,7 @@ export function ArtifactsPage() {
   const [tab, setTab] = useState("artifacts");
   const artifacts = useArtifacts(runId ?? null);
   const audit = useAudit(runId ?? null, tab === "audit");
+  const workspace = useWorkspace(runId ?? null);
   const [selected, setSelected] = useState<string>("");
 
   const artifactNames = artifacts.data?.artifacts.map((a) => a.name) ?? [];
@@ -34,23 +35,25 @@ export function ArtifactsPage() {
     [artifacts.data],
   );
 
+  // The artifacts endpoint returns run-level names only — attempt dirs come
+  // from the workspace listing, split on "/" (no regex needed).
   const attemptCandidates = useMemo(() => {
     const out: Array<{ target: string; attempt: string }> = [];
     const seen = new Set<string>();
-    for (const name of artifactNames) {
-      const match = name.match(/^exploit_workspace\/(?:(?<ip>[^/]+)\/)?(?<attempt>[^/]+)\//);
-      if (match && match.groups) {
-        const ip = match.groups.ip ?? "_root_";
-        const attempt = match.groups.attempt ?? "";
-        const key = `${ip}|${attempt}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          out.push({ target: ip, attempt });
-        }
+    for (const f of workspace.data?.files ?? []) {
+      const parts = f.path.split("/");
+      if (parts[0] !== "exploit_workspace" || parts.length < 3) continue;
+      const target = parts[1] ?? "";
+      const attempt = parts[2] ?? "";
+      if (!target || !attempt) continue;
+      const key = `${target}|${attempt}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ target, attempt });
       }
     }
     return out;
-  }, [artifactNames]);
+  }, [workspace.data]);
 
   return (
     <div className="space-y-4 p-4 md:p-6">
@@ -277,10 +280,9 @@ function LogsPanel({ runId, attemptCandidates }: LogsPanelProps) {
       </div>
 
       {isAttemptLog && attemptCandidates.length === 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-          Per-attempt logs require attempt_id and target_ip. The artifacts endpoint does not list attempt
-          directories, so these values must come from the run. If none are shown, the API path may not match
-          the workspace layout for this run.
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-200">
+          Per-attempt logs require attempt_id and target_ip. No attempt directories were found in the
+          workspace listing yet — they appear once the run writes exploit output.
         </div>
       )}
 

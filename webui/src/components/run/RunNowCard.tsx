@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Clock, Cpu, Layers, MessageSquare, Sparkles, Terminal } from "lucide-react";
-import { cn, formatRelative } from "@/lib/utils";
+import { cn, formatRelative, truncate } from "@/lib/utils";
 import { fmtElapsed } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,11 +11,6 @@ interface RunNowCardProps {
   derived: DerivedRun;
   active: boolean;
   state: RunState;
-}
-
-function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
-  return one.length <= n ? one : `${one.slice(0, n - 1)}…`;
 }
 
 /**

@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, Clock, Loader2, Network, Wrench, XCircle } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, truncate } from "@/lib/utils";
 import { useCallTool, useFetchArtifactBlob } from "@/api/hooks";
 import { ApiError } from "@/api/client";
 import type {
@@ -89,7 +89,15 @@ export function AttackGraph({ runId, className, ready = true }: AttackGraphProps
       </div>
     );
   }
-  if (!report) return null;
+  // Never blank — a null report with no error/loading state means the fetch
+  // resolved empty; say so instead of rendering nothing.
+  if (!report) {
+    return (
+      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+        No attack-path report available for this run yet.
+      </div>
+    );
+  }
 
   const chains = report.exploitation_chains ?? [];
   const findings = report.technical_findings ?? [];
@@ -373,10 +381,6 @@ function FindingsTable({ findings, runId }: { findings: TechnicalFinding[]; runI
       </CardContent>
     </Card>
   );
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 
 // ── Attack timeline ─────────────────────────────────────────────────────────

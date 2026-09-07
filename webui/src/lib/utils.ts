@@ -11,6 +11,12 @@ export function truncateId(id: string, head = 8, tail = 4): string {
   return `${id.slice(0, head)}\u2026${id.slice(-tail)}`;
 }
 
+/** Collapse whitespace and truncate with an ellipsis. */
+export function truncate(s: string, n: number): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length <= n ? one : `${one.slice(0, n - 1)}\u2026`;
+}
+
 export function formatRelative(iso: string): string {
   if (!iso) return "\u2014";
   const then = new Date(iso);

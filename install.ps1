@@ -1322,19 +1322,22 @@ function Backup-BreachPilotInstall {
     $leaf = Split-Path -Leaf $InstallDir
     $backup = Join-Path $parent "$leaf.backup-$stamp"
     Write-Prog "Backing up existing installation to $backup ..."
-    $exclude = @(".venv", "venv", "__pycache__", ".git", "node_modules", "webui\node_modules", "webui\dist", ".mypy_cache", ".ruff_cache", ".pytest_cache")
+    $excludeTop = @(".venv", "venv", "__pycache__", ".git", "node_modules",
+        ".mypy_cache", ".ruff_cache", ".pytest_cache",
+        $script:StateFileName, ($script:StateFileName + ".backup"))
+    $excludeWeb = @("node_modules", "dist")
     try {
         New-Item -ItemType Directory -Path $backup -Force | Out-Null
         $items = Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction Stop
         foreach ($item in $items) {
-            if ($exclude -contains $item.Name) { continue }
+            if ($excludeTop -contains $item.Name) { continue }
             $rel = $item.Name
-            if (($InstallDir + "\webui") -eq $item.FullName) {
-                # webui: copy everything except node_modules/dist.
+            if (($item.PSIsContainer) -and ($item.Name -eq "webui")) {
+                # webui: copy everything except node_modules/dist (rebuildable).
                 $destWeb = Join-Path $backup "webui"
                 New-Item -ItemType Directory -Path $destWeb -Force | Out-Null
                 foreach ($w in (Get-ChildItem -LiteralPath $item.FullName -Force)) {
-                    if ($exclude -contains $w.Name) { continue }
+                    if ($excludeWeb -contains $w.Name) { continue }
                     Copy-Item -LiteralPath $w.FullName -Destination (Join-Path $destWeb $w.Name) -Recurse -Force
                 }
                 continue
@@ -1684,7 +1687,7 @@ function Install-PythonEnvironment {
 }
 
 function Test-VenvHealthy {
-    param([string]$VenvPython, [string]$InstallDir)
+    param([string]$VenvPython)
     if ([string]::IsNullOrWhiteSpace($VenvPython)) { return @{ Healthy = $false; Reason = "no venv python path" } }
     if (-not (Test-Path -LiteralPath $VenvPython)) { return @{ Healthy = $false; Reason = "venv interpreter missing: $VenvPython" } }
     try {
@@ -1726,7 +1729,7 @@ function Install-VenvAndDeps {
     )
     $venvDir = Join-Path $InstallDir ".venv"
     $venvPy = Join-Path $venvDir "Scripts\python.exe"
-    $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+    $health = Test-VenvHealthy -VenvPython $venvPy
     if ([bool](Get-PropValue -Object $health -Name "Healthy" -Default $false) -and -not [bool](Get-PropValue -Object $health -Name "NeedsDeps" -Default $false) -and -not $Force) {
         $r = Invoke-ExternalCommand -Command $venvPy -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
         Write-Ok "venv healthy ($($r.StdOut.Trim())), deps present — skipping recreate."
@@ -1756,7 +1759,7 @@ function Install-VenvAndDeps {
                 throw "venv creation failed: $($_.Exception.Message). On Windows this usually means the Python install lacks venv support — reinstall Python from python.org (not the Store) and re-run."
             }
         }
-        $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+        $health = Test-VenvHealthy -VenvPython $venvPy
         if (-not [bool](Get-PropValue -Object $health -Name "Healthy" -Default $false) -and -not [bool](Get-PropValue -Object $health -Name "NeedsDeps" -Default $false)) {
             throw "venv created but unusable: $([string](Get-PropValue -Object $health -Name "Reason" -Default "unknown"))"
         }
@@ -1879,7 +1882,7 @@ function Test-NodeInstall {
 }
 
 function Install-WebUI {
-    param([string]$InstallDir, [string]$VenvPython)
+    param([string]$InstallDir)
     if ($SkipWebUI) {
         Write-Skip "WebUI build skipped (-SkipWebUI). The app lazy-builds on first 'python main.py --web' if Node is added later."
         return @{ Built = $false; Skipped = $true }
@@ -2311,7 +2314,7 @@ function Install-SandboxImage {
 # ---------------------------------------------------------------------------
 
 function Test-ApiKeySetup {
-    param([string]$InstallDir, [string]$VenvPython)
+    param([string]$InstallDir)
     $active = Get-ActiveProvider -InstallDir $InstallDir
     # Map active provider -> required env (optional keys are never demanded).
     $required = @()
@@ -2357,7 +2360,7 @@ function Test-ApiKeySetup {
 
 function Request-ApiKeySetup {
     param([string]$InstallDir, [string]$VenvPython)
-    $st = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
+    $st = Test-ApiKeySetup -InstallDir $InstallDir
     $__stMissing = @(Get-PropValue -Object $st -Name "Missing" -Default @())
     if ($__stMissing.Count -eq 0) {
         $__stNote = [string](Get-PropValue -Object $st -Name "Note" -Default "")
@@ -2375,8 +2378,8 @@ function Request-ApiKeySetup {
     $ans = Read-Host "   Launch the secure key setup now (python main.py --setup-api-keys)? [y/N]"
     if ($ans -match "^(?i:y|yes)$") {
         try {
-            Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--setup-api-keys") -TimeoutSeconds 300 -StreamOutput | Out-Null
-            $again = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
+            Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--setup-api-keys") -TimeoutSeconds 300 -StreamOutput -WorkingDirectory $InstallDir | Out-Null
+            $again = Test-ApiKeySetup -InstallDir $InstallDir
             $__againMissing = @(Get-PropValue -Object $again -Name "Missing" -Default @("?"))
             if ($__againMissing.Count -eq 0) { Write-Ok "Provider key configured." }
         } catch {
@@ -2405,7 +2408,7 @@ function Install-Launcher {
         install dir is recorded once at generation; -Repair rewrites them if the
         install moved. Per-user PATH only; machine PATH is never touched.
     #>
-    param([string]$InstallDir, [string]$VenvPython)
+    param([string]$InstallDir)
     $binDir = Get-LauncherDir
     if ($NoPath) {
         Write-Skip "Launcher PATH install skipped (-NoPath). In-install launchers still written under $InstallDir."
@@ -2849,7 +2852,7 @@ function Invoke-CheckMode {
     $py = Find-BestPython
     if ($null -ne $py) { Write-Ok "Python $((Get-PropValue -Object $py -Name "Version" -Default "?")) ($((Get-PropValue -Object $py -Name "Command" -Default "?")))" } else { Write-Warn "No compatible Python (>= 3.11) found" }
     $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
-    $vh = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
+    $vh = Test-VenvHealthy -VenvPython $venvPy
     if ($vh.Healthy -and -not $vh.NeedsDeps) { Write-Ok "venv healthy" }
     elseif ($vh.Healthy) { Write-Warn "venv works but project deps missing" }
     else { Write-Info "venv: $($vh.Reason)" }
@@ -3014,9 +3017,9 @@ function Invoke-RepairMode {
     $venvPy = Install-VenvAndDeps -Python $py -InstallDir $InstallDir
     Install-NmapIfNeeded -InstallDir $InstallDir | Out-Null
     Install-OllamaIfNeeded -InstallDir $InstallDir | Out-Null
-    $webui = Install-WebUI -InstallDir $InstallDir -VenvPython $venvPy
+    $webui = Install-WebUI -InstallDir $InstallDir
     Install-SandboxImage -InstallDir $InstallDir | Out-Null
-    Install-Launcher -InstallDir $InstallDir -VenvPython $venvPy | Out-Null
+    Install-Launcher -InstallDir $InstallDir | Out-Null
     $binDir = Get-LauncherDir
     Add-UserPath -Entry $binDir | Out-Null
     Request-ApiKeySetup -InstallDir $InstallDir -VenvPython $venvPy
@@ -3041,9 +3044,7 @@ function Invoke-RepairMode {
 function Show-FinalSummary {
     param(
         [string]$InstallDir,
-        [string]$VenvPython,
         [pscustomobject]$Resolved,
-        [string]$ArchiveSha256,
         [hashtable]$Sandbox,
         [hashtable]$WebUI,
         [string]$DoctorStatus,
@@ -3141,11 +3142,12 @@ function Invoke-Main {
         Write-Step "Verifying install + repairing"
         $res = Invoke-RepairMode -InstallDir $installDir
         Write-StepDone
-        Show-FinalSummary -InstallDir $installDir -VenvPython $res.VenvPython -Resolved (
+        $__resCode = [int](Get-PropValue -Object $res -Name "Code" -Default 1)
+        Show-FinalSummary -InstallDir $installDir -Resolved (
             [pscustomobject]@{ Tag = ""; Sha = "unknown"; Channel = "Repair" }
-        ) -ArchiveSha256 "" -Sandbox @{ Status = "see-above" } -WebUI @{ Built = $false; Skipped = $true } `
-            -DoctorStatus $(if ($res.Code -eq 0) { "PASS" } else { "FAIL" }) -ExitCode $res.Code
-        return $res.Code
+        ) -Sandbox @{ Status = "see-above" } -WebUI @{ Built = $false; Skipped = $true } `
+            -DoctorStatus $(if ($__resCode -eq 0) { "PASS" } else { "FAIL" }) -ExitCode $__resCode
+        return $__resCode
     }
 
     # ---- Install / Update shared flow ----
@@ -3380,7 +3382,7 @@ function Invoke-Main {
     Write-StepDone
 
     Write-Step "WebUI"
-    $webuiResult = Install-WebUI -InstallDir $installDir -VenvPython $venvPython
+    $webuiResult = Install-WebUI -InstallDir $installDir
     Write-StepDone
 
     Write-Step "Docker sandbox"
@@ -3388,7 +3390,7 @@ function Invoke-Main {
     Write-StepDone
 
     Write-Step "Launcher"
-    Install-Launcher -InstallDir $installDir -VenvPython $venvPython | Out-Null
+    Install-Launcher -InstallDir $installDir | Out-Null
     $binDir = Get-LauncherDir
     $pathRes = Add-UserPath -Entry $binDir
     Install-Shortcuts -InstallDir $installDir
@@ -3415,8 +3417,8 @@ function Invoke-Main {
             try {
                 Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $deployBackupDir
                 Write-InstallState -InstallDir $installDir -State "rollback"
-                Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
-                    -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+                Show-FinalSummary -InstallDir $installDir -Resolved $resolved `
+                    -Sandbox $sandboxResult -WebUI $webuiResult `
                     -DoctorStatus "ROLLED BACK" -ExitCode $script:ExitRolledBack
                 return $script:ExitRolledBack
             } catch {
@@ -3425,8 +3427,8 @@ function Invoke-Main {
             }
         }
         Write-InstallState -InstallDir $installDir -State "completed"
-        Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
-            -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+        Show-FinalSummary -InstallDir $installDir -Resolved $resolved `
+            -Sandbox $sandboxResult -WebUI $webuiResult `
             -DoctorStatus $doctorStatus -ExitCode $script:ExitDoctor
         return $script:ExitDoctor
     }
@@ -3479,8 +3481,8 @@ function Invoke-Main {
     }
     Write-Host ""
     Write-Host "Status: $statusLabel" -ForegroundColor $(if ($finalCode -eq 0) { "Green" } else { "Yellow" })
-    Show-FinalSummary -InstallDir $installDir -VenvPython $venvPython -Resolved $resolved `
-        -ArchiveSha256 $archiveSha -Sandbox $sandboxResult -WebUI $webuiResult `
+    Show-FinalSummary -InstallDir $installDir -Resolved $resolved `
+        -Sandbox $sandboxResult -WebUI $webuiResult `
         -DoctorStatus $doctorStatus -ExitCode $finalCode
 
     # Launch offer (interactive installs only; never in -Yes/-NoLaunch/remote).
@@ -3493,9 +3495,9 @@ function Invoke-Main {
         Write-Host "   [3] No — exit installer"
         $choice = Read-Host " Choice [1/2/3, default 3]"
         if ($choice -eq "1") {
-            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--menu") -TimeoutSeconds 86400 -StreamOutput | Out-Null } catch { }
+            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--menu") -TimeoutSeconds 86400 -StreamOutput -WorkingDirectory $installDir | Out-Null } catch { }
         } elseif ($choice -eq "2") {
-            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--web") -TimeoutSeconds 86400 -StreamOutput | Out-Null } catch { }
+            try { Invoke-ExternalCommand -Command $venvPython -Arguments @("main.py", "--web") -TimeoutSeconds 86400 -StreamOutput -WorkingDirectory $installDir | Out-Null } catch { }
         } else {
             Write-Host " Exit. Run bp (or START.bat) when ready."
         }

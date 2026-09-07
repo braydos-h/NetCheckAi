@@ -180,7 +180,9 @@ export function BenchmarkRunPage() {
     refetchInterval: (query) => {
       const data = query.state.data as RunDetail | undefined;
       if (!data) return REFRESH_MS;
-      if (query.state.isPlaceholderData) return REFRESH_MS;
+      // No isPlaceholderData on QueryState in v5 — dataUpdatedAt === 0 means
+      // only placeholder data has arrived, so keep polling for the real row.
+      if (query.state.dataUpdatedAt === 0) return REFRESH_MS;
       return isRunActive(data.status) ? REFRESH_MS : false;
     },
   });

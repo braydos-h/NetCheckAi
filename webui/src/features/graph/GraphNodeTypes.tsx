@@ -1,8 +1,29 @@
 import { memo } from "react";
 import type { NodeProps } from "reactflow";
+import { BadgeCheck, Ban, CircleHelp, Eye, GitBranch, SearchCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { GraphExplorerNode } from "@/features/graph/graphTypes";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { GraphExplorerNode, GraphNodeStatus } from "@/features/graph/graphTypes";
 import { nodeTypeMeta, severityMeta, statusMeta } from "@/features/graph/graphTransforms";
+
+// Status icons shared with GraphLegend — status is never color-alone.
+export function statusIcon(status: GraphNodeStatus) {
+  switch (status) {
+    case "confirmed":
+      return BadgeCheck;
+    case "likely":
+      return SearchCheck;
+    case "suspected":
+      return Eye;
+    case "refuted":
+      return Ban;
+    case "exhausted":
+      return GitBranch;
+    case "unknown":
+    default:
+      return CircleHelp;
+  }
+}
 
 export interface GraphFlowNodeData {
   label: string;
@@ -34,9 +55,21 @@ export const GraphFlowNode = memo(function GraphFlowNode({ data, selected }: Nod
   const severity = typeof props.severity === "string" && props.severity ? (props.severity as string) : null;
   const sevMeta = severity ? severityMeta(severity) : null;
   const Icon = meta.icon;
+  const StatusIcon = statusIcon(data.node.status);
   const isSelected = selected || data.selected;
+  const detailLabel = [
+    `${meta.label}: ${data.node.value}`,
+    data.node.status !== "unknown" ? `Status ${status.label}` : null,
+    severity ? `Severity ${severity}` : null,
+    cvss !== null ? `CVSS ${cvss.toFixed(1)}` : null,
+    `${data.node.evidence_refs.length} evidence refs`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
+    <Tooltip>
+      <TooltipTrigger asChild>
     <div
       data-id={data.node.node_id}
       role="button"
@@ -69,42 +102,41 @@ export const GraphFlowNode = memo(function GraphFlowNode({ data, selected }: Nod
         )}
       </div>
       <div className="flex flex-wrap items-center gap-1">
-        <span
-          className="rounded bg-black/20 px-1 text-[9px] uppercase tracking-wide dark:bg-white/10"
-          style={{ color: meta.color }}
-        >
+        <span className="rounded bg-black/20 px-1 text-[9px] uppercase tracking-wide text-muted-foreground dark:bg-white/10">
+          <span className="mr-0.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ background: meta.color }} aria-hidden />
           {meta.label}
         </span>
         {data.start && (
-          <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+          <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
             start
           </span>
         )}
         {data.end && (
-          <span className="rounded bg-rose-500/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-rose-300">
+          <span className="rounded bg-rose-500/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">
             dest
           </span>
         )}
         {status.label !== "Unknown" && (
-          <span
-            className="rounded bg-black/20 px-1 text-[9px] uppercase tracking-wide dark:bg-white/10"
-            style={{ color: status.color }}
-          >
+          <span className="rounded bg-black/20 px-1 text-[9px] uppercase tracking-wide text-muted-foreground dark:bg-white/10">
+            <StatusIcon className="mr-0.5 inline h-2.5 w-2.5 align-middle" style={{ color: status.color }} aria-hidden />
             {status.label}
           </span>
         )}
         {cvss !== null && (
-          <span className="rounded bg-black/20 px-1 text-[9px] tabular-nums dark:bg-white/10">CVSS {cvss.toFixed(1)}</span>
+          <span className="rounded bg-black/20 px-1 text-[9px] tabular-nums text-muted-foreground dark:bg-white/10">CVSS {cvss.toFixed(1)}</span>
         )}
         {severity && sevMeta && (
-          <span
-            className="rounded bg-black/20 px-1 text-[9px] uppercase dark:bg-white/10"
-            style={{ color: sevMeta.color }}
-          >
+          <span className="rounded bg-black/20 px-1 text-[9px] uppercase text-muted-foreground dark:bg-white/10">
+            <span className="mr-0.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ background: sevMeta.color }} aria-hidden />
             {severity}
           </span>
         )}
       </div>
     </div>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[16rem]">
+        {detailLabel}
+      </TooltipContent>
+    </Tooltip>
   );
 });

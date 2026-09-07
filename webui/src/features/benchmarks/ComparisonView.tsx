@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, Loader2, Minus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn, formatRelative } from "@/lib/utils";
+import { formatRelative } from "@/lib/utils";
 import { formatCost, formatDuration, formatPct } from "@/features/benchmarks/MetricCards";
 import { StatusBadge } from "@/features/benchmarks/ScenarioResultsTable";
 import { compareRuns } from "@/features/benchmarks/api";

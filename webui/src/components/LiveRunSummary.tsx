@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   Terminal,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, truncate } from "@/lib/utils";
 import { fmtElapsed } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -21,11 +21,6 @@ interface LiveRunSummaryProps {
   derived: DerivedRun;
   runState?: RunState;
   className?: string;
-}
-
-function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
-  return one.length <= n ? one : `${one.slice(0, n - 1)}…`;
 }
 
 /**

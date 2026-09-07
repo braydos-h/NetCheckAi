@@ -137,7 +137,7 @@ export const POLL_IDLE = 60_000;
 
 /** Poll `fast` while the cached run is active (or unknown), else freeze. */
 export function activeRunPoll(
-  qc: { getQueryData: <T>(key: unknown) => T | undefined },
+  qc: Pick<ReturnType<typeof useQueryClient>, "getQueryData">,
   runId: string | null | undefined,
   fast: number = POLL_SLOW,
 ): number | false {

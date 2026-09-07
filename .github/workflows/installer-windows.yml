@@ -1,0 +1,103 @@
+name: Windows installer
+
+# Validates install.ps1 without performing any install: parse check,
+# PSScriptAnalyzer (errors only + unused-param hygiene), the Pester unit
+# suite (mocked, no network/installs), the pytest static-contract suite,
+# and the install.bat wrapper shape. Never downloads, installs, or mutates.
+#
+# The full mocked pytest suite, lint, types, and package jobs live in ci.yml.
+
+on:
+  push:
+    paths:
+      - "install.ps1"
+      - "install.bat"
+      - "tests/Test-InstallHelpers.ps1"
+      - "tests/test_install_ps1.py"
+      - ".github/workflows/installer-windows.yml"
+  pull_request:
+    paths:
+      - "install.ps1"
+      - "install.bat"
+      - "tests/Test-InstallHelpers.ps1"
+      - "tests/test_install_ps1.py"
+      - ".github/workflows/installer-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate install.ps1 (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Parser check (PowerShell 5.1 + 7)
+        shell: powershell
+        run: |
+          $errs = $null; $toks = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$env:GITHUB_WORKSPACE/install.ps1", [ref]$toks, [ref]$errs)
+          if ($errs.Count -gt 0) {
+            $errs | ForEach-Object { Write-Host "L$($_.Extent.StartLineNumber): $($_.Message)" }
+            exit 1
+          }
+          Write-Host "Parser: OK (Windows PowerShell $($PSVersionTable.PSVersion))"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PSScriptAnalyzer (errors + unused params)
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          $errs = Invoke-ScriptAnalyzer -Path "$env:GITHUB_WORKSPACE/install.ps1" -Severity Error
+          if ($errs) { $errs | Format-Table -AutoSize Line, RuleName, Message | Out-String | Write-Host; exit 1 }
+          $unused = Invoke-ScriptAnalyzer -Path "$env:GITHUB_WORKSPACE/install.ps1" -IncludeRule PSReviewUnusedParameter
+          # Script-level switch params are consumed via scope lookup inside
+          # functions (PSSA cannot see that); only flag FUNCTION params.
+          $funcUnused = $unused | Where-Object { $_.Line -gt 190 }
+          if ($funcUnused) { $funcUnused | Format-Table -AutoSize Line, Message | Out-String | Write-Host; exit 1 }
+          # Write-Host is the installer's intentional terminal UX (every status
+          # line is also logged via Write-Log); assert the pairing instead of
+          # banning it.
+          $hosts = (Select-String -LiteralPath "$env:GITHUB_WORKSPACE/install.ps1" -Pattern "Write-Host").Count
+          $logs = (Select-String -LiteralPath "$env:GITHUB_WORKSPACE/install.ps1" -Pattern "Write-Log").Count
+          Write-Host "Write-Host: $hosts, Write-Log: $logs"
+          if ($logs -lt $hosts) { Write-Host "Every Write-Host should have a Write-Log pairing"; exit 1 }
+          Write-Host "PSScriptAnalyzer: OK ($($PSVersionTable.PSVersion))"
+      - name: Pester unit tests (mocked, no installs)
+        shell: pwsh
+        run: |
+          Install-Module Pester -Force -Scope CurrentUser -SkipPublisherCheck -MinimumVersion 5.0
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = "$env:GITHUB_WORKSPACE/tests/Test-InstallHelpers.ps1"
+          $cfg.Output.Verbosity = "Detailed"
+          $cfg.Run.Exit = $true
+          Invoke-Pester -Configuration $cfg
+      - name: install.bat wrapper shape
+        shell: powershell
+        run: |
+          $bat = Get-Content -LiteralPath "$env:GITHUB_WORKSPACE/install.bat" -Raw
+          if ($bat -notmatch "install\.ps1") { Write-Host "install.bat must delegate to install.ps1"; exit 1 }
+          $lines = ($bat -split "`r?`n").Count
+          Write-Host "install.bat: $lines lines"
+          if ($lines -ge 150) { Write-Host "install.bat must stay a thin wrapper (<150 lines)"; exit 1 }
+          if ($bat -notmatch "exit /b %INSTALL_RC%") { Write-Host "install.bat must propagate the exit code"; exit 1 }
+          Write-Host "install.bat wrapper: OK"
+
+  contract:
+    name: Installer contract (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Static contract tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pytest tests/test_install_ps1.py -v
