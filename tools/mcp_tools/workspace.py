@@ -9,7 +9,10 @@ Tool-type classification (gates):
 - ``run_python_file`` -- declarative ``target_ip`` param: ``@require_allowlist()`` on the
   structured target PLUS a manual ``_target_lock_block`` scan of the FULL script body
   (stored code executes verbatim, so without the body scan it would be a trivial pivot
-  bypass). Scanner-verb extraction stays OFF for Python source (shell argv heuristic
+  bypass) PLUS a runtime socket-egress guard (``egress_guard`` preamble wraps
+  ``socket.connect``/``create_connection`` in the child, so argv/concat/decode-built
+  destinations are denied at connect time however they were constructed).
+  Scanner-verb extraction stays OFF for Python source (shell argv heuristic
   misfires on ``.py``). The gate always sees the full body; only display OUTPUT tails
   are truncated (with a ``[truncated]`` marker).
 - ``read_workspace_file`` / ``list_workspace`` -- local-only: ``@audit_tool`` ONLY, never
@@ -30,9 +33,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tools.kernel.allowlist import _allowed_target_list
 from tools.kernel.audit import _mask_secret_content
 from tools.kernel.workspace import read_workspace
 from tools.mcp_shared import _attempt_dir, _resolve_workspace_file
+from tools.mcp_tools.egress_guard import build_egress_preamble, egress_denied_in_output
 from tools.mcp_tools.registry import ToolContext, run_argv_captured
 from tools.mcp_tools.terminal import _target_lock_block
 from tools.validation_utils import validate_target_or_ip
@@ -265,9 +270,10 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         # 4444)) or os.system("nc <other_ip>")) must be gated the same way
         # run_exploit_terminal gates shell commands -- otherwise run_python_file
         # is a trivial bypass of the target-IP lock.
-        # ponytail: static body scan, same ceiling as terminal._target_lock_block
-        # -- catches literal IPs/URLs; a dynamically-constructed or DNS-resolved
-        # destination is not caught (raise via allowed_targets or accept the gap).
+        # Layer 1 (static): literal IPs/URLs in the FULL body.
+        # Layer 2 (runtime): the egress-guard preamble wraps socket.connect in
+        # the child, so argv/concat/decode-built destinations are denied at
+        # connect time however they were constructed.
         # Scanner-verb extraction is off here: that argv heuristic is built for
         # shell, and on Python source it misfires (an "nmap -sV" mention in a
         # comment plus "s.settimeout(...)" blocks the script as "Target
@@ -280,6 +286,19 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         _block = _target_lock_block(_body, config, allow_empty=True, include_scanner_targets=False)
         if _block:
             return f"BLOCKED: {_block}\nTOOL: run_python_file\nSCRIPT: {cleaned}"
+        # Runtime egress guard: same effective union the static gate enforced.
+        _egress_preamble = build_egress_preamble(_allowed_target_list(config))
+
+        def _denied_block(_captured_text: str) -> str | None:
+            """Clean BLOCKED result when the child egress guard fired, else None."""
+            _denied_host = egress_denied_in_output(_captured_text)
+            if _denied_host is None:
+                return None
+            return (
+                f"BLOCKED: runtime egress guard denied socket connection to {_denied_host} "
+                f"(not in the explicit allowlist). Add it to config.yaml exploit.allowed_targets "
+                f"to authorize.\nTOOL: run_python_file\nSCRIPT: {cleaned}"
+            )
 
         log_path = attempt_dir / "python_run.log"
 
@@ -298,9 +317,17 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 sandbox.container_path(attempt_dir)
             except SandboxError as exc:
                 return f"BLOCKED: {exc}\nTOOL: run_python_file"
+            # The egress-guard preamble runs first inside the worker's python
+            # (same argv contract: sys.argv is pinned explicitly below).
+            _sandbox_bootstrap = (
+                f"{_egress_preamble}"
+                "import runpy as _runpy; "
+                f"_runpy.run_path({container_script!r}, run_name='__main__')"
+            )
             _argv = [
                 "python3",
-                container_script,
+                "-c",
+                _sandbox_bootstrap,
                 str(target_ip),
                 "--target",
                 str(target_ip),
@@ -319,6 +346,16 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
             merged = result.stdout or ""
             if result.stderr:
                 merged = f"{merged}\n{result.stderr}" if merged else result.stderr
+            _denied = _denied_block(merged)
+            if _denied is not None:
+                log_path.write_text(
+                    f"COMMAND: python3 {container_script} {target_ip} --target {target_ip} (sandbox, egress-guarded)\n"
+                    + _tail(_mask_secret_content(merged), _MAX_LOG_FILE_CHARS)
+                    + "\nEXIT_CODE: denied\n",
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                return _denied
             # Persisted logs are masked: raw stdout may carry dumped hashes, tokens, or
             # key material that must not sit on disk in the clear. (The live LOG_TAIL
             # below stays verbatim -- cracking workflows need the recovered plaintext.)
@@ -354,6 +391,7 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         # advertised contract holds without mutating the server process (no os.chdir /
         # os.environ games, safe under concurrent tool calls).
         _bootstrap = (
+            f"{_egress_preamble}"
             "import os, runpy, sys; "
             f"os.chdir({str(attempt_dir)!r}); "
             f"os.environ['ACTIVE_CHECK_TARGET'] = {str(target_ip)!r}; "
@@ -364,6 +402,19 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         _argv = [sys.executable, "-c", _bootstrap]
         _friendly = f"{sys.executable} {script_path} {target_ip} --target {target_ip} (cwd={attempt_dir})"
         _status, _rc, _captured, _elapsed = run_argv_captured(_argv, _config_timeout(config), max_chars=_CAPTURE_CHARS)
+        _denied_host = _denied_block(_captured)
+        if _denied_host is not None:
+            try:
+                log_path.write_text(
+                    f"{'=' * 60}\nCOMMAND: {_friendly} (egress-guarded)\n{'=' * 60}\n"
+                    + _tail(_mask_secret_content(_captured), _MAX_LOG_FILE_CHARS)
+                    + "\nEXIT_CODE: denied\n",
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError:
+                pass
+            return _denied_host
         _tail_out = _tail(_captured, _LOG_TAIL_CHARS)
         try:
             log_path.write_text(
@@ -447,12 +498,19 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
         except OSError:
             pass
         # Redact the credentials/ subtree: count it, never list names/sizes/mtimes.
+        # Vault keyfiles are deny-listed anywhere in the tree: count them,
+        # never list names/sizes/mtimes (serving a keyfile path hands the
+        # credential-store Fernet key to the model).
         visible: list[Path] = []
         cred_count = 0
+        key_count = 0
         for entry in entries:
             try:
                 rel = entry.relative_to(ws)
             except ValueError:
+                continue
+            if entry.name == ".vault_key":
+                key_count += 1
                 continue
             if rel.parts and rel.parts[0] == "credentials":
                 cred_count += 1
@@ -466,11 +524,13 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
                 return 0
 
         files = sorted(visible, key=_mtime, reverse=True)
-        if not files and not cred_count:
+        if not files and not cred_count and not key_count:
             return "WORKSPACE: empty."
         lines = ["WORKSPACE:", ""]
         if cred_count:
             lines.append(f"  credentials/ ({cred_count} entries redacted)")
+        if key_count:
+            lines.append(f"  <{key_count} vault keyfile(s) redacted>")
         shown = 0
         for f in files[:_MAX_LIST_SHOWN]:
             try:
@@ -488,7 +548,7 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
             elif f.is_dir():
                 lines.append(f"  {rel}/ (directory)")
                 shown += 1
-        total = len(files) + cred_count
-        if walk_capped or total > shown + (cred_count > 0):
+        total = len(files) + cred_count + key_count
+        if walk_capped or total > shown + (cred_count > 0) + (key_count > 0):
             lines.append(f"... [truncated - showing {shown} of {total} entries]")
         return "\n".join(lines)

@@ -16,9 +16,16 @@ file on disk holds ciphertext. The key is resolved, in priority order, from:
 
   1. the ``AI_NMAP_VAULT_KEY`` environment variable (a urlsafe-base64 32-byte
      Fernet key the operator carries out-of-band), else
-  2. a 0600 keyfile at ``<workspace>/.vault_key``, auto-generated on first use
-     (per-workspace key -- protects against other non-root users on a shared
-     host; does not protect against the operator/root who own the workspace).
+  2. a 0600 keyfile OUTSIDE the workspace tree at
+     ``$BREACHPILOT_VAULT_DIR/<sha256-of-store-dir>.key`` (default
+     ``~/.breachpilot/vault_keys/``), auto-generated on first use
+     (per-store key -- protects against other non-root users on a shared
+     host; does not protect against the operator/root who own the box).
+     Keeping the key outside the workspace tree (which the AI reads freely
+     via ``read_workspace_file``/``list_workspace``) is what keeps
+     encrypted-at-rest secrets from degrading to plaintext. A legacy
+     in-workspace ``.vault_key`` is adopted once (moved, not copied) so
+     existing stores keep decrypting.
 
 If the ``cryptography`` package is not importable, encryption is disabled and
 the store falls back to **plaintext**, emitting a one-time loud WARNING (never
@@ -120,6 +127,43 @@ class CredentialRecord:
 # ── At-rest Fernet vault ─────────────────────────────────────────────────────
 
 
+def _vault_keys_dir() -> Path:
+    """Directory holding vault keyfiles (outside every workspace tree).
+
+    ``$BREACHPILOT_VAULT_DIR`` overrides (tests); default
+    ``~/.breachpilot/vault_keys``. Falls back to ``None`` when the home
+    directory cannot be resolved — callers then use the legacy
+    in-workspace path (loud warning via the plaintext-fallback gate is
+    NOT triggered; the legacy path is still 0600, just AI-readable, so a
+    warning is logged at use).
+    """
+    override = os.environ.get("BREACHPILOT_VAULT_DIR", "").strip()
+    if override:
+        return Path(override)
+    try:
+        return Path.home() / ".breachpilot" / "vault_keys"
+    except (RuntimeError, OSError, KeyError):
+        return None  # type: ignore[return-value]
+
+
+def _vault_key_path(store_dir: Path) -> Path:
+    """Keyfile for ``store_dir`` — outside the workspace tree.
+
+    Per-store key (sha256 of the resolved store path) so the HMAC
+    tamper-evidence keeps its per-workspace property: a file copied from
+    another store does not verify. Returns the legacy in-workspace path
+    when no out-of-tree dir is available (caller logs a warning).
+    """
+    keys_dir = _vault_keys_dir()
+    if keys_dir is None:
+        return Path(store_dir) / ".vault_key"
+    try:
+        digest = hashlib.sha256(str(Path(store_dir).resolve()).encode("utf-8")).hexdigest()[:32]
+    except OSError:
+        digest = hashlib.sha256(str(store_dir).encode("utf-8")).hexdigest()[:32]
+    return keys_dir / f"{digest}.key"
+
+
 class _Vault:
     """Fernet-based at-rest encryption for the credential store's secret field.
 
@@ -131,11 +175,18 @@ class _Vault:
 
     _plaintext_warned = False
 
+    #: Basename deny-listed in ``read_workspace_file``/``list_workspace``
+    #: (defense in depth: the live key no longer lives under the workspace,
+    #: but a hand-placed or legacy keyfile must never be served to the model).
+    DENY_BASENAME = ".vault_key"
+
     def __init__(self, workspace: Path) -> None:
         self.enabled = False
         self._fernet = None
         self._key_material: bytes | None = None
-        self._keyfile = workspace / ".vault_key"
+        self._store_dir = Path(workspace)
+        self._legacy_keyfile = self._store_dir / ".vault_key"
+        self._keyfile = _vault_key_path(self._store_dir)
         try:
             from cryptography.fernet import Fernet  # type: ignore
 
@@ -177,10 +228,33 @@ class _Vault:
             cls._plaintext_warned = True
 
     def _load_or_create_key(self) -> str | None:
-        """Return the 0600 keyfile's key, generating one on first use."""
+        """Return the 0600 keyfile's key, generating one on first use.
+
+        The live keyfile lives OUTSIDE the workspace tree (see
+        :func:`_vault_key_path`). A legacy in-workspace ``.vault_key`` is
+        adopted once (moved, not copied) so existing stores keep decrypting
+        and no key material is left behind in AI-readable space.
+        """
         try:
             if self._keyfile.exists():
                 return self._keyfile.read_text(encoding="utf-8").strip() or None
+            if self._legacy_keyfile.exists():
+                try:
+                    key = self._legacy_keyfile.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    key = None
+                if key:
+                    self._keyfile.parent.mkdir(parents=True, exist_ok=True)
+                    self._keyfile.write_text(key, encoding="utf-8")
+                    try:
+                        os.chmod(self._keyfile, 0o600)
+                    except OSError:
+                        pass
+                    try:
+                        self._legacy_keyfile.unlink()
+                    except OSError:
+                        pass
+                    return key
             key = self._Fernet.generate_key().decode()
             self._keyfile.parent.mkdir(parents=True, exist_ok=True)
             self._keyfile.write_text(key, encoding="utf-8")

@@ -106,6 +106,20 @@ def _attempt_dir(workspace: Path) -> tuple[Path, str]:
     return attempt_dir, attempt_id
 
 
+# Vault keyfiles must never be served to the model: the live key lives
+# outside the workspace tree, but a hand-placed or legacy in-workspace
+# ``.vault_key`` would otherwise hand the Fernet key over on request
+# (encrypted-at-rest secrets = plaintext). Basename match, so no path
+# spelling reaches it.
+_VAULT_KEY_BASENAMES = frozenset({".vault_key"})
+
+
+def is_vault_key_path(filename: str) -> bool:
+    """True when ``filename`` names a vault keyfile (deny-listed from reads)."""
+    name = str(filename or "").strip().replace("\\", "/").split("/")[-1].strip("\"'")
+    return name in _VAULT_KEY_BASENAMES
+
+
 def read_workspace(workspace: Path, filename: str) -> str:
     """Read a file inside the run workspace by path (Phase 3 kernel move).
 
@@ -113,10 +127,14 @@ def read_workspace(workspace: Path, filename: str) -> str:
     unreadable/missing files) are refused. Previously this read any
     operator-box path, letting a prompt-injected filename exfiltrate
     /etc/shadow, cloud credentials, or OAuth tokens into the model context.
+    Vault keyfiles (``.vault_key``) are deny-listed by basename: serving one
+    would hand the credential-store Fernet key to the model.
     """
     raw = str(filename or "").strip()
     if not raw:
         return "BLOCKED: empty filename."
+    if is_vault_key_path(raw):
+        return f"BLOCKED: {Path(raw).name!r} is a credential-store keyfile and is never served."
     workspace.mkdir(parents=True, exist_ok=True)
     root = workspace.resolve()
     target = Path(raw)
