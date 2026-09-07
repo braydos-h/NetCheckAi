@@ -179,10 +179,13 @@ python_version = "3.12"
 warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
-# ponytail: `mypy --follow-imports=skip tools` passes (216 files) with these disables.
-# Without disables: 211 errors in 53 files (verified 2026-08-25). Incremental per-family
-# re-enable: 3 hot files strict (tools/validation_utils.py, tools/exceptions.py,
-# tools/mcp_shared.py) now 0; remaining 211 in 53 files. No `Any` in new code; use Optional/TypedDict.
+# ponytail: `mypy --follow-imports=skip tools` passes (335 files) with these disables.
+# Without disables: 301 errors in 65 files — see mypy-baseline.txt, enforced by
+# `python scripts/mypy_debt.py` (CI types job fails on ANY increase).
+# Strict tiers (zero disables): tools/validation_utils.py, tools/exceptions.py,
+# tools/mcp_shared.py, tools/kernel/*, tools/sandbox/*. Migration order and
+# graduation procedure: docs/type-checking.md. No `Any` in new code; use
+# Optional/TypedDict/Protocols.
 disable_error_code = [
     "no-any-return",
     "attr-defined",
@@ -230,6 +233,41 @@ disable_error_code = [
 [[tool.mypy.overrides]]
 module = ["tools.validation_utils", "tools.exceptions", "tools.mcp_shared"]
 # Strict: per-file incremental — zero disables (ponytail: 2026-08-25)
+disable_error_code = []
+enable_error_code = [
+    "no-any-return",
+    "attr-defined",
+    "union-attr",
+    "assignment",
+    "arg-type",
+    "call-arg",
+    "operator",
+    "index",
+    "list-item",
+    "return-value",
+    "type-var",
+    "valid-type",
+    "no-redef",
+    "var-annotated",
+    "misc",
+    "name-defined",
+    "truthy-function",
+    "func-returns-value",
+    "dict-item",
+    "no-untyped-def",
+    "has-type",
+    "str-unpack",
+    "call-overload",
+]
+
+# Tier 1 (2026-09-07): tools/kernel + tools/sandbox graduate to strict.
+# Both packages are fully annotated with zero errors under every code in the
+# list below (verified via scripts/mypy_debt.py hermetic pass + the
+# `Mypy strict subsystems` CI step). Next tiers per docs/type-checking.md:
+# tools/api (run_manager.py holds most of its 45), orchestration/session,
+# then remaining modules.
+[[tool.mypy.overrides]]
+module = ["tools.kernel.*", "tools.sandbox.*"]
 disable_error_code = []
 enable_error_code = [
     "no-any-return",

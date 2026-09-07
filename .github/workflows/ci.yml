@@ -269,7 +269,7 @@ jobs:
   types:
     name: Type check (mypy)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -310,6 +310,10 @@ jobs:
           retention-days: 1
       - name: Mypy strict hot files (zero disables)
         run: mypy --follow-imports=skip tools/validation_utils.py tools/exceptions.py tools/mcp_shared.py
+      - name: Mypy strict subsystems (zero disables)
+        run: mypy --follow-imports=skip tools/kernel tools/sandbox
+      - name: Mypy type-debt gate (no new debt vs baseline)
+        run: python scripts/mypy_debt.py
 
   package:
     name: Package build
@@ -423,12 +427,70 @@ jobs:
       - name: Unit tests (vitest)
         run: npm run test
 
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+            constraints-dev.txt
+      - name: Install pinned environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints-dev.txt -e ".[dev]"
+      - name: pip-audit (fail on known vulnerabilities)
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit --desc --local
+      - name: Verify constraints pins match pyproject ranges
+        run: |
+          python -c "
+          import pathlib, re
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+          py = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+          reqs = {}
+          for d in py['project']['dependencies']:
+              reqs[re.split('[<>=; ]', d.strip())[0].lower()] = d.strip()
+          for extra in ('ollama', 'dev'):
+              for d in py['project']['optional-dependencies'][extra]:
+                  reqs.setdefault(re.split('[<>=; ]', d.strip())[0].lower(), d.strip())
+          pins = {}
+          for line in pathlib.Path('constraints-dev.txt').read_text().splitlines():
+              line = line.strip()
+              if line and not line.startswith('#') and '==' in line:
+                  pins[line.split('==')[0].lower()] = line
+          from packaging.requirements import Requirement
+          bad = []
+          for name, spec in reqs.items():
+              if name not in pins:
+                  bad.append(f'{name} ({spec}) has no pin in constraints-dev.txt')
+                  continue
+              pinned_ver = pins[name].split('==')[1].strip()
+              try:
+                  if not Requirement(spec).specifier.contains(pinned_ver, prereleases=True):
+                      bad.append(f'{pins[name]} violates pyproject range {spec!r}')
+              except Exception as exc:
+                  bad.append(f'{name}: could not check {spec!r} ({exc})')
+          assert not bad, 'constraints-dev.txt drift: ' + '; '.join(bad)
+          print(f'constraints ok: {len(pins)} pins cover {len(reqs)} declared deps')
+          "
+
   ci:
     name: CI success
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [tests, sandbox, browser, coverage, lint, types, package, webui]
+    needs: [tests, sandbox, browser, coverage, lint, types, package, webui, audit]
     steps:
       - name: Check all jobs passed
         run: |
