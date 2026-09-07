@@ -11,7 +11,7 @@ export const SUPPRESS_FULL_ACCESS_KEY = "breachpilot.permissionMode.suppressFull
 
 export function shouldSuppressFullAccessConfirm(): boolean {
   try {
-    return localStorage.getItem(SUPPRESS_FULL_ACCESS_KEY) === "1";
+    return sessionStorage.getItem(SUPPRESS_FULL_ACCESS_KEY) === "1";
   } catch {
     return false;
   }
@@ -19,8 +19,8 @@ export function shouldSuppressFullAccessConfirm(): boolean {
 
 export function setSuppressFullAccessConfirm(suppress: boolean): void {
   try {
-    if (suppress) localStorage.setItem(SUPPRESS_FULL_ACCESS_KEY, "1");
-    else localStorage.removeItem(SUPPRESS_FULL_ACCESS_KEY);
+    if (suppress) sessionStorage.setItem(SUPPRESS_FULL_ACCESS_KEY, "1");
+    else sessionStorage.removeItem(SUPPRESS_FULL_ACCESS_KEY);
   } catch {
     // ignore
   }

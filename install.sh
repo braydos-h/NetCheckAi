@@ -856,12 +856,12 @@ write_install_info() {
 BP_PREFLIGHT_FAIL=0
 
 preflight_require() {
-    # preflight_require <label> <hint...> — critical; failure aborts.
-    local label="$1"
-    shift
+    # preflight_require <label> <hint> <cmd...> — critical; failure aborts.
+    local label="$1" hint="$2"
+    shift 2
     if ! "$@" >/dev/null 2>&1; then
         error "missing critical dependency: $label"
-        error "  fix: $*"
+        error "  fix: $hint"
         BP_PREFLIGHT_FAIL=1
         return 1
     fi

@@ -1768,7 +1768,586 @@ function Install-VenvAndDeps {
     return $venvPy
 }
 
-# __PART6__
+# ---------------------------------------------------------------------------
+# Lightweight config probing (no PyYAML needed — regex over config.yaml text)
+# ---------------------------------------------------------------------------
+
+function Get-YamlScalar {
+    param([string]$ConfigPath, [string]$Section, [string]$Key, [string]$Default = "")
+    try {
+        if (-not (Test-Path -LiteralPath $ConfigPath)) { return $Default }
+        $lines = Get-Content -LiteralPath $ConfigPath -Encoding UTF8
+        $inSection = ($Section -eq "")
+        foreach ($line in $lines) {
+            if ($line -match "^\s*#") { continue }
+            if ($line -match "^(\S[^:]*):\s*$") {
+                $inSection = ($Matches[1].Trim() -eq $Section)
+                continue
+            }
+            if ($inSection -and ($line -match ("^\s+" + [regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"))) {
+                $val = $Matches[1].Trim().Trim("'", '"')
+                if ($val -eq "~" -or $val -eq "null" -or $val.StartsWith("#")) { return $Default }
+                $val = ($val -split "\s+#")[0].Trim().Trim("'", '"')
+                return $val
+            }
+            # Top-level scalar (Section == "") e.g. nothing today, but keep general.
+            if (($Section -eq "") -and ($line -match ("^" + [regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"))) {
+                $val = $Matches[1].Trim().Trim("'", '"')
+                return $val
+            }
+        }
+    } catch { }
+    return $Default
+}
+
+function Get-ActiveProvider {
+    param([string]$InstallDir)
+    $cfg = Join-Path $InstallDir "config.yaml"
+    $provider = Get-YamlScalar -ConfigPath $cfg -Section "models" -Key "provider" -Default "ollama"
+    if ([string]::IsNullOrWhiteSpace($provider)) { $provider = "ollama" }
+    $embed = Get-YamlScalar -ConfigPath $cfg -Section "embeddings" -Key "provider" -Default "ollama"
+    return @{ Provider = $provider.Trim().ToLowerInvariant(); Embeddings = $embed.Trim().ToLowerInvariant(); ConfigPath = $cfg }
+}
+
+function Get-ConfiguredSandboxImage {
+    param([string]$InstallDir)
+    $cfg = Join-Path $InstallDir "config.yaml"
+    $img = Get-YamlScalar -ConfigPath $cfg -Section "sandbox" -Key "image" -Default $script:SandboxImage
+    if ([string]::IsNullOrWhiteSpace($img)) { $img = $script:SandboxImage }
+    return $img.Trim()
+}
+
+function Get-ConfiguredNmapPath {
+    param([string]$InstallDir)
+    $cfg = Join-Path $InstallDir "config.yaml"
+    $p = Get-YamlScalar -ConfigPath $cfg -Section "nmap" -Key "path" -Default "nmap"
+    if ([string]::IsNullOrWhiteSpace($p)) { $p = "nmap" }
+    return $p.Trim()
+}
+
+# ---------------------------------------------------------------------------
+# Node.js + WebUI
+# ---------------------------------------------------------------------------
+
+function Test-NodeInstall {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($null -eq $node -or $null -eq $npm) {
+        return @{ Present = $false; NodeVersion = ""; NpmVersion = ""; Supported = $false }
+    }
+    $nr = Invoke-ExternalCommand -Command "node" -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+    $mr = Invoke-ExternalCommand -Command "npm" -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+    $nv = ($nr.StdOut + " " + $nr.StdErr).Trim()
+    $mv = ($mr.StdOut + " " + $mr.StdErr).Trim()
+    $supported = (Test-NodeVersionSupported -VersionText $nv) -and ($mr.ExitCode -eq 0)
+    return @{ Present = $true; NodeVersion = $nv; NpmVersion = $mv; Supported = $supported; NodePath = $node.Source }
+}
+
+function Install-WebUI {
+    param([string]$InstallDir, [string]$VenvPython)
+    if ($SkipWebUI) {
+        Write-Skip "WebUI build skipped (-SkipWebUI). The app lazy-builds on first 'python main.py --web' if Node is added later."
+        return @{ Built = $false; Skipped = $true }
+    }
+    $webDir = Join-Path $InstallDir "webui"
+    $pkgJson = Join-Path $webDir "package.json"
+    $distIndex = Join-Path $webDir "dist\index.html"
+    if (-not (Test-Path -LiteralPath $pkgJson)) {
+        Write-Skip "webui\package.json not found — skipping WebUI build (source tree without WebUI)."
+        return @{ Built = $false; Skipped = $true }
+    }
+    if ((Test-Path -LiteralPath $distIndex) -and -not $Force) {
+        # Freshness: skip rebuild when dist is newer than package.json + lockfile.
+        try {
+            $distTime = (Get-Item -LiteralPath $distIndex).LastWriteTimeUtc
+            $pkgTime = (Get-Item -LiteralPath $pkgJson).LastWriteTimeUtc
+            $lock = Join-Path $webDir "package-lock.json"
+            $lockTime = $pkgTime
+            if (Test-Path -LiteralPath $lock) { $lockTime = (Get-Item -LiteralPath $lock).LastWriteTimeUtc }
+            $newest = $pkgTime
+            if ($lockTime -gt $newest) { $newest = $lockTime }
+            if ($distTime -ge $newest) {
+                Write-Ok "WebUI already built and current (dist newer than package.json/lockfile) — skipping rebuild."
+                return @{ Built = $true; Skipped = $false }
+            }
+            Write-Prog "WebUI sources newer than dist — rebuilding..."
+        } catch {
+            Write-Prog "WebUI dist present but freshness check failed — rebuilding to be safe."
+        }
+    } elseif ((Test-Path -LiteralPath $distIndex) -and $Force) {
+        Write-Prog "WebUI dist present but -Force given — rebuilding..."
+    }
+    if ($Check) {
+        Write-Skip "Would build WebUI (npm install + npm run build) in $webDir"
+        return @{ Built = $false; Skipped = $true }
+    }
+    $node = Test-NodeInstall
+    if (-not $node.Present -or -not $node.Supported) {
+        if (-not $node.Present) {
+            Write-Warn "Node.js not on PATH — WebUI build needs Node 18+ and npm."
+        } else {
+            Write-Warn "Node.js version '$($node.NodeVersion)' is below the minimum (18+). WebUI build needs Node 18+."
+        }
+        if ($Offline) {
+            Write-Skip "Offline: cannot install Node.js. WebUI will build on first 'python main.py --web' once Node is present."
+            return @{ Built = $false; Skipped = $true }
+        }
+        $res = Install-Dependency -DisplayName "Node.js LTS" -DetectCommand "node" `
+            -WingetId "OpenJS.NodeJS.LTS" -ChocoPackage "nodejs-lts" `
+            -ManualUrl "https://nodejs.org/ (LTS)" `
+            -WhyNeeded "WebUI production build (npm ci + npm run build -> webui/dist)."
+        $node = Test-NodeInstall
+        if (-not $node.Present -or -not $node.Supported) {
+            Write-Skip "Node.js still unavailable — WebUI will build on first 'python main.py --web' once Node is present."
+            Add-ActionRequired "Install Node.js 18+ (https://nodejs.org/) then re-run install.ps1 or 'cd webui && npm ci && npm run build'."
+            return @{ Built = $false; Skipped = $true }
+        }
+    }
+    Write-Prog "Building WebUI (node $($node.NodeVersion), npm $($node.NpmVersion))..."
+    $lockFile = Join-Path $webDir "package-lock.json"
+    $useCi = (Test-Path -LiteralPath $lockFile)
+    try {
+        if ($useCi) {
+            Write-Log "npm ci (deterministic, lockfile present)" -Level "INFO"
+            Invoke-ExternalCommand -Command "npm" -Arguments @("ci", "--no-audit", "--no-fund") -TimeoutSeconds 1200 | Out-Null
+        } else {
+            Write-Log "npm install (no lockfile)" -Level "INFO"
+            Invoke-ExternalCommand -Command "npm" -Arguments @("install", "--no-audit", "--no-fund") -TimeoutSeconds 1200 | Out-Null
+        }
+    } catch {
+        Write-Warn "WebUI dependency install failed: $($_.Exception.Message). The app will retry the build on first 'python main.py --web'."
+        Add-ActionRequired "WebUI npm install failed: check network access to registry.npmjs.org, then 'cd webui && npm ci && npm run build'."
+        return @{ Built = $false; Skipped = $true }
+    }
+    try {
+        # `npm run build` = `tsc -b && vite build` (webui/package.json) -> webui/dist/.
+        Invoke-ExternalCommand -Command "npm" -Arguments @("run", "build") -TimeoutSeconds 1200 | Out-Null
+    } catch {
+        Write-Warn "WebUI build failed: $($_.Exception.Message). The app will retry on first 'python main.py --web'."
+        Add-ActionRequired "WebUI build failed: ensure Node 18+ ('node --version'), then 'cd webui && npm run build'."
+        return @{ Built = $false; Skipped = $true }
+    }
+    if (Test-Path -LiteralPath $distIndex) {
+        Write-Ok "WebUI built to webui\dist\"
+        return @{ Built = $true; Skipped = $false }
+    }
+    Write-Warn "Build finished but webui\dist\index.html is missing — will retry on next run."
+    Add-ActionRequired "WebUI dist missing after build: 'cd webui && npm run build' and inspect the error."
+    return @{ Built = $false; Skipped = $true }
+}
+
+# ---------------------------------------------------------------------------
+# Nmap / Git
+# ---------------------------------------------------------------------------
+
+function Find-Nmap {
+    param([string]$InstallDir)
+    # 1. Configured path wins (config.yaml nmap.path), 2. PATH, 3. known locations.
+    $configured = Get-ConfiguredNmapPath -InstallDir $InstallDir
+    $probes = New-Object System.Collections.ArrayList
+    if ($configured -match "[\\/]") {
+        $null = $probes.Add($configured)
+    } elseif ($configured -ne "nmap") {
+        $null = $probes.Add($configured)
+    }
+    $null = $probes.Add("nmap")
+    foreach ($p in @("C:\Program Files (x86)\Nmap\nmap.exe", "C:\Program Files\Nmap\nmap.exe")) {
+        $null = $probes.Add($p)
+    }
+    foreach ($probe in $probes) {
+        try {
+            $r = Invoke-ExternalCommand -Command $probe -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+            if ($r.ExitCode -eq 0 -and ($r.StdOut -match "(?i)nmap")) {
+                $first = (($r.StdOut -split "`r?`n") | Select-Object -First 1).Trim()
+                $src = $probe
+                try {
+                    $cmd = Get-Command $probe -ErrorAction SilentlyContinue
+                    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source)) { $src = $cmd.Source }
+                } catch { }
+                return @{ Present = $true; Path = $src; VersionLine = $first }
+            }
+        } catch { }
+    }
+    return @{ Present = $false; Path = ""; VersionLine = "" }
+}
+
+function Install-NmapIfNeeded {
+    param([string]$InstallDir)
+    $found = Find-Nmap -InstallDir $InstallDir
+    if ($found.Present) {
+        Write-Ok "Nmap: $($found.VersionLine) [$($found.Path)]"
+        # If it came from a known location but is not on PATH, say how to fix
+        # without reinstalling: add its directory for this process + user PATH hint.
+        try {
+            $onPath = ($null -ne (Get-Command nmap -ErrorAction SilentlyContinue))
+            if ((-not $onPath) -and ($found.Path -match "[\\/]")) {
+                $dir = Split-Path -Parent $found.Path
+                if (($env:Path -split ";" | Where-Object { $_.Trim().Equals($dir.Trim(), [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                    $env:Path = "$env:Path;$dir"
+                    Write-Log "Added Nmap dir to process PATH: $dir" -Level "INFO"
+                }
+                Write-Info "Nmap was found outside PATH; its directory was added to this session. Persist via -Repair (PATH registration) or add '$dir' to user PATH."
+            }
+        } catch { }
+        return $found
+    }
+    Write-Warn "Nmap not found — needed for recon scans."
+    if ($Check) {
+        Write-Skip "Would install Nmap via winget (Insecure.Nmap)"
+        return $found
+    }
+    if ($Offline) {
+        Add-ActionRequired "Install Nmap manually (https://nmap.org/download.html), then re-run install.ps1."
+        return $found
+    }
+    $res = Install-Dependency -DisplayName "Nmap" -DetectCommand "nmap" `
+        -WingetId "Insecure.Nmap" -ChocoPackage "nmap" `
+        -ManualUrl "https://nmap.org/download.html" `
+        -WhyNeeded "Recon scans (doctor honors nmap.path else PATH)."
+    $found = Find-Nmap -InstallDir $InstallDir
+    if ($found.Present) {
+        Write-Ok "Nmap: $($found.VersionLine) [$($found.Path)]"
+    } else {
+        Add-ActionRequired "Install Nmap (https://nmap.org/download.html or 'winget install Insecure.Nmap'), then re-run install.ps1."
+    }
+    return $found
+}
+
+function Test-GitInstall {
+    $cmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { return @{ Present = $false; Version = "" } }
+    $r = Invoke-ExternalCommand -Command "git" -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+    $raw = ($r.StdOut + " " + $r.StdErr).Trim()
+    if ($r.ExitCode -ne 0) { return @{ Present = $false; Version = $raw } }
+    return @{ Present = $true; Version = $raw; Path = $cmd.Source }
+}
+
+# ---------------------------------------------------------------------------
+# Ollama / AI providers (provider-aware: Ollama is OPTIONAL)
+# ---------------------------------------------------------------------------
+
+function Test-OllamaInstall {
+    $cmd = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { return @{ CliPresent = $false; Version = ""; DaemonUp = $false } }
+    $r = Invoke-ExternalCommand -Command "ollama" -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+    $raw = ($r.StdOut + " " + $r.StdErr).Trim()
+    $up = $false
+    try {
+        $prev = $ProgressPreference
+        $ProgressPreference = "SilentlyContinue"
+        try {
+            $resp = Invoke-WebRequest -Uri "http://localhost:11434/api/version" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            $up = ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300)
+        } finally { $ProgressPreference = $prev }
+    } catch { $up = $false }
+    return @{ CliPresent = ($r.ExitCode -eq 0); Version = $raw; DaemonUp = $up; Path = $cmd.Source }
+}
+
+function Install-OllamaIfNeeded {
+    param([string]$InstallDir)
+    $active = Get-ActiveProvider -InstallDir $InstallDir
+    $needsOllama = ($active.Provider -eq "ollama") -or ($active.Embeddings -eq "ollama")
+    if ($SkipOllama) {
+        if ($needsOllama) {
+            Write-Warn "-SkipOllama given but config uses Ollama (provider=$($active.Provider), embeddings=$($active.Embeddings)). Doctor will report the Ollama check as failing until you configure another provider or remove -SkipOllama."
+            Add-ActionRequired "Ollama skipped but configured: switch providers (WebUI System -> Models, or models.provider: opencode_go + embeddings.provider: none) or re-run without -SkipOllama."
+        } else {
+            Write-Skip "Ollama skipped (-SkipOllama); active provider is '$($active.Provider)' — no Ollama needed."
+        }
+        return @{ Skipped = $true; CliPresent = $false; DaemonUp = $false }
+    }
+    if (-not $needsOllama) {
+        Write-Skip "Ollama not required (models.provider=$($active.Provider), embeddings=$($active.Embeddings)) — detection only, no install offered."
+        $st = Test-OllamaInstall
+        if ($st.CliPresent) {
+            $daemon = "daemon stopped"
+            if ($st.DaemonUp) { $daemon = "daemon running" }
+            Write-Info "Ollama CLI present ($($st.Version), $daemon) but not required by the active provider."
+        }
+        return @{ Skipped = $true; CliPresent = $st.CliPresent; DaemonUp = $st.DaemonUp }
+    }
+    $st = Test-OllamaInstall
+    if ($st.CliPresent) {
+        $daemon = "daemon stopped"
+        if ($st.DaemonUp) { $daemon = "daemon running" }
+        Write-Ok "Ollama CLI: $($st.Version) ($daemon)"
+    } else {
+        Write-Warn "Ollama CLI not on PATH — AI features on the ollama provider need it."
+        if ($Check) {
+            Write-Skip "Would install Ollama via winget (Ollama.Ollama)"
+        } elseif (-not $Offline) {
+            $res = Install-Dependency -DisplayName "Ollama" -DetectCommand "ollama" `
+                -WingetId "Ollama.Ollama" -ChocoPackage "" `
+                -ManualUrl "https://ollama.com/download (OllamaSetup.exe)" `
+                -WhyNeeded "Active provider is 'ollama' (models.provider in config.yaml)."
+            $st = Test-OllamaInstall
+        } else {
+            Add-ActionRequired "Install Ollama (https://ollama.com/download), then re-run install.ps1."
+        }
+    }
+    # Daemon: probe only, start best-effort when interactive; never hang.
+    if ($st.CliPresent -and -not $st.DaemonUp -and -not $Check) {
+        Write-Prog "Ollama daemon not responding on http://localhost:11434 — attempting to start (max 15s)..."
+        try {
+            Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Minimized -ErrorAction SilentlyContinue | Out-Null
+        } catch {
+            Write-Log "ollama serve start failed: $($_.Exception.Message)" -Level "WARN"
+        }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 1
+            $st = Test-OllamaInstall
+            if ($st.DaemonUp) { break }
+        }
+        if ($st.DaemonUp) { Write-Ok "Ollama daemon now responding." }
+        else {
+            Write-Warn "Ollama daemon still not responding — start it via the Ollama tray app or 'ollama serve'."
+            Add-ActionRequired "Start Ollama ('ollama serve' or the Ollama app) so the ollama provider is reachable."
+        }
+    } elseif ($st.CliPresent -and $st.DaemonUp) {
+        Write-Ok "Ollama daemon responding on http://localhost:11434"
+    }
+    # Model pull: NEVER forced silently. Interactive: ask. -Yes: skip (documented).
+    $pullWanted = $false
+    if ($st.DaemonUp -and -not $Check) {
+        if ($Yes -or $Force) {
+            Write-Skip "Model pull skipped in non-interactive mode (documented -Yes behavior): run 'ollama pull $script:DefaultModelCloud' and 'ollama pull $script:DefaultModelEmbed' once a provider key is configured."
+        } elseif (-not $Offline) {
+            $ans = Read-Host "   Pull default models (glm-5.2:cloud + nomic-embed-text, large download)? [y/N]"
+            if ($ans -match "^(?i:y|yes)$") { $pullWanted = $true }
+        }
+    }
+    if ($pullWanted) {
+        try {
+            Write-Prog "Pulling $script:DefaultModelCloud (best-effort; cloud model needs OLLAMA_API_KEY)..."
+            $pr = Invoke-ExternalCommand -Command "ollama" -Arguments @("pull", $script:DefaultModelCloud) -TimeoutSeconds 1800 -AllowFailure
+            if ($pr.ExitCode -ne 0) { Write-Warn "$script:DefaultModelCloud pull failed — is OLLAMA_API_KEY set? Is the daemon running?" }
+            else { Write-Ok "$script:DefaultModelCloud ready." }
+        } catch { Write-Warn "Model pull failed: $($_.Exception.Message)" }
+        try {
+            Write-Prog "Pulling $script:DefaultModelEmbed (best-effort; needed for semantic memory)..."
+            $pr = Invoke-ExternalCommand -Command "ollama" -Arguments @("pull", $script:DefaultModelEmbed) -TimeoutSeconds 1800 -AllowFailure
+            if ($pr.ExitCode -ne 0) { Write-Warn "$script:DefaultModelEmbed pull failed — will retry on next run." }
+            else { Write-Ok "$script:DefaultModelEmbed ready." }
+        } catch { Write-Warn "Embedding model pull failed: $($_.Exception.Message)" }
+    }
+    return $st
+}
+
+# ---------------------------------------------------------------------------
+# Docker / sandbox / WSL
+# ---------------------------------------------------------------------------
+
+function Test-DockerInstall {
+    $cmd = Get-Command docker -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) {
+        return @{ CliPresent = $false; Version = ""; DaemonUp = $false; Detail = "Docker CLI missing" }
+    }
+    $vr = Invoke-ExternalCommand -Command "docker" -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
+    $raw = ($vr.StdOut + " " + $vr.StdErr).Trim()
+    if ($vr.ExitCode -ne 0) {
+        return @{ CliPresent = $false; Version = $raw; DaemonUp = $false; Detail = "Docker CLI broken" }
+    }
+    $info = Invoke-ExternalCommand -Command "docker" -Arguments @("info") -TimeoutSeconds 30 -AllowFailure
+    if ($info.ExitCode -eq 0) {
+        return @{ CliPresent = $true; Version = $raw; DaemonUp = $true; Detail = "daemon working"; Path = $cmd.Source }
+    }
+    $combined = ($info.StdOut + " " + $info.StdErr)
+    if ($combined -match "(?i)desktop|pipe|connect|not running|starting") {
+        return @{ CliPresent = $true; Version = $raw; DaemonUp = $false; Detail = "Docker Desktop installed but daemon unreachable (stopped or starting)"; Path = $cmd.Source }
+    }
+    return @{ CliPresent = $true; Version = $raw; DaemonUp = $false; Detail = "daemon unavailable: $($combined.Trim())"; Path = $cmd.Source }
+}
+
+function Test-WslPresent {
+    $cmd = Get-Command wsl -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { return @{ Present = $false; Detail = "wsl.exe not found" } }
+    $r = Invoke-ExternalCommand -Command "wsl" -Arguments @("--status") -TimeoutSeconds 20 -AllowFailure
+    $raw = ($r.StdOut + " " + $r.StdErr).Trim()
+    if ($r.ExitCode -eq 0) { return @{ Present = $true; Detail = $raw } }
+    $l = Invoke-ExternalCommand -Command "wsl" -Arguments @("--list", "--verbose") -TimeoutSeconds 20 -AllowFailure
+    $raw2 = ($l.StdOut + " " + $l.StdErr).Trim()
+    return @{ Present = $true; Detail = $raw2 }
+}
+
+function Install-SandboxImage {
+    param([string]$InstallDir)
+    # Sandbox is default-ON and fail-closed (fallback_native: false in code).
+    # -SkipDocker degrades loudly to native mode; the config is NEVER auto-edited
+    # to hide that.
+    $cfgPath = Join-Path $InstallDir "config.yaml"
+    $enabledTxt = Get-YamlScalar -ConfigPath $cfgPath -Section "sandbox" -Key "enabled" -Default "true"
+    $enabled = ($enabledTxt.Trim().ToLowerInvariant() -ne "false")
+    if ($SkipDocker) {
+        $fallback = Get-YamlScalar -ConfigPath $cfgPath -Section "sandbox" -Key "fallback_native" -Default "false"
+        $mode = "STRICT fail-closed (executions denied until Docker works)"
+        if ($fallback.Trim().ToLowerInvariant() -eq "true") { $mode = "NATIVE fallback (uncontained host execution)" }
+        Write-Warn "Docker/sandbox skipped (-SkipDocker). Execution mode: $mode. Sandbox containment is OFF — only run against targets you own."
+        Add-ActionRequired "Docker skipped: sandbox containment OFF ($mode). Install Docker Desktop to restore containment."
+        return @{ Status = "skipped"; DaemonUp = $false; ImagePresent = $false }
+    }
+    if (-not $enabled) {
+        Write-Skip "Sandbox disabled in config (sandbox.enabled: false) — explicit operator opt-out; Docker checks skipped."
+        return @{ Status = "disabled"; DaemonUp = $false; ImagePresent = $false }
+    }
+    if ($Check) {
+        $d = Test-DockerInstall
+        Write-Skip "Would verify Docker daemon + image $(Get-ConfiguredSandboxImage -InstallDir $InstallDir) (now: $($d.Detail))"
+        return @{ Status = "check"; DaemonUp = $d.DaemonUp; ImagePresent = $false }
+    }
+    $d = Test-DockerInstall
+    if (-not $d.CliPresent) {
+        Write-Warn "Docker CLI missing — BreachPilot's sandbox (default-ON containment) needs Docker Desktop on Windows."
+        if (-not $Offline) {
+            $res = Install-Dependency -DisplayName "Docker Desktop" -DetectCommand "docker" `
+                -WingetId "Docker.DockerDesktop" -ChocoPackage "docker-desktop" `
+                -ManualUrl "https://docs.docker.com/desktop/install/windows-install/" `
+                -WhyNeeded "Sandboxed exploit execution (disposable Docker worker, fail-closed)."
+            $d = Test-DockerInstall
+        } else {
+            Add-ActionRequired "Install Docker Desktop (https://docs.docker.com/desktop/install/windows-install/), then re-run install.ps1."
+        }
+    }
+    if ($d.CliPresent -and -not $d.DaemonUp) {
+        Write-Warn "Docker CLI present but daemon unreachable: $($d.Detail)."
+        Write-Info "Docker Desktop may need starting (or a logout/reboot after first install, or WSL2 setup)."
+        $wsl = Test-WslPresent
+        if (-not $wsl.Present) {
+            Write-Warn "WSL not detected — Docker Desktop requires WSL2 (or Hyper-V). Install via 'wsl --install' in an ELEVATED terminal, reboot, then re-run install.ps1."
+            Add-ActionRequired "Install WSL2 ('wsl --install' elevated + reboot) for Docker Desktop, then re-run install.ps1."
+        } else {
+            Write-Info "WSL status: $($wsl.Detail)"
+            Write-Prog "Waiting up to 60s for the Docker daemon (start Docker Desktop if it is stopped)..."
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Seconds 5
+                $d = Test-DockerInstall
+                if ($d.DaemonUp) { break }
+            }
+        }
+        if (-not $d.DaemonUp) {
+            $d = Test-DockerInstall
+            if (-not $d.DaemonUp) {
+                Write-Warn "Docker daemon still unavailable. Sandbox builds are blocked; continuing without the sandbox image (doctor will flag it)."
+                Add-ActionRequired "Start Docker Desktop (may need logout/reboot after first install), then re-run install.ps1 -Repair to build the sandbox image."
+                return @{ Status = "daemon-down"; DaemonUp = $false; ImagePresent = $false }
+            }
+        }
+    }
+    if ($d.DaemonUp) {
+        Write-Ok "Docker: $($d.Version) (daemon working)"
+    }
+    # Build/check the worker image using the repo Dockerfile (name from config).
+    $image = Get-ConfiguredSandboxImage -InstallDir $InstallDir
+    $dockerfile = Join-Path $InstallDir $script:SandboxDockerfile
+    if (-not (Test-Path -LiteralPath $dockerfile)) {
+        Write-Warn "Sandbox Dockerfile missing at $dockerfile — cannot build '$image'."
+        Add-ActionRequired "Restore $script:SandboxDockerfile from the repository, then re-run install.ps1 -Repair."
+        return @{ Status = "no-dockerfile"; DaemonUp = $d.DaemonUp; ImagePresent = $false }
+    }
+    $imgCheck = Invoke-ExternalCommand -Command "docker" -Arguments @("image", "inspect", $image) -TimeoutSeconds 30 -AllowFailure
+    if ($imgCheck.ExitCode -eq 0 -and -not $Force) {
+        Write-Ok "Sandbox image present: $image"
+        return @{ Status = "ready"; DaemonUp = $true; ImagePresent = $true }
+    }
+    Write-Prog "Building sandbox image '$image' (docker build, several minutes first time)..."
+    try {
+        Invoke-ExternalCommand -Command "docker" -Arguments @("build", "-t", $image, "docker/sandbox") -TimeoutSeconds 3600 | Out-Null
+        $verify = Invoke-ExternalCommand -Command "docker" -Arguments @("image", "inspect", $image) -TimeoutSeconds 30 -AllowFailure
+        if ($verify.ExitCode -eq 0) {
+            Write-Ok "Sandbox image built: $image"
+            return @{ Status = "ready"; DaemonUp = $true; ImagePresent = $true }
+        }
+        Write-Warn "docker build finished but image '$image' not found afterward."
+        Add-ActionRequired "Sandbox image build did not produce '$image': run 'docker build -t $image docker/sandbox' manually and inspect the error."
+        return @{ Status = "build-failed"; DaemonUp = $true; ImagePresent = $false }
+    } catch {
+        Write-Warn "Sandbox image build failed: $($_.Exception.Message)"
+        Add-ActionRequired "Build the sandbox image manually ('docker build -t $image docker/sandbox'), then re-run install.ps1 -Repair."
+        return @{ Status = "build-failed"; DaemonUp = $true; ImagePresent = $false }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# API keys (project-owned secure mechanism only)
+# ---------------------------------------------------------------------------
+
+function Test-ApiKeySetup {
+    param([string]$InstallDir, [string]$VenvPython)
+    $active = Get-ActiveProvider -InstallDir $InstallDir
+    # Map active provider -> required env (optional keys are never demanded).
+    $required = @()
+    switch ($active.Provider) {
+        "ollama" { $required = @("OLLAMA_API_KEY") }
+        "opencode_go" { $required = @("OPENCODE_GO_API_KEY") }
+        "chatgpt" { $required = @() }  # OAuth via ~/.codex/auth.json, never a pasted key.
+        default { $required = @() }
+    }
+    $missing = @()
+    foreach ($name in $required) {
+        $v = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($v)) {
+            # Also honored from secr.json (project store) — check without logging values.
+            try {
+                $secr = Join-Path $InstallDir "secr.json"
+                if (Test-Path -LiteralPath $secr) {
+                    $j = Get-Content -LiteralPath $secr -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $has = $false
+                    if ($null -ne $j.api_keys) {
+                        foreach ($p in $j.api_keys.PSObject.Properties) {
+                            if ($p.Name -eq $name -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { $has = $true }
+                        }
+                    }
+                    if (-not $has) { $missing += $name }
+                } else {
+                    $missing += $name
+                }
+            } catch {
+                $missing += $name
+            }
+        }
+    }
+    if ($active.Provider -eq "chatgpt") {
+        $codex = Join-Path $env:USERPROFILE ".codex\auth.json"
+        if ($env:CODEX_HOME) { $codex = Join-Path $env:CODEX_HOME "auth.json" }
+        if (-not (Test-Path -LiteralPath $codex)) {
+            return @{ Missing = @(); Note = "ChatGPT provider: sign in via the interactive menu ('Sign in with ChatGPT'); tokens stay in $codex and are never copied." }
+        }
+        return @{ Missing = @(); Note = "" }
+    }
+    return @{ Missing = $missing; Note = "" }
+}
+
+function Offer-ApiKeySetup {
+    param([string]$InstallDir, [string]$VenvPython)
+    $st = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
+    if ($st.Missing.Count -eq 0) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$st.Note)) { Write-Info ([string]$st.Note) }
+        else { Write-Ok "Provider API key present (or not required by the active provider)." }
+        return
+    }
+    $names = ($st.Missing -join ", ")
+    Write-Warn "Required provider key missing: $names. BreachPilot runs, but AI-backed flows will fail until it is set."
+    Add-ActionRequired "Set $names via: python main.py --setup-api-keys (saves to secr.json, gitignored) or the environment."
+    if ($Check -or $Yes -or $Offline) {
+        Write-Skip "Skipping key prompt (non-interactive/check/offline). Run: python main.py --setup-api-keys"
+        return
+    }
+    $ans = Read-Host "   Launch the secure key setup now (python main.py --setup-api-keys)? [y/N]"
+    if ($ans -match "^(?i:y|yes)$") {
+        try {
+            Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--setup-api-keys") -TimeoutSeconds 300 -StreamOutput | Out-Null
+            $again = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
+            if ($again.Missing.Count -eq 0) { Write-Ok "Provider key configured." }
+        } catch {
+            Write-Warn "Key setup exited: $($_.Exception.Message). Re-run 'python main.py --setup-api-keys' any time."
+        }
+    } else {
+        Write-Info "Skipped. Run any time: python main.py --setup-api-keys"
+    }
+}
+
+# __PART7__
 
 # ---------------------------------------------------------------------------
 # Bootstrap: help, arg validation, logging, UX helpers

@@ -71,7 +71,7 @@ export default function App() {
                     <Route path="/help" element={<HelpPage />} />
                     <Route path="/memory" element={<MemoryPage />} />
                     <Route path="/system" element={<SystemPage />} />
-                    <Route path="*" element={<Navigate to="/" replace />} />
+                    <Route path="*" element={<Navigate to="/sessions" replace />} />
                   </Route>
                 </Routes>
               </Suspense>
