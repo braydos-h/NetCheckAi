@@ -76,13 +76,17 @@ def test_extra_private_key_redacted(tmp_path: Path):
 
 
 def test_extra_credential_dicts_redacted(tmp_path: Path):
+    # NOTE: "creds"/"credentials" are themselves secret-named (wholesale
+    # redaction), so this test uses a neutral "account" key to prove
+    # *nested* secret keys redact while siblings survive.
     rec = _write(
-        {"creds": {"username": "admin", "password": "s3cr3t", "credentials": {"token": "t"}}},
+        {"account": {"username": "admin", "password": "s3cr3t", "credentials": {"token": "t"}}},
         tmp_path,
     )
-    assert rec["creds"]["username"] == "admin"
-    assert rec["creds"]["password"] == _REDACTED
-    assert rec["creds"]["credentials"] == {"token": _REDACTED}
+    assert rec["account"]["username"] == "admin"
+    assert rec["account"]["password"] == _REDACTED
+    # A secret-named key wholesale-redacts its subtree (same as _redact_args).
+    assert rec["account"]["credentials"] == _REDACTED
     assert "s3cr3t" not in _raw(tmp_path)
 
 
@@ -102,9 +106,11 @@ def test_extra_list_of_credential_dicts_redacted(tmp_path: Path):
 
 
 def test_extra_secret_shaped_strings_in_list_redacted(tmp_path: Path):
-    rec = _write({"notes": ["password=hunter2", "plain note"]}, tmp_path)
-    assert rec["notes"][0] == f"password={_REDACTED}"
-    assert rec["notes"][1] == "plain note"
+    # NOTE: "notes" is wholesale-redacted by contract (_WHOLESALE_REDACT_FIELDS),
+    # so this test uses "findings" to prove element-wise string masking.
+    rec = _write({"findings": ["password=hunter2", "plain note"]}, tmp_path)
+    assert rec["findings"][0] == f"password={_REDACTED}"
+    assert rec["findings"][1] == "plain note"
     assert "hunter2" not in _raw(tmp_path)
 
 

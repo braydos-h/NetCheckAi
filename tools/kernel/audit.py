@@ -213,14 +213,15 @@ def _audit_log(
     if extra:
         # Optional structured context (e.g. the sandbox subsystem's container
         # id / network-policy fingerprint). Merged after the base keys so a
-        # caller-supplied override is explicit. Values are defensively
-        # sanitized with the same credential-redaction pipeline as ordinary
-        # argument logging — callers must still keep secrets out, but a
-        # secret-named key or secret-shaped string that slips into ``extra``
-        # never reaches disk in cleartext.
-        for key, value in extra.items():
+        # caller-supplied override is explicit. Sanitized with the SAME
+        # pipeline as ordinary argument logging (secret-named keys at every
+        # depth, secret-shaped strings, lists descended element-wise) —
+        # callers must still keep secrets out, but anything that slips into
+        # ``extra`` never reaches disk in cleartext.
+        redacted_extra = _redact_args(extra)
+        for key, value in redacted_extra.items():
             if value is not None:
-                record[key] = _redact_nested(value)
+                record[key] = value
     # ponytail: mkdir per audit row (2x per tool call) stats the fs every time.
     parent = audit_path.parent
     if str(parent) not in _MKDIR_CACHE:
