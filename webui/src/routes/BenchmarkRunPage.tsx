@@ -6,7 +6,7 @@
 // Live-progress note: run.json's `trials` array is only persisted at finalize,
 // so during an active run this page polls `/runs/{id}/scenarios` (the runner
 // writes each trial JSON the moment it ends) and merges those into the UI.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -48,19 +48,106 @@ import { formatRelative } from "@/lib/utils";
 
 const REFRESH_MS = 2000;
 
+/** Cap on cached timeline events per run page (rendering caps far lower —
+ * without this a multi-hour run accumulates unbounded arrays in query cache). */
+const MAX_CACHED_EVENTS = 2000;
+
 function isRunActive(status: string): boolean {
   return isActiveState(status);
 }
 
-function derivePhases(trial: Trial | undefined): Array<{ label: string; state: "done" | "running" | "pending" }> {
+/** Fill live-trial payload gaps so tabs can dereference Trial fields safely.
+ * The scenarios endpoint returns full trial dicts today, but a slimmer shape
+ * (or a missing field) must degrade to blanks, never throw mid-render. */
+function normalizeTrial(t: Trial): Trial {
+  return {
+    ...t,
+    ended_at: t.ended_at ?? "",
+    failure_category: (t.failure_category ?? "UNKNOWN") as Trial["failure_category"],
+    failure_detail: t.failure_detail ?? "",
+    claimed_summary: t.claimed_summary ?? "",
+    flags: Array.isArray(t.flags) ? t.flags : [],
+    evidence_refs: Array.isArray(t.evidence_refs) ? t.evidence_refs : [],
+    audit_path: t.audit_path ?? "",
+    workspace: t.workspace ?? "",
+    errors: Array.isArray(t.errors) ? t.errors : [],
+    tool_calls: t.tool_calls ?? 0,
+    total_tokens: t.total_tokens ?? 0,
+    duration_seconds: t.duration_seconds ?? 0,
+    flags_captured: t.flags_captured ?? 0,
+    flags_total: t.flags_total ?? 0,
+    sandbox: t.sandbox ?? {
+      enabled: false,
+      required: false,
+      image: "unknown",
+      image_digest: "unknown",
+      container_id: "",
+      network_policy_fingerprint: "",
+      authorized_destinations: [],
+      blocked_events: 0,
+      failures: 0,
+      last_error: "",
+    },
+    target: t.target ?? {
+      host: "",
+      ports: [],
+      image: "unknown",
+      image_digest: "unknown",
+      container_id: "",
+      snapshot_id: "",
+      reset_strategy: "recreate",
+    },
+    telemetry: t.telemetry ?? {
+      model_calls: 0,
+      total_tokens: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      estimated_cost: null,
+      tool_calls: 0,
+      tool_errors: 0,
+      sandbox_blocked_actions: 0,
+    },
+  };
+}
+
+/** Merge event pages: dedup by sequence, sort ascending, cap the cache.
+ * Server pages can overlap or arrive out of order — render order and elapsed
+ * time must never depend on fetch order. */
+function mergeEvents(existing: BenchmarkEvent[], incoming: BenchmarkEvent[]): BenchmarkEvent[] {
+  const seen = new Set<number>();
+  const merged: BenchmarkEvent[] = [];
+  for (const e of [...existing, ...incoming]) {
+    if (e == null || typeof e.sequence !== "number" || seen.has(e.sequence)) continue;
+    seen.add(e.sequence);
+    merged.push(e);
+  }
+  merged.sort((a, b) => a.sequence - b.sequence);
+  if (merged.length > MAX_CACHED_EVENTS) return merged.slice(merged.length - MAX_CACHED_EVENTS);
+  return merged;
+}
+
+function derivePhases(
+  trial: Trial | undefined,
+  runningHint = false,
+): Array<{ label: string; state: "done" | "running" | "pending" }> {
   if (!trial) {
+    // A live run with no finished trial row yet is mid-exploit, not idle.
+    if (runningHint) {
+      return [
+        { label: "Provision", state: "done" },
+        { label: "Exploit", state: "running" },
+        { label: "Verify", state: "pending" },
+      ];
+    }
     return [
       { label: "Provision", state: "pending" },
       { label: "Exploit", state: "pending" },
       { label: "Verify", state: "pending" },
     ];
   }
-  const done = trial.ended_at !== "";
+  // One falsy check everywhere (matches the active-trial finder): a live or
+  // field-missing trial is never "done".
+  const done = !!trial.ended_at;
   return [
     { label: "Provision", state: "done" },
     { label: "Exploit", state: done ? "done" : "running" },
@@ -74,27 +161,27 @@ export function BenchmarkRunPage() {
   const [tab, setTab] = useState("overview");
   const [timelineTrial, setTimelineTrial] = useState<string>("");
 
+  // Reset per-run UI state when navigating between runs (a stale trial filter
+  // from the previous run would otherwise hide the new run's timeline).
+  useEffect(() => {
+    setTab("overview");
+    setTimelineTrial("");
+  }, [runId]);
+
   const run = useQuery({
     queryKey: ["benchmarks", "run", runId],
-    queryFn: () => fetchRun(runId),
+    queryFn: ({ signal }) => fetchRun(runId, signal),
     enabled: !!runId,
     placeholderData: keepPreviousData,
     staleTime: 5_000,
     gcTime: 5 * 60_000,
+    // Never stop on a missing summary alone: terminal failed/cancelled runs
+    // never produce one. Terminal status is the only stop signal.
     refetchInterval: (query) => {
       const data = query.state.data as RunDetail | undefined;
-      if (!data) return false;
-      // While the overview hasn't delivered a verdict on ownership, keep
-      // polling anything that looks in-flight (or lacks a summary).
-      const ov = queryClient.getQueryData<{ active?: { run_id: string | null; state: string } }>([
-        "benchmarks",
-        "overview",
-      ]);
-      if (ov?.active) {
-        // Overview knows the truth: poll only while it says WE are the active run.
-        return ov.active.run_id === runId && isActiveState(ov.active.state) ? REFRESH_MS : false;
-      }
-      return isRunActive(data.status) || !data.summary ? REFRESH_MS : false;
+      if (!data) return REFRESH_MS;
+      if (query.state.isPlaceholderData) return REFRESH_MS;
+      return isRunActive(data.status) ? REFRESH_MS : false;
     },
   });
 
@@ -113,53 +200,52 @@ export function BenchmarkRunPage() {
 
   // A run whose status still says "running" but that no runner owns (daemon
   // restarted mid-run) will never progress — detect it and stop treating the
-  // page as live.
-  const orphaned = isOrphanedRun(run.data?.status, overview.data, runId);
+  // page as live. Grace period: while the overview is still loading (or this
+  // run's own query is placeholder data from a previous run) give the run the
+  // benefit of the doubt so the live bar doesn't flash off on first paint.
+  const overviewSettled = overview.isSuccess || overview.isError;
+  const orphaned =
+    !overview.isLoading && overviewSettled && !run.isPlaceholderData
+      ? isOrphanedRun(run.data?.status, overview.data, runId)
+      : false;
 
   const events = useQuery<{ events: BenchmarkEvent[]; latest_sequence?: number }>({
     queryKey: ["benchmarks", "run-events", runId],
-    queryFn: async (): Promise<{ events: BenchmarkEvent[]; latest_sequence?: number }> => {
-      const cached = queryClient.getQueryData<{ events: BenchmarkEvent[]; latest_sequence?: number }>([
-        "benchmarks",
-        "run-events",
-        runId,
-      ]);
-      const hasCached = !!cached?.events?.length;
-      if (hasCached) {
-        const cursor = cached?.latest_sequence ?? (cached?.events[cached.events.length - 1]?.sequence ?? 0);
-        const data = await fetchRunEvents(runId, { after: cursor, limit: 1000 });
-        if (data.events.length === 0) return cached as { events: BenchmarkEvent[]; latest_sequence?: number };
-        const merged = [...(cached?.events ?? []), ...data.events];
-        const seen = new Set<number>();
-        const deduped: BenchmarkEvent[] = [];
-        for (const e of merged) {
-          if (!seen.has(e.sequence)) {
-            seen.add(e.sequence);
-            deduped.push(e);
-          }
-        }
-        return { events: deduped, latest_sequence: data.latest_sequence };
+    queryFn: async ({ signal }): Promise<{ events: BenchmarkEvent[]; latest_sequence?: number }> => {
+      const key = ["benchmarks", "run-events", runId];
+      const cached = queryClient.getQueryData<{ events: BenchmarkEvent[]; latest_sequence?: number }>(key);
+      // Incremental once ANY page has been cached (even an empty one — a fresh
+      // run caches {events: []} and must not redo the full backfill every 2s).
+      if (cached !== undefined) {
+        const cursor = cached.latest_sequence ?? cached.events[cached.events.length - 1]?.sequence ?? 0;
+        const data = await fetchRunEvents(runId, { after: cursor, limit: 1000, signal });
+        if (data.events.length === 0) return cached;
+        return {
+          events: mergeEvents(cached.events, data.events),
+          latest_sequence: data.latest_sequence,
+        };
       }
       let cursor = 0;
       let all: BenchmarkEvent[] = [];
       let latest = 0;
       for (let page = 0; page < 5; page++) {
-        const data = await fetchRunEvents(runId, { after: cursor, limit: 1000 });
-        all = all.concat(data.events);
+        const data = await fetchRunEvents(runId, { after: cursor, limit: 1000, signal });
+        all = mergeEvents(all, data.events);
         latest = data.latest_sequence;
         if (data.events.length < 1000) break;
-        cursor = data.latest_sequence;
+        // Advance from the last returned event's sequence, not the server's
+        // global latest (which would skip the middle pages on multi-page runs).
+        cursor = all[all.length - 1]?.sequence ?? data.latest_sequence;
       }
       return { events: all, latest_sequence: latest };
     },
     enabled: !!runId,
     placeholderData: keepPreviousData,
     staleTime: 2_000,
-    refetchInterval: () => {
-      if (!run.data) return REFRESH_MS;
-      if (orphaned) return false;
-      return isRunActive(run.data.status) ? REFRESH_MS : false;
-    },
+    // Polling queries must not retry with backoff at poll cadence on a
+    // failing backend — surface the error inline instead (see below).
+    retry: false,
+    refetchInterval: () => (live ? REFRESH_MS : false),
   });
 
   // Live per-trial results: the runner persists each trial JSON as soon as it
@@ -168,21 +254,44 @@ export function BenchmarkRunPage() {
   // Orphaned runs fetch once (no polling) to recover their completed trials.
   const runScenarios = useQuery({
     queryKey: ["benchmarks", "run-scenarios", runId],
-    queryFn: () => fetchRunScenarios(runId),
+    queryFn: ({ signal }) => fetchRunScenarios(runId, signal),
     enabled: !!runId && !!run.data && isRunActive(run.data.status),
     placeholderData: keepPreviousData,
     staleTime: 2_000,
-    refetchInterval: () => {
-      if (!run.data || orphaned) return false;
-      return isRunActive(run.data.status) ? REFRESH_MS : false;
-    },
+    retry: false,
+    refetchInterval: () => (live ? REFRESH_MS : false),
   });
+
+  // Single liveness flag for every polling query: run-local active status ORs
+  // the overview's verdict instead of letting a possibly-stale overview veto
+  // live updates. While the run query is still loading, assume live so the
+  // page starts polling immediately; stop only on terminal status, orphaning,
+  // or a settled overview that names a different active run.
+  const runStatus = run.data?.status;
+  const overviewVeto =
+    overviewSettled &&
+    !run.isPlaceholderData &&
+    overview.data?.active != null &&
+    !(overview.data.active.run_id === runId && isActiveState(overview.data.active.state));
+  const live = !!runId && !orphaned && (!runStatus || isRunActive(runStatus)) && !overviewVeto;
+
+  const isActiveRun =
+    (overview.data?.active.run_id === runId && isActiveState(overview.data.active.state)) ||
+    (!overviewSettled && run.data ? isRunActive(run.data.status) : false) ||
+    (overviewSettled && !overviewVeto && run.data ? isRunActive(run.data.status) : false);
+
+  const invalidateRunQueries = () => {
+    void queryClient.invalidateQueries({ queryKey: ["benchmarks", "run", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["benchmarks", "run-events", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["benchmarks", "run-scenarios", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["benchmarks", "overview"] });
+  };
 
   const cancelMutation = useMutation({
     mutationFn: () => cancelBenchmarkRun(runId),
     onSuccess: () => {
       toast({ title: "Cancelling benchmark run", description: "The runner stops after the current trial step." });
-      void run.refetch();
+      invalidateRunQueries();
     },
     onError: (err) => {
       toast({
@@ -190,6 +299,7 @@ export function BenchmarkRunPage() {
         description: err instanceof Error ? err.message : String(err),
         variant: "destructive",
       });
+      invalidateRunQueries();
     },
   });
 
@@ -197,7 +307,7 @@ export function BenchmarkRunPage() {
     mutationFn: () => saveBaseline(runId),
     onSuccess: (res) => {
       toast({ title: "Baseline saved", description: res.path || "Regression baseline persisted." });
-      void run.refetch();
+      invalidateRunQueries();
     },
     onError: (err) => {
       toast({
@@ -208,19 +318,37 @@ export function BenchmarkRunPage() {
     },
   });
 
-  const isActiveRun =
-    (overview.data?.active.run_id === runId && isActiveState(overview.data.active.state)) ||
-    (!overview.isSuccess && run.data ? isRunActive(run.data.status) : false);
-
-  // Merge finalized trials with live per-trial results. run.json's trials
-  // array is empty until finalize, so during a live run the scenarios
-  // endpoint is the only source of completed-trial progress.
-  const liveTrials = runScenarios.data?.scenarios ?? [];
+  // Merge finalized trials with live per-trial results by trial_id (stored
+  // wins per id). run.json's trials array is empty until finalize, so during
+  // a live run the scenarios endpoint is the only source of completed-trial
+  // progress; a wholesale either/or would hide live trials mid-finalize.
+  const liveTrials = useMemo(() => (runScenarios.data?.scenarios ?? []).map(normalizeTrial), [runScenarios.data]);
+  const storedTrials = useMemo(() => (run.data?.trials ?? []).map(normalizeTrial), [run.data?.trials]);
+  const displayTrials: Trial[] = useMemo(() => {
+    if (storedTrials.length === 0) return liveTrials;
+    if (liveTrials.length === 0) return storedTrials;
+    const byId = new Map<string, Trial>();
+    for (const t of liveTrials) byId.set(t.trial_id, t);
+    for (const t of storedTrials) byId.set(t.trial_id, t);
+    return [...byId.values()];
+  }, [storedTrials, liveTrials]);
+  const trialsAreLive = storedTrials.length === 0 && liveTrials.length > 0;
   const activeTrial: Trial | undefined = useMemo(() => {
-    const stored = run.data?.trials ?? [];
-    const trials = stored.length > 0 ? stored : liveTrials;
-    return [...trials].reverse().find((t) => !t.ended_at);
-  }, [run.data?.trials, liveTrials]);
+    const unfinished = [...displayTrials].reverse().find((t) => !t.ended_at);
+    if (unfinished) return unfinished;
+    return undefined;
+  }, [displayTrials]);
+  // The scenarios endpoint only persists finished trials, so mid-run the trial
+  // list never contains the in-progress trial — fall back to the latest
+  // event's trial locus so the live strip and "now:" label still render.
+  const eventList = events.data?.events ?? [];
+  const liveHint = useMemo(() => {
+    for (let i = eventList.length - 1; i >= 0; i--) {
+      const e = eventList[i];
+      if (e?.trial_id || e?.scenario_id) return { trial_id: e.trial_id, scenario_id: e.scenario_id };
+    }
+    return undefined;
+  }, [eventList]);
 
   if (run.isLoading && !run.data) {
     return (
@@ -263,18 +391,20 @@ export function BenchmarkRunPage() {
   const summary = data.summary;
   const env = data.environment;
   const manifest = data.replay_manifest;
-  const phases = derivePhases(activeTrial);
-
-  const displayTrials: Trial[] = data.trials.length > 0 ? data.trials : liveTrials;
-  const trialsAreLive = data.trials.length === 0 && liveTrials.length > 0;
+  const phases = derivePhases(activeTrial, isActiveRun && !activeTrial && !!liveHint);
 
   const onCancel = () => cancelMutation.mutate();
   const onSaveBaseline = () => baselineMutation.mutate();
 
-  const totalTrials = data.config.trials * Math.max(1, data.scenario_ids.length || displayTrials.length || 1);
-  const completedTrials = displayTrials.filter((t) => t.ended_at).length;  const progressPct = totalTrials > 0 ? Math.min(100, Math.round((completedTrials / totalTrials) * 100)) : 0;
-  const eventList = events.data?.events ?? [];
-  const elapsedSec = eventList.length > 0 ? (eventList[eventList.length - 1]?.elapsed_seconds ?? 0) : 0;
+  // Stable denominator: prefer the summary's frozen total, then the config
+  // (trials × scenarios) — never the growing live-trial count, which makes
+  // progress move backward as results arrive.
+  const totalTrials =
+    summary?.trials_total ?? data.config.trials * Math.max(1, data.scenario_ids.length || displayTrials.length || 1);
+  const completedTrials = displayTrials.filter((t) => !!t.ended_at).length;
+  const progressPct = totalTrials > 0 ? Math.min(100, Math.round((completedTrials / totalTrials) * 100)) : 0;
+  // Max, not last element: a single out-of-order page must never rewind time.
+  const elapsedSec = eventList.reduce((m, e) => Math.max(m, e?.elapsed_seconds ?? 0), 0);
   const eventCount = eventList.length;
   const trialIds = [...new Set(displayTrials.map((t) => t.trial_id))];
   const headerBadge = orphaned ? "INTERRUPTED" : isActiveRun ? "RUNNING" : runStatusToBadge(data.status);
@@ -347,7 +477,7 @@ export function BenchmarkRunPage() {
             </div>
             <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> {completedTrials}/{totalTrials} trials completed
-              {activeTrial ? ` · now: ${activeTrial.scenario_id}` : ""}
+              {(activeTrial?.scenario_id ?? liveHint?.scenario_id) ? ` · now: ${activeTrial?.scenario_id ?? liveHint?.scenario_id}` : ""}
               <span className="ml-auto tabular-nums">
                 {formatDuration(elapsedSec)} · {eventCount} events · polling 2s
               </span>
@@ -409,11 +539,44 @@ export function BenchmarkRunPage() {
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 xl:flex-row xl:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-2 xl:min-h-0 xl:overflow-hidden">
-          {/* Live strip — same as RunPage's PhaseTracker */}
-          {isActiveRun && activeTrial && (
+          {/* Query errors surface inline (polling never retries silently). */}
+          {(events.isError || runScenarios.isError) && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              {events.isError && (
+                <span>
+                  Live events unavailable: {events.error instanceof Error ? events.error.message : "fetch failed"}.{" "}
+                </span>
+              )}
+              {runScenarios.isError && (
+                <span>
+                  Live trial results unavailable:{" "}
+                  {runScenarios.error instanceof Error ? runScenarios.error.message : "fetch failed"}.
+                </span>
+              )}
+              <button
+                type="button"
+                className="ml-2 underline underline-offset-4"
+                onClick={() => {
+                  void events.refetch();
+                  void runScenarios.refetch();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {/* Live strip — same as RunPage's PhaseTracker. The scenarios
+              endpoint only persists finished trials, so mid-run the strip
+              falls back to the latest event's trial locus ("now: …"). */}
+          {isActiveRun && (activeTrial ?? liveHint) && (
             <div className="flex flex-wrap items-center gap-3 rounded-md border bg-card/40 px-2.5 py-1.5 text-sm">
-              <span className="font-mono text-xs font-medium">{activeTrial.scenario_id}</span>
-              <span className="text-xs text-muted-foreground">trial {activeTrial.trial_index + 1}</span>
+              <span className="font-mono text-xs font-medium">
+                {activeTrial?.scenario_id ?? liveHint?.scenario_id ?? "…"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {activeTrial ? `trial ${activeTrial.trial_index + 1}` : "in progress"}
+              </span>
               <div className="flex gap-1.5" aria-label="Phases">
                 {phases.map((p) => (
                   <span
@@ -431,7 +594,14 @@ export function BenchmarkRunPage() {
                 ))}
               </div>
               <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-                actions: {activeTrial.tool_calls} · {activeTrial.sandbox.enabled ? "sandbox healthy" : "sandbox disabled"}
+                {activeTrial ? (
+                  <>
+                    actions: {activeTrial.tool_calls} ·{" "}
+                    {activeTrial.sandbox.enabled ? "sandbox healthy" : "sandbox disabled"}
+                  </>
+                ) : (
+                  <>trial {liveHint?.trial_id ?? "starting…"}</>
+                )}
               </span>
             </div>
           )}

@@ -66,7 +66,14 @@ def register_provider(provider: BenchmarkProvider) -> None:
 
 
 def get_provider(suite_id: str) -> BenchmarkProvider:
-    """Resolve a suite provider; raises KeyError with the known suites."""
+    """Resolve a suite provider by ``suite_id``.
+
+    Contract: returns the registered :class:`BenchmarkProvider`; raises
+    :class:`KeyError` (message lists the known suites, or "(none
+    registered)") when ``suite_id`` is unknown. Callers that surface this
+    to operators should catch ``KeyError`` and report it as a user error,
+    not a crash.
+    """
     provider = _STATE.providers.get(suite_id)
     if provider is None:
         known = ", ".join(sorted(_STATE.providers)) or "(none registered)"

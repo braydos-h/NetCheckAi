@@ -29,11 +29,12 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
+import time
 import urllib.request
 from typing import Any
 
-from tools.exceptions import _EXC_GROUP_CATCH, _log_nested_exceptions
-from tools.mcp_shared import _attempt_dir, add_discovered_target
+from tools.mcp_shared import _attempt_dir, _check_allowlist, add_discovered_target
 from tools.mcp_tools.registry import ToolContext, _run_with_pgrp_timeout
 from tools.validation_utils import (
     is_fqdn,

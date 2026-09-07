@@ -82,6 +82,13 @@ def _make_server(tmp_path: Path, *, wordlist: str | None = None):
     )
 
 
+def _make_wordlist(tmp_path: Path) -> str:
+    """Create a small wordlist file and return its path (mocked envs lack rockyou)."""
+    wl = tmp_path / "wordlist.txt"
+    wl.write_text("password\npassword123\nletmein!\n", encoding="utf-8")
+    return str(wl)
+
+
 def _text(result) -> str:
     content = result[0] if isinstance(result, (list, tuple)) else result
     if hasattr(content, "content"):
@@ -124,7 +131,7 @@ async def test_run_hash_crack_is_registered(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_hash_crack_auto_resolves_ntlm_mode(tmp_path: Path, monkeypatch) -> None:
-    mcp = _make_server(tmp_path)
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     captured: list[Any] = []
     import mcp_exploit_server as mes
@@ -152,7 +159,7 @@ async def test_run_hash_crack_auto_resolves_ntlm_mode(tmp_path: Path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_run_hash_crack_parses_show_output(tmp_path: Path, monkeypatch) -> None:
-    mcp = _make_server(tmp_path)
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     hash_val = "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e"
     _patch_pgrp_seq(
@@ -215,7 +222,7 @@ async def test_run_hash_crack_not_installed(tmp_path: Path, monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_run_hash_crack_john_parses_show(tmp_path: Path, monkeypatch) -> None:
-    mcp = _make_server(tmp_path)
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     _patch_pgrp_seq(
         monkeypatch,
@@ -232,3 +239,125 @@ async def test_run_hash_crack_john_parses_show(tmp_path: Path, monkeypatch) -> N
     )
     assert "CRACKED: 1" in text
     assert "letmein!" in text
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_rejects_nondigit_hash_mode(tmp_path: Path, monkeypatch) -> None:
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {
+                "hash_value": "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e",
+                "tool": "hashcat",
+                "hash_mode": "1000; rm -rf /",
+            },
+        )
+    )
+    assert text.startswith("BLOCKED:")
+    assert "numeric" in text
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_missing_wordlist(tmp_path: Path, monkeypatch) -> None:
+    mcp = _make_server(tmp_path, wordlist=str(tmp_path / "no-such-wordlist.txt"))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {"hash_value": "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e", "tool": "hashcat"},
+        )
+    )
+    assert text.startswith("WORDLIST_NOT_FOUND:")
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_missing_rules_file(tmp_path: Path, monkeypatch) -> None:
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {
+                "hash_value": "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e",
+                "tool": "hashcat",
+                "rules": str(tmp_path / "no-such-rule.rule"),
+            },
+        )
+    )
+    assert text.startswith("RULES_NOT_FOUND:")
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_clamps_timeout(tmp_path: Path, monkeypatch) -> None:
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured: list[Any] = []
+    import mcp_exploit_server as mes
+
+    timeouts: list[Any] = []
+
+    def _fake(args, timeout, stdout=None, stderr=None, cwd=None, env=None, input_text=None, **popen_kwargs):
+        captured.append(list(args))
+        timeouts.append(timeout)
+        return 0, "", ""
+
+    monkeypatch.setattr(mes, "_run_with_pgrp_timeout", _fake)
+
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {
+                "hash_value": "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e",
+                "tool": "hashcat",
+                "timeout": 99999,
+            },
+        )
+    )
+    assert "CRACK_RESULT:" in text
+    assert captured, "_run_with_pgrp_timeout was not invoked"
+    assert timeouts[0] == 3600
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_john_unmapped_mode_warns(tmp_path: Path, monkeypatch) -> None:
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured: list[Any] = []
+    import mcp_exploit_server as mes
+
+    def _fake(args, timeout, stdout=None, stderr=None, cwd=None, env=None, input_text=None, **popen_kwargs):
+        captured.append(list(args))
+        return 0, "", ""
+
+    monkeypatch.setattr(mes, "_run_with_pgrp_timeout", _fake)
+
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {
+                "hash_value": "b7e4b90b1d8f4a9c3d2e1f0a5b6c7d8e",
+                "tool": "john",
+                "hash_mode": "22321",
+            },
+        )
+    )
+    assert "CRACK_RESULT:" in text
+    assert "WARN:" in text
+    assert "auto-detect" in text
+    # Unmapped mode: no --format flag reaches john (auto-detect instead).
+    assert not any(a.startswith("--format=") for a in captured[0])
+
+
+@pytest.mark.asyncio
+async def test_run_hash_crack_caps_hash_value(tmp_path: Path) -> None:
+    mcp = _make_server(tmp_path, wordlist=_make_wordlist(tmp_path))
+    text = _text(
+        await mcp.call_tool(
+            "run_hash_crack",
+            {"hash_value": "a" * 1_000_001, "tool": "hashcat"},
+        )
+    )
+    assert text.startswith("BLOCKED:")
+    assert "exceeds" in text
