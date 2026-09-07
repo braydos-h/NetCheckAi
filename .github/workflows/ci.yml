@@ -173,6 +173,12 @@ jobs:
         run: ruff check .
       - name: Ruff format
         run: ruff format --check .
+      - name: ShellCheck install.sh (warning level)
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning install.sh
+          bash -n install.sh
+          echo "ShellCheck + bash -n: OK"
       - name: MCP bare-except guard (no hidden BaseExceptionGroup)
         run: |
           # Fail if any MCP-adjacent bare `except Exception` hides a BaseExceptionGroup.

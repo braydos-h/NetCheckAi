@@ -81,7 +81,7 @@ argument group in `main.parse_args`, so references survive line drift.
 
 | Flag | Description | Group |
 |------|-------------|------|
-| `--eval [TARGET ...]` | With target ids: run the graded eval suite (oracle v2) against those `eval_targets/*.oracle.json` targets. Bare `--eval`: all oracle targets. With `--target <ip>`: the legacy single-target benchmark instead, writing `reports/eval/<run_id>/` (`tools/eval_harness.py`) | eval & regression |
+| `--eval [TARGET ...]` | With target ids: run the graded eval suite (oracle v2) against those `eval_targets/*.oracle.json` targets. Bare `--eval`: all oracle targets — the graded path needs no `--target` and does not exit 2. With `--target <ip>`: the legacy single-target benchmark instead, writing `reports/eval/<run_id>/` (`tools/eval_harness.py:run_eval`, whose exit-2 no-target check only applies to that legacy path) | eval & regression |
 | `--eval-list` | Print the graded-eval oracle targets (id + flag count) and exit | eval & regression |
 | `--save-baseline` | With `--eval` or `--benchmark`: persist the report as the regression baseline (`eval.baseline_path` / `benchmark.baseline_path`) | eval & regression |
 | `--check-regression` | With `--eval` or `--benchmark`: exit 1 when score drops beyond tolerance (`eval.regression_tolerance` / `benchmark` tolerances); fails closed on a missing baseline | eval & regression |
@@ -122,7 +122,7 @@ daemon default and direct runs load keys without prompting.
 | `--ctf-flag-path <path>` | CTF goal: flag file path on the target (e.g. `/root/flag.txt`; default empty) | ctf autopilot |
 | `--ctf-marker <str>` | CTF known-string marker expected from `--ctf-port` | ctf autopilot |
 | `--ctf-port <n>` | CTF port to probe for marker | ctf autopilot |
-| `--ctf-root-shell` | CTF: treat `uid=0` in any output as goal-met (default True) | ctf autopilot |
+| `--ctf-root-shell` | CTF: treat `uid=0` in any output as goal-met (default False) | ctf autopilot |
 
 ### WebUI / API daemon flags
 
@@ -164,9 +164,9 @@ to `exploit.allowed_targets` in the config (`tools/config_cli.add_target_to_allo
 
 ## `python cli.py` — Flow B (SQLite mission workflow)
 
-Subcommands built at `cli.py:504-572`. All commands except `init-mission` accept
+Subcommands built at `legacy/cli.py:530-598`. All commands except `init-mission` accept
 `--mission-id <id>` (placed after the subcommand) to operate on a specific mission instead of
-the latest `active` one — the resume/reattach path (`cli.py:513-518`).
+the latest `active` one — the resume/reattach path (`legacy/cli.py:533-544`).
 
 | Command | Flags | Description | Line |
 |---------|-------|-------------|------|

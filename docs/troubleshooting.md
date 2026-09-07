@@ -460,3 +460,208 @@ an exact fix. When in doubt, start with the diagnostics table below — the
   spawning a hanging `sudo` (`tools/mcp_tools/terminal.py:97`). Full Kali
   arsenal (searchsploit/metasploit/hydra/crackmapexec/impacket) is expected
   on Linux; `scripts/setup-linux.sh` bootstraps venv + deps + doctor.
+
+## 7. Daemon, auth, sandbox, benchmark, vault, and live events
+
+| Symptom | Entry |
+|---|---|
+| `--daemon/--web cannot be combined with ...`, exit 2 | [Daemon flag conflicts](#daemon-flag-conflicts-exit-2) |
+| `--api-host must be loopback`, exit 2 | [Non-loopback bind refusal](#non-loopback-bind-refusal) |
+| `Unauthorized: MCP_HTTP_TOKEN required` on HTTP MCP | [MCP_HTTP_TOKEN mismatch](#mcp_http_token-mismatch) |
+| Skill hints rebuild every few actions (prompt churn) | [Skill reselect storms](#skill-reselect-storms) |
+| `Docker sandbox unavailable ... falling back to NATIVE` | [Sandbox Docker unavailable](#sandbox-docker-unavailable-fallback_native) |
+| Benchmark trials `INFRASTRUCTURE_ERROR (SANDBOX_FAILED)` | [Benchmark sandbox_required refusal](#benchmark-sandbox_required-refusal) |
+| Credential store plaintext WARNING on startup | [.vault_key plaintext fallback](#vault_key-plaintext-fallback-warning) |
+| WebUI event stream reconnects after ~90s silence | [SSE 90s watchdog](#sse-90s-watchdog-reconnects) |
+
+### Daemon flag conflicts (exit 2)
+
+- **Symptoms:** `--demon/--daemon/--web cannot be combined with: --target, ...`
+  and the process exits 2 (`main.py:1391`).
+- **Cause:** the daemon gate fires before `--doctor`/`--self-test`/target-run
+  handling and rejects any run-describing or mode flag alongside daemon mode
+  (`--target`, `--mode`, `--goal`, `--custom-goal`, `--menu`, `--doctor`,
+  `--demo`, `--self-test`, `--skills-list`, `--list-plugins`,
+  `--setup-api-keys`, `--eval`, `--benchmark`; `main.py:1372`).
+- **Check:** re-read the error — it names the exact conflicting flags.
+- **Fix:** run the daemon alone, then run assessments separately:
+  ```bash
+  python main.py --daemon
+  python main.py --target 10.0.0.50 --mode recon
+  ```
+
+### Non-loopback bind refusal
+
+- **Symptoms:** `--api-host must be loopback (127.0.0.1/localhost/::1); got
+  ...` and exit 2 (`main.py:962`); the API layer raises the same refusal as a
+  `ValueError` (`tools/api/auth.py:41`).
+- **Cause:** v1 is loopback-only by design — there is no public-bind override
+  (`main.py:962` comment, `tools/api/auth.py:41` docstring).
+- **Check:** inspect the effective host:
+  ```bash
+  python -c "from tools.config_manager import load_config; print(load_config('config.yaml').get('api', {}).get('host'))"
+  ```
+- **Fix:** bind loopback only:
+  ```yaml
+  # config.yaml
+  api:
+    host: 127.0.0.1
+    port: 8765
+  ```
+
+### MCP_HTTP_TOKEN mismatch
+
+- **Symptoms:** HTTP-transport MCP calls fail with
+  `Unauthorized: MCP_HTTP_TOKEN required` (`tools/mcp_shared.py:471`).
+- **Cause:** the server wraps its HTTP app in bearer auth whenever
+  `MCP_HTTP_TOKEN` is set (`tools/mcp_shared.py:493`), and the live client
+  attaches `Authorization: Bearer <token>` only when its own env has the same
+  value (`tools/mcp_session.py:518`, `:760`). Set on one side but missing or
+  different on the other = every call 401s.
+- **Check:** confirm the variable is present (not its value) in both
+  environments:
+  ```bash
+  python -c "import os; print('server-side sees token:', bool(os.environ.get('MCP_HTTP_TOKEN', '').strip()))"
+  ```
+- **Fix:** export the identical value for the daemon and the MCP server
+  subprocess (it inherits the daemon env), then restart:
+  ```bash
+  export MCP_HTTP_TOKEN="a-long-random-value"
+  python main.py --daemon
+  ```
+
+### Skill reselect storms
+
+- **Symptoms:** skill guidance blocks churn every few actions mid-run instead
+  of settling.
+- **Cause:** mid-run reselection fires on every newly observed service/CVE
+  unless the rate guards stop it: capped at `reselect_max_per_run` (default 3)
+  with at least `reselect_min_interval_actions` (default 5) between rebuilds,
+  and skipped entirely when the rebuilt set is identical
+  (`tools/exploit_agent/skills.py:44`, guards at `:67`; defaults in
+  `tools/config/schema.py:719`).
+- **Check:** read your `skills:` block in `config.yaml`.
+- **Fix:** tighten the guards or disable mid-run reselection:
+  ```yaml
+  # config.yaml
+  skills:
+    reselect_mid_run: true
+    reselect_max_per_run: 3
+    reselect_min_interval_actions: 5
+  ```
+  Set `reselect_mid_run: false` if recon output keeps tripping rebuilds with
+  no benefit.
+
+### Sandbox Docker unavailable (`fallback_native`)
+
+- **Symptoms:** boot log says
+  `Docker sandbox unavailable (<reason>) -- falling back to NATIVE
+  (uncontained) legacy host execution for this session` and tool results carry
+  `SANDBOX_FALLBACK:` lines (`tools/sandbox/manager.py:108`,
+  `tools/mcp_tools/sandbox_exec.py:187`).
+- **Cause:** Docker CLI missing, daemon down, or the worker image not built,
+  with `sandbox.fallback_native: true` degrading the whole session to native
+  mode (decision in `tools/sandbox/__init__.py:18`; notice text in
+  `tools/sandbox/manager.py:104`).
+- **Check:**
+  ```bash
+  docker info
+  docker images | grep breachpilot-sandbox
+  ```
+- **Fix:** start the Docker daemon and build the worker image
+  (`docker build -t breachpilot-sandbox:latest docker/sandbox`), or fail
+  closed instead:
+  ```yaml
+  # config.yaml
+  sandbox:
+    enabled: true
+    fallback_native: false
+  ```
+
+### Benchmark `sandbox_required` refusal
+
+- **Symptoms:** every trial is marked
+  `INFRASTRUCTURE_ERROR (SANDBOX_FAILED)` with a `sandbox_unavailable` error
+  event whose detail reads
+  `sandbox_required=true but sandbox.enabled=false; ... There is no
+  host-execution fallback` (`tools/benchmark/runner.py:180`).
+- **Cause:** `sandbox_required` defaults to true on both the environment and
+  run configs (`tools/benchmark/models.py:293`, `:313`) while
+  `sandbox.enabled` is false — benchmarks refuse to run uncontained.
+- **Check:** `sandbox.enabled` in `config.yaml` versus the benchmark request's
+  `sandbox_required` (`tools/benchmark/service.py:113`).
+- **Fix:** enable the sandbox (see previous entry), or explicitly opt the
+  benchmark run out of containment:
+  ```bash
+  python main.py --benchmark xben --no-sandbox-required
+  ```
+  Implementation note: verify the exact CLI flag spelling with
+  `python main.py --help` — the config/request key is `sandbox_required`, but
+  the flag wrapper lives in `tools/benchmark_cli.py` and was not re-read here.
+
+### `.vault_key` plaintext fallback warning
+
+- **Symptoms:** a loud one-time WARNING that the credential store will be
+  written in PLAINTEXT (`tools/credential_store.py:167`, warnings at
+  `:195`).
+- **Cause:** the `_Vault` falls back to plaintext when `cryptography` is not
+  installed, no usable key is found (`AI_NMAP_VAULT_KEY` env, then
+  `~/.breachpilot/vault_keys/`, then the legacy in-workspace `.vault_key`
+  adopted once), or the key material is invalid (`tools/credential_store.py:17`,
+  `:195`). Legacy plaintext values still load so existing stores never brick
+  (`:32`).
+- **Check:**
+  ```bash
+  python -c "import cryptography; print(cryptography.__version__)"
+  python -c "import os; print('vault key set:', bool(os.environ.get('AI_NMAP_VAULT_KEY')))"
+  ```
+- **Fix:** install the dependency and set a persistent key:
+  ```bash
+  python -m pip install cryptography
+  export AI_NMAP_VAULT_KEY="$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")"
+  ```
+  Never commit keyfiles — the `.vault_key` basename is deny-listed from
+  workspace reads (`tools/credential_store.py:181`).
+
+### SSE 90s watchdog reconnects
+
+- **Symptoms:** the WebUI live-event stream drops to `reconnecting` after
+  ~90s of silence, then resumes; the run itself keeps going.
+- **Cause:** client-side watchdogs force-reconnect a silently dead socket —
+  90s for SSE (`webui/src/api/sse.ts:77`) and 45s-stale/90s-timeout for WS
+  (`webui/src/api/ws.ts:25`). The server side is `text/event-stream` with
+  no-cache/keep-alive headers (`tools/api/routes/events.py:119`) backed by a
+  ring buffer explicitly kept for reconnects
+  (`tools/api/event_broker.py:6`), and a browser disconnect does NOT cancel
+  the run (`tools/api/routes/events.py:132`).
+- **Check:** browser devtools → Network → the `text/event-stream` request;
+  confirm the run is still progressing via `GET /api/v1/runs/{id}`.
+- **Fix:** usually none needed — the client resubscribes with `after=<seq>`
+  and replays missed events. If reconnects are chronic, suspect a proxy or
+  idle-timeout killing long-lived streams (the server already sends
+  `X-Accel-Buffering: no`); prefer the WS transport or bypass the proxy for
+  `127.0.0.1:8765`.
+  ```bash
+  curl -N -H "Authorization: Bearer $BREACHPILOT_API_TOKEN" \
+    "http://127.0.0.1:8765/api/v1/runs/<run_id>/events" | head -n 20
+  ```
+
+### Related documentation
+
+- [config-reference.md](config-reference.md), [run-service.md](run-service.md), [api.md](api.md), [sandbox.md](sandbox.md), [benchmarks.md](benchmarks.md), [skills.md](skills.md), [webui.md](webui.md)
+
+### Source map
+
+- `main.py`, `app.py`
+- `tools/api/auth.py`, `tools/api/event_broker.py`, `tools/api/routes/events.py`
+- `tools/mcp_shared.py`, `tools/mcp_session.py`
+- `tools/exploit_agent/skills.py`, `tools/skill_embeddings.py`, `tools/config/schema.py`
+- `tools/sandbox/__init__.py`, `tools/sandbox/manager.py`, `tools/sandbox/models.py`, `tools/mcp_tools/sandbox_exec.py`
+- `tools/benchmark/service.py`, `tools/benchmark/models.py`, `tools/benchmark/runner.py`, `tools/benchmark_cli.py`
+- `tools/credential_store.py`
+- `webui/src/api/sse.ts`, `webui/src/api/ws.ts`
+
+Implementation note: the `--no-sandbox-required` flag spelling above was not
+re-verified against `tools/benchmark_cli.py` — confirm with
+`python main.py --help` before relying on it; the underlying
+`sandbox_required` request key (`tools/benchmark/service.py:113`) is verified.

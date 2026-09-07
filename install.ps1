@@ -183,6 +183,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Captured at script scope: inside functions $MyInvocation describes the
+# function, not the script, so every path reference below uses this.
+$script:ScriptPath = $MyInvocation.MyCommand.Path
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -260,7 +264,7 @@ $script:ActionItems = New-Object System.Collections.ArrayList
 $script:SupportsColor = $true
 
 # ---------------------------------------------------------------------------
-# Auth token resolution (env fallback). Never printed or logged (Redact-Secrets).
+# Auth token resolution (env fallback). Never printed or logged (Protect-SecretText).
 # ---------------------------------------------------------------------------
 $script:GitHubTokenPlain = ""
 if (-not [string]::IsNullOrWhiteSpace($GitHubToken)) {
@@ -300,14 +304,38 @@ function Invoke-ExternalCommand {
         [string[]]$Arguments = @(),
         [int]$TimeoutSeconds = 600,
         [switch]$AllowFailure,
-        [switch]$StreamOutput
+        [switch]$StreamOutput,
+        [string]$WorkingDirectory = ""
     )
     $argString = Join-CommandArguments -Arguments $Arguments
-    $display = (Redact-Secrets "$Command $argString").Trim()
+    $display = (Protect-SecretText "$Command $argString").Trim()
     Write-Log "RUN: $display (timeout ${TimeoutSeconds}s)" -Level "DEBUG"
+    # Resolve via PATH/PATHEXT so bare names (npm, docker, git) map to their
+    # real files. .cmd/.bat shims (npm!) cannot be CreateProcess'd directly
+    # with UseShellExecute=false — wrap them in cmd.exe /d /s /c.
+    $resolvedCmd = $Command
+    try {
+        $g = Get-Command $Command -ErrorAction SilentlyContinue
+        if (($null -ne $g) -and (-not [string]::IsNullOrWhiteSpace($g.Source))) {
+            $resolvedCmd = $g.Source
+        }
+    } catch { }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $Command
-    $psi.Arguments = $argString
+    if ($resolvedCmd -match "(?i)\.(cmd|bat)$") {
+        $comspec = $env:ComSpec
+        if ([string]::IsNullOrWhiteSpace($comspec)) { $comspec = "cmd.exe" }
+        $psi.FileName = $comspec
+        $psi.Arguments = '/d /s /c "' + '"' + $resolvedCmd + '" ' + $argString + '"'
+    } else {
+        $psi.FileName = $resolvedCmd
+        $psi.Arguments = $argString
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        if (-not (Test-Path -LiteralPath $WorkingDirectory)) {
+            throw "NONRETRY: Working directory does not exist: $WorkingDirectory"
+        }
+        $psi.WorkingDirectory = $WorkingDirectory
+    }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -408,7 +436,7 @@ function Invoke-WithRetry {
             if (($attempt -ge $MaxAttempts) -or (-not (Test-TransientError $msg)) -or $noRetry) {
                 throw
             }
-            $clean = Redact-Secrets $msg
+            $clean = Protect-SecretText $msg
             if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + "..." }
             $delay = $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))
             $jitter = (Get-Random -Minimum 0 -Maximum 1000) / 1000.0
@@ -521,16 +549,16 @@ function Resolve-BreachPilotVersion {
                 $commit = Invoke-WithRetry -Operation "resolve commit for tag $tag" -Script {
                     Invoke-GitHubApi -Path "/repos/$script:SourceFull/commits/$tag"
                 }
-                $sha = [string]$commit.sha
+                $sha = [string](Get-PropValue -Object $commit -Name "sha" -Default "")
                 if ([string]::IsNullOrWhiteSpace($sha)) { throw "NONRETRY: GitHub returned an empty commit SHA for tag $tag." }
                 Write-Ok "Resolved version $tag (commit $($sha.Substring(0, 12)))"
                 return [pscustomobject]@{
                     Channel      = "Explicit"
                     Tag          = $tag
                     Sha          = $sha
-                    PublishedAt  = [string]$rel.published_at
-                    IsPrerelease = [bool]$rel.prerelease
-                    Name         = [string]$rel.name
+                    PublishedAt  = [string](Get-PropValue -Object $rel -Name "published_at" -Default "")
+                    IsPrerelease = [bool](Get-PropValue -Object $rel -Name "prerelease" -Default $false)
+                    Name         = [string](Get-PropValue -Object $rel -Name "name" -Default "")
                 }
             } catch {
                 if ($_.Exception.Message -like "*NONRETRY*404*" -or $_.Exception.Message -like "*NONRETRY*404*") {
@@ -548,12 +576,12 @@ function Resolve-BreachPilotVersion {
         $repo = Invoke-WithRetry -Operation "fetch repository metadata" -Script {
             Invoke-GitHubApi -Path "/repos/$script:SourceFull"
         }
-        $branch = [string]$repo.default_branch
+        $branch = [string](Get-PropValue -Object $repo -Name "default_branch" -Default "main")
         if ([string]::IsNullOrWhiteSpace($branch)) { $branch = "main" }
         $commit = Invoke-WithRetry -Operation "fetch HEAD of $branch" -Script {
             Invoke-GitHubApi -Path "/repos/$script:SourceFull/commits/$branch"
         }
-        $sha = [string]$commit.sha
+        $sha = [string](Get-PropValue -Object $commit -Name "sha" -Default "")
         if ([string]::IsNullOrWhiteSpace($sha)) { throw "NONRETRY: GitHub returned an empty HEAD SHA for branch $branch." }
         Write-Ok "Resolved Main HEAD $branch@$($sha.Substring(0, 12))"
         return [pscustomobject]@{
@@ -572,9 +600,9 @@ function Resolve-BreachPilotVersion {
         Invoke-GitHubApi -Path "/repos/$script:SourceFull/releases?per_page=100"
     }
     if ($null -eq $releases) { $releases = @() }
-    $usable = @($releases | Where-Object { (-not [bool]$_.draft) } )
+    $usable = @($releases | Where-Object { $_ -ne $null -and (-not [bool](Get-PropValue -Object $_ -Name "draft" -Default $false)) } )
     if ($Channel -eq "Stable") {
-        $usable = @($usable | Where-Object { (-not [bool]$_.prerelease) })
+        $usable = @($usable | Where-Object { $_ -ne $null -and (-not [bool](Get-PropValue -Object $_ -Name "prerelease" -Default $false)) })
     }
     if ($usable.Count -eq 0) {
         if ($Channel -eq "Stable") {
@@ -582,23 +610,24 @@ function Resolve-BreachPilotVersion {
         }
         throw "NONRETRY: No releases at all (not even prereleases) exist in $script:SourceFull. Re-run with -Channel Main or pin -Version to an existing tag."
     }
-    $best = $usable | Sort-Object -Property published_at -Descending | Select-Object -First 1
-    $tag = [string]$best.tag_name
+    $best = $usable | Sort-Object -Property @{ Expression = { [string](Get-PropValue -Object $_ -Name "published_at" -Default "") } } -Descending | Select-Object -First 1
+    $tag = [string](Get-PropValue -Object $best -Name "tag_name" -Default "")
+    if ([string]::IsNullOrWhiteSpace($tag)) { throw "NONRETRY: GitHub returned a release with no tag_name." }
     $commit = Invoke-WithRetry -Operation "resolve commit for tag $tag" -Script {
         Invoke-GitHubApi -Path "/repos/$script:SourceFull/commits/$tag"
     }
-    $sha = [string]$commit.sha
+    $sha = [string](Get-PropValue -Object $commit -Name "sha" -Default "")
     if ([string]::IsNullOrWhiteSpace($sha)) { throw "NONRETRY: GitHub returned an empty commit SHA for tag $tag." }
     $pre = ""
-    if ([bool]$best.prerelease) { $pre = " (prerelease)" }
+    if ([bool](Get-PropValue -Object $best -Name "prerelease" -Default $false)) { $pre = " (prerelease)" }
     Write-Ok "Resolved $label release $tag$pre (commit $($sha.Substring(0, 12)))"
     return [pscustomobject]@{
         Channel      = $label
         Tag          = $tag
         Sha          = $sha
-        PublishedAt  = [string]$best.published_at
-        IsPrerelease = [bool]$best.prerelease
-        Name         = [string]$best.name
+        PublishedAt  = [string](Get-PropValue -Object $best -Name "published_at" -Default "")
+        IsPrerelease = [bool](Get-PropValue -Object $best -Name "prerelease" -Default $false)
+        Name         = [string](Get-PropValue -Object $best -Name "name" -Default "")
     }
 }
 
@@ -666,14 +695,13 @@ function Get-BreachPilotArchive {
     $hash = (Get-FileHash -LiteralPath $DestinationZip -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Ok ("Downloaded {0:N1} MB (SHA-256: {1})" -f ($fi.Length / 1MB), $hash)
     Write-Log "Archive SHA-256: $hash SizeBytes=$($fi.Length)" -Level "INFO"
-    Confirm-ReleaseChecksum -Resolved $Resolved -ArchivePath $DestinationZip -ArchiveSha256 $hash
+    Confirm-ReleaseChecksum -Resolved $Resolved -ArchiveSha256 $hash
     return $hash
 }
 
 function Confirm-ReleaseChecksum {
     param(
         [pscustomobject]$Resolved,
-        [string]$ArchivePath,
         [string]$ArchiveSha256
     )
     # A locally calculated SHA-256 is NOT proof of authenticity on its own.
@@ -692,18 +720,19 @@ function Confirm-ReleaseChecksum {
         return
     }
     $assets = @()
-    if ($null -ne $rel.assets) { $assets = @($rel.assets) }
-    $sumAsset = $assets | Where-Object { [string]$_.name -match "(?i)(sha256|sha-256|checksum)" } | Select-Object -First 1
+    $__assetsRaw = Get-PropValue -Object $rel -Name "assets" -Default $null
+    if ($null -ne $__assetsRaw) { $assets = @($__assetsRaw) }
+    $sumAsset = $assets | Where-Object { $_ -ne $null -and ([string](Get-PropValue -Object $_ -Name "name" -Default "") -match "(?i)(sha256|sha-256|checksum)") } | Select-Object -First 1
     if ($null -eq $sumAsset) {
         Write-Skip "Release $($Resolved.Tag) publishes no checksum asset; trusting HTTPS + resolved tag identity (SHA-256 recorded in metadata for diagnostics)."
         Write-Log "No checksum asset on release $($Resolved.Tag); calculated SHA-256 recorded." -Level "INFO"
         return
     }
-    Write-Prog "Verifying against official checksum asset '$($sumAsset.name)'..."
+    Write-Prog "Verifying against official checksum asset '$(Get-PropValue -Object $sumAsset -Name "name" -Default "?")'..."
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("bp-checksum-" + [guid]::NewGuid().ToString("N") + ".txt")
     try {
         Invoke-WithRetry -Operation "download checksum asset" -Script {
-            Invoke-WebRequest -Uri ([string]$sumAsset.browser_download_url) -OutFile $tmp -UseBasicParsing `
+            Invoke-WebRequest -Uri ([string](Get-PropValue -Object $sumAsset -Name "browser_download_url" -Default "")) -OutFile $tmp -UseBasicParsing `
                 -TimeoutSec 60 -Headers @{ "User-Agent" = $script:UserAgent } -ErrorAction Stop
         }
         $archiveName = "codeload-$($Resolved.Tag).zip"
@@ -718,13 +747,13 @@ function Confirm-ReleaseChecksum {
             if ([string]::IsNullOrWhiteSpace($wanted)) { $wanted = $h }
         }
         if ([string]::IsNullOrWhiteSpace($wanted)) {
-            Write-Skip "Checksum asset '$($sumAsset.name)' had no parseable SHA-256; trusting HTTPS + tag identity (hash recorded)."
+            Write-Skip "Checksum asset '$(Get-PropValue -Object $sumAsset -Name "name" -Default "?")' had no parseable SHA-256; trusting HTTPS + tag identity (hash recorded)."
             return
         }
         if ($wanted -ne $ArchiveSha256) {
             throw "NONRETRY: Official checksum mismatch for $($Resolved.Tag): archive SHA-256 $ArchiveSha256 != published $wanted. Deleted partial state; refusing to install."
         }
-        if ($matched) { Write-Ok "Official checksum verified ($($sumAsset.name))." }
+        if ($matched) { Write-Ok "Official checksum verified ($(Get-PropValue -Object $sumAsset -Name "name" -Default "?"))." }
         else { Write-Skip "Checksum asset has a single hash; matches download ($ArchiveSha256). Treated as verified." }
     } finally {
         if (Test-Path -LiteralPath $tmp) { try { Remove-Item -LiteralPath $tmp -Force } catch { } }
@@ -877,12 +906,12 @@ function Select-GitHubRelease {
         [ValidateSet("Stable", "Prerelease")][string]$WantedChannel = "Stable"
     )
     if ($null -eq $Releases) { return $null }
-    $usable = @($Releases | Where-Object { $_ -ne $null -and (-not [bool]$_.draft) })
+    $usable = @($Releases | Where-Object { $_ -ne $null -and (-not [bool](Get-PropValue -Object $_ -Name "draft" -Default $false)) })
     if ($WantedChannel -eq "Stable") {
-        $usable = @($usable | Where-Object { (-not [bool]$_.prerelease) })
+        $usable = @($usable | Where-Object { $_ -ne $null -and (-not [bool](Get-PropValue -Object $_ -Name "prerelease" -Default $false)) })
     }
     if ($usable.Count -eq 0) { return $null }
-    return ($usable | Sort-Object -Property published_at -Descending | Select-Object -First 1)
+    return ($usable | Sort-Object -Property @{ Expression = { [string](Get-PropValue -Object $_ -Name "published_at" -Default "") } } -Descending | Select-Object -First 1)
 }
 
 function Test-PythonVersionSupported {
@@ -1153,16 +1182,21 @@ function Test-CheckoutSafe {
     .SYNOPSIS
         Decide whether an update may touch a git checkout (never destructive).
     #>
-    param([pscustomobject]$Checkout, [string]$Dir)
-    if ($null -eq $Checkout -or -not $Checkout.IsGit) { return @{ Safe = $true; Reason = "not a git checkout" } }
-    if (-not $Checkout.GitAvailable) { return @{ Safe = $true; Reason = "git unavailable; treating as plain directory" } }
-    if (-not $Checkout.OriginMatches) {
-        return @{ Safe = $false; Reason = "directory is a git checkout whose origin ('$($Checkout.Origin)') is NOT $script:SourceFull. Refusing to touch a foreign repository — choose a different -InstallDir." }
+    param([pscustomobject]$Checkout)
+    if ($null -eq $Checkout) { return @{ Safe = $true; Reason = "not a git checkout" } }
+    if (-not [bool](Get-PropValue -Object $Checkout -Name "IsGit" -Default $false)) { return @{ Safe = $true; Reason = "not a git checkout" } }
+    if (-not [bool](Get-PropValue -Object $Checkout -Name "GitAvailable" -Default $false)) { return @{ Safe = $true; Reason = "git unavailable; treating as plain directory" } }
+    $__coOriginM = [string](Get-PropValue -Object $Checkout -Name "Origin" -Default "")
+    $__coMatch = [bool](Get-PropValue -Object $Checkout -Name "OriginMatches" -Default $false)
+    if (-not $__coMatch) {
+        return @{ Safe = $false; Reason = "directory is a git checkout whose origin ('$__coOriginM') is NOT $script:SourceFull. Refusing to touch a foreign repository — choose a different -InstallDir." }
     }
-    if ($Checkout.IsDirty) {
-        return @{ Safe = $false; Reason = "git checkout has uncommitted changes (branch $($Checkout.Branch), $($Checkout.Sha)). Commit or stash them first, or re-run with -Force to update anyway (a backup is still taken; `git reset --hard` / `git clean -fdx` are NEVER run automatically)." }
+    $__coBr = [string](Get-PropValue -Object $Checkout -Name "Branch" -Default "?")
+    $__coSh = [string](Get-PropValue -Object $Checkout -Name "Sha" -Default "?")
+    if ([bool](Get-PropValue -Object $Checkout -Name "IsDirty" -Default $false)) {
+        return @{ Safe = $false; Reason = "git checkout has uncommitted changes (branch $__coBr, $__coSh). Commit or stash them first, or re-run with -Force to update anyway (a backup is still taken; `git reset --hard` / `git clean -fdx` are NEVER run automatically)." }
     }
-    return @{ Safe = $true; Reason = "clean checkout of $script:SourceFull ($($Checkout.Branch)@$($Checkout.Sha))" }
+    return @{ Safe = $true; Reason = "clean checkout of $script:SourceFull ($__coBr@$__coSh)" }
 }
 
 # ---------------------------------------------------------------------------
@@ -1254,17 +1288,19 @@ function Test-InterruptedInstall {
     #>
     param([string]$InstallDir)
     $st = Read-InstallState -InstallDir $InstallDir
-    if ($null -eq $st -or [string]::IsNullOrWhiteSpace([string]$st.state)) {
+    $__stState = [string](Get-PropValue -Object $st -Name "state" -Default "")
+    if ($null -eq $st -or [string]::IsNullOrWhiteSpace($__stState)) {
         return @{ Interrupted = $false; State = "none"; BackupDir = "" }
     }
-    $state = [string]$st.state
+    $state = [string](Get-PropValue -Object $st -Name "state" -Default "")
     if ($state -eq "completed") {
         return @{ Interrupted = $false; State = $state; BackupDir = "" }
     }
     # Any non-completed persisted state means the last run did not finish.
     $backupDir = ""
-    if (-not [string]::IsNullOrWhiteSpace([string]$st.backup_dir)) {
-        $backupDir = [string]$st.backup_dir
+    $__stBackup = [string](Get-PropValue -Object $st -Name "backup_dir" -Default "")
+    if (-not [string]::IsNullOrWhiteSpace($__stBackup)) {
+        $backupDir = $__stBackup
     }
     return @{ Interrupted = $true; State = $state; BackupDir = $backupDir }
 }
@@ -1625,7 +1661,7 @@ function Install-PythonEnvironment {
     #>
     $py = Find-BestPython
     if ($null -ne $py) {
-        Write-Ok "Python $($py.Version) ($($py.Command))"
+        Write-Ok "Python $((Get-PropValue -Object $py -Name "Version" -Default "?")) ($((Get-PropValue -Object $py -Name "Command" -Default "?")))"
         return $py
     }
     if ($Check) {
@@ -1644,7 +1680,7 @@ function Install-PythonEnvironment {
     if ($null -eq $py) {
         throw "Python 3.11+ is required but none is usable. Install from https://www.python.org/downloads/ (tick 'Add Python to PATH'), open a NEW terminal, and re-run install.ps1."
     }
-    Write-Ok "Python $($py.Version) ($($py.Command))"
+    Write-Ok "Python $((Get-PropValue -Object $py -Name "Version" -Default "?")) ($((Get-PropValue -Object $py -Name "Command" -Default "?")))"
     return $py
 }
 
@@ -1692,15 +1728,15 @@ function Install-VenvAndDeps {
     $venvDir = Join-Path $InstallDir ".venv"
     $venvPy = Join-Path $venvDir "Scripts\python.exe"
     $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
-    if ($health.Healthy -and -not $health.NeedsDeps -and -not $Force) {
+    if ([bool](Get-PropValue -Object $health -Name "Healthy" -Default $false) -and -not [bool](Get-PropValue -Object $health -Name "NeedsDeps" -Default $false) -and -not $Force) {
         $r = Invoke-ExternalCommand -Command $venvPy -Arguments @("--version") -TimeoutSeconds 15 -AllowFailure
         Write-Ok "venv healthy ($($r.StdOut.Trim())), deps present — skipping recreate."
         return $venvPy
     }
-    if ($health.Healthy -and $health.NeedsDeps -and -not $Force) {
+    if ([bool](Get-PropValue -Object $health -Name "Healthy" -Default $false) -and [bool](Get-PropValue -Object $health -Name "NeedsDeps" -Default $false) -and -not $Force) {
         Write-Prog "venv works but project deps are missing — installing deps only."
-    } elseif (-not $health.Healthy) {
-        Write-Prog "venv $($health.Reason) — (re)creating..."
+    } elseif (-not [bool](Get-PropValue -Object $health -Name "Healthy" -Default $false)) {
+        Write-Prog "venv $([string](Get-PropValue -Object $health -Name "Reason" -Default "unusable")) — (re)creating..."
         if ((Test-Path -LiteralPath $venvDir) -and $Force) {
             try { Remove-Item -LiteralPath $venvDir -Recurse -Force } catch {
                 Write-Warn "Could not remove broken venv at $venvDir`: $($_.Exception.Message). Trying to reuse it."
@@ -1722,8 +1758,8 @@ function Install-VenvAndDeps {
             }
         }
         $health = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
-        if (-not $health.Healthy -and -not $health.NeedsDeps) {
-            throw "venv created but unusable: $($health.Reason)"
+        if (-not [bool](Get-PropValue -Object $health -Name "Healthy" -Default $false) -and -not [bool](Get-PropValue -Object $health -Name "NeedsDeps" -Default $false)) {
+            throw "venv created but unusable: $([string](Get-PropValue -Object $health -Name "Reason" -Default "unknown"))"
         }
         Write-Ok "venv created at $venvDir"
     }
@@ -1909,10 +1945,10 @@ function Install-WebUI {
     try {
         if ($useCi) {
             Write-Log "npm ci (deterministic, lockfile present)" -Level "INFO"
-            Invoke-ExternalCommand -Command "npm" -Arguments @("ci", "--no-audit", "--no-fund") -TimeoutSeconds 1200 | Out-Null
+            Invoke-ExternalCommand -Command "npm" -Arguments @("ci", "--no-audit", "--no-fund") -TimeoutSeconds 1200 -WorkingDirectory $webDir | Out-Null
         } else {
             Write-Log "npm install (no lockfile)" -Level "INFO"
-            Invoke-ExternalCommand -Command "npm" -Arguments @("install", "--no-audit", "--no-fund") -TimeoutSeconds 1200 | Out-Null
+            Invoke-ExternalCommand -Command "npm" -Arguments @("install", "--no-audit", "--no-fund") -TimeoutSeconds 1200 -WorkingDirectory $webDir | Out-Null
         }
     } catch {
         Write-Warn "WebUI dependency install failed: $($_.Exception.Message). The app will retry the build on first 'python main.py --web'."
@@ -1921,7 +1957,7 @@ function Install-WebUI {
     }
     try {
         # `npm run build` = `tsc -b && vite build` (webui/package.json) -> webui/dist/.
-        Invoke-ExternalCommand -Command "npm" -Arguments @("run", "build") -TimeoutSeconds 1200 | Out-Null
+        Invoke-ExternalCommand -Command "npm" -Arguments @("run", "build") -TimeoutSeconds 1200 -WorkingDirectory $webDir | Out-Null
     } catch {
         Write-Warn "WebUI build failed: $($_.Exception.Message). The app will retry on first 'python main.py --web'."
         Add-ActionRequired "WebUI build failed: ensure Node 18+ ('node --version'), then 'cd webui && npm run build'."
@@ -1974,14 +2010,15 @@ function Find-Nmap {
 function Install-NmapIfNeeded {
     param([string]$InstallDir)
     $found = Find-Nmap -InstallDir $InstallDir
-    if ($found.Present) {
-        Write-Ok "Nmap: $($found.VersionLine) [$($found.Path)]"
+    if ([bool](Get-PropValue -Object $found -Name "Present" -Default $false)) {
+        Write-Ok "Nmap: $((Get-PropValue -Object $found -Name "VersionLine" -Default "?")) [$((Get-PropValue -Object $found -Name "Path" -Default "?"))]"
         # If it came from a known location but is not on PATH, say how to fix
         # without reinstalling: add its directory for this process + user PATH hint.
         try {
             $onPath = ($null -ne (Get-Command nmap -ErrorAction SilentlyContinue))
-            if ((-not $onPath) -and ($found.Path -match "[\\/]")) {
-                $dir = Split-Path -Parent $found.Path
+            $__foundPath = [string](Get-PropValue -Object $found -Name "Path" -Default "")
+            if ((-not $onPath) -and ($__foundPath -match "[\\/]")) {
+                $dir = Split-Path -Parent $__foundPath
                 if (($env:Path -split ";" | Where-Object { $_.Trim().Equals($dir.Trim(), [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
                     $env:Path = "$env:Path;$dir"
                     Write-Log "Added Nmap dir to process PATH: $dir" -Level "INFO"
@@ -2005,8 +2042,8 @@ function Install-NmapIfNeeded {
         -ManualUrl "https://nmap.org/download.html" `
         -WhyNeeded "Recon scans (doctor honors nmap.path else PATH)."
     $found = Find-Nmap -InstallDir $InstallDir
-    if ($found.Present) {
-        Write-Ok "Nmap: $($found.VersionLine) [$($found.Path)]"
+    if ([bool](Get-PropValue -Object $found -Name "Present" -Default $false)) {
+        Write-Ok "Nmap: $((Get-PropValue -Object $found -Name "VersionLine" -Default "?")) [$((Get-PropValue -Object $found -Name "Path" -Default "?"))]"
     } else {
         Add-ActionRequired "Install Nmap (https://nmap.org/download.html or 'winget install Insecure.Nmap'), then re-run install.ps1."
     }
@@ -2046,7 +2083,9 @@ function Test-OllamaInstall {
 function Install-OllamaIfNeeded {
     param([string]$InstallDir)
     $active = Get-ActiveProvider -InstallDir $InstallDir
-    $needsOllama = ($active.Provider -eq "ollama") -or ($active.Embeddings -eq "ollama")
+    $__actProv = [string](Get-PropValue -Object $active -Name "Provider" -Default "ollama")
+    $__actEmb = [string](Get-PropValue -Object $active -Name "Embeddings" -Default "ollama")
+    $needsOllama = ($__actProv -eq "ollama") -or ($__actEmb -eq "ollama")
     if ($SkipOllama) {
         if ($needsOllama) {
             Write-Warn "-SkipOllama given but config uses Ollama (provider=$($active.Provider), embeddings=$($active.Embeddings)). Doctor will report the Ollama check as failing until you configure another provider or remove -SkipOllama."
@@ -2252,7 +2291,7 @@ function Install-SandboxImage {
     }
     Write-Prog "Building sandbox image '$image' (docker build, several minutes first time)..."
     try {
-        Invoke-ExternalCommand -Command "docker" -Arguments @("build", "-t", $image, "docker/sandbox") -TimeoutSeconds 3600 | Out-Null
+        Invoke-ExternalCommand -Command "docker" -Arguments @("build", "-t", $image, "docker/sandbox") -TimeoutSeconds 3600 -WorkingDirectory $InstallDir | Out-Null
         $verify = Invoke-ExternalCommand -Command "docker" -Arguments @("image", "inspect", $image) -TimeoutSeconds 30 -AllowFailure
         if ($verify.ExitCode -eq 0) {
             Write-Ok "Sandbox image built: $image"
@@ -2277,7 +2316,8 @@ function Test-ApiKeySetup {
     $active = Get-ActiveProvider -InstallDir $InstallDir
     # Map active provider -> required env (optional keys are never demanded).
     $required = @()
-    switch ($active.Provider) {
+    $__keyProv = [string](Get-PropValue -Object $active -Name "Provider" -Default "")
+    switch ($__keyProv) {
         "ollama" { $required = @("OLLAMA_API_KEY") }
         "opencode_go" { $required = @("OPENCODE_GO_API_KEY") }
         "chatgpt" { $required = @() }  # OAuth via ~/.codex/auth.json, never a pasted key.
@@ -2291,14 +2331,12 @@ function Test-ApiKeySetup {
             try {
                 $secr = Join-Path $InstallDir "secr.json"
                 if (Test-Path -LiteralPath $secr) {
-                    $j = Get-Content -LiteralPath $secr -Raw -Encoding UTF8 | ConvertFrom-Json
-                    $has = $false
-                    if ($null -ne $j.api_keys) {
-                        foreach ($p in $j.api_keys.PSObject.Properties) {
-                            if ($p.Name -eq $name -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { $has = $true }
-                        }
-                    }
-                    if (-not $has) { $missing += $name }
+                    # load_api_key_file shape: {"api_keys": {...}} OR flat {ENV: secret}.
+                    $rawKeys = Get-Content -LiteralPath $secr -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $keyMap = Get-PropValue -Object $rawKeys -Name "api_keys" -Default $null
+                    if ($null -eq $keyMap) { $keyMap = $rawKeys }
+                    $val = [string](Get-PropValue -Object $keyMap -Name $name -Default "")
+                    if ([string]::IsNullOrWhiteSpace($val)) { $missing += $name }
                 } else {
                     $missing += $name
                 }
@@ -2307,7 +2345,7 @@ function Test-ApiKeySetup {
             }
         }
     }
-    if ($active.Provider -eq "chatgpt") {
+    if ([string](Get-PropValue -Object $active -Name "Provider" -Default "") -eq "chatgpt") {
         $codex = Join-Path $env:USERPROFILE ".codex\auth.json"
         if ($env:CODEX_HOME) { $codex = Join-Path $env:CODEX_HOME "auth.json" }
         if (-not (Test-Path -LiteralPath $codex)) {
@@ -2318,15 +2356,17 @@ function Test-ApiKeySetup {
     return @{ Missing = $missing; Note = "" }
 }
 
-function Offer-ApiKeySetup {
+function Request-ApiKeySetup {
     param([string]$InstallDir, [string]$VenvPython)
     $st = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
-    if ($st.Missing.Count -eq 0) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$st.Note)) { Write-Info ([string]$st.Note) }
+    $__stMissing = @(Get-PropValue -Object $st -Name "Missing" -Default @())
+    if ($__stMissing.Count -eq 0) {
+        $__stNote = [string](Get-PropValue -Object $st -Name "Note" -Default "")
+        if (-not [string]::IsNullOrWhiteSpace($__stNote)) { Write-Info $__stNote }
         else { Write-Ok "Provider API key present (or not required by the active provider)." }
         return
     }
-    $names = ($st.Missing -join ", ")
+    $names = ($__stMissing -join ", ")
     Write-Warn "Required provider key missing: $names. BreachPilot runs, but AI-backed flows will fail until it is set."
     Add-ActionRequired "Set $names via: python main.py --setup-api-keys (saves to secr.json, gitignored) or the environment."
     if ($Check -or $Yes -or $Offline) {
@@ -2338,7 +2378,8 @@ function Offer-ApiKeySetup {
         try {
             Invoke-ExternalCommand -Command $VenvPython -Arguments @("main.py", "--setup-api-keys") -TimeoutSeconds 300 -StreamOutput | Out-Null
             $again = Test-ApiKeySetup -InstallDir $InstallDir -VenvPython $VenvPython
-            if ($again.Missing.Count -eq 0) { Write-Ok "Provider key configured." }
+            $__againMissing = @(Get-PropValue -Object $again -Name "Missing" -Default @("?"))
+            if ($__againMissing.Count -eq 0) { Write-Ok "Provider key configured." }
         } catch {
             Write-Warn "Key setup exited: $($_.Exception.Message). Re-run 'python main.py --setup-api-keys' any time."
         }
@@ -2645,15 +2686,27 @@ function Test-DoctorResult {
     # Non-zero: separate "provider key missing / optional tool absent" (action
     # required, install is sound) from hard failures using the JSON report.
     $hardFails = @()
-    if ($null -ne $DoctorJson -and $null -ne $DoctorJson.checks) {
-        foreach ($c in $DoctorJson.checks) {
-            if (-not [bool]$c.ok) {
-                $name = [string]$c.name
-                # Informational-only families per tools/doctor.py: optional_tools
-                # and linux_privilege never fail the count; provider-key misses
-                # and stopped Docker are operator actions, not install breakage.
-                if ($name -match "(?i)(optional|linux_priv|provider|api[_-]?key|ollama|opencode|chatgpt|docker|sandbox|browser|model)") {
-                    Add-ActionRequired "doctor: $($name): $([string]$c.hint)"
+    $__checksRaw = Get-PropValue -Object $DoctorJson -Name "checks" -Default $null
+    if (($null -ne $DoctorJson) -and ($null -ne $__checksRaw)) {
+        foreach ($c in @($__checksRaw)) {
+            if ($null -eq $c) { continue }
+            if (-not [bool](Get-PropValue -Object $c -Name "ok" -Default $false)) {
+                $name = [string](Get-PropValue -Object $c -Name "name" -Default "unknown")
+                # Per tools/doctor.py build_doctor_report: optional_tools and
+                # linux_privilege never fail the count (informational-only).
+                # Provider subchecks (ollama_reachable/chatgpt_provider/
+                # opencode_go_provider/model_registry + *_provider/config/api-key
+                # misses) and sandbox/browser/port gaps are operator actions,
+                # not install breakage.
+                if ($name -match "(?i)^(optional_tools|linux_privilege)$") {
+                    continue
+                }
+                if ($name -match "(?i)(provider|api[_-]?key|ollama|opencode|chatgpt|docker|sandbox|browser|model|port_.*_free|config_valid)") {
+                    # NOTE: extracted to locals — nested "" inside an
+                    # interpolated string is an escape sequence, not "".
+                    $__herr = [string](Get-PropValue -Object $c -Name "error" -Default "")
+                    $__hint = [string](Get-PropValue -Object $c -Name "hint" -Default $__herr)
+                    Add-ActionRequired "doctor: ${name}: ${__hint}"
                 } else {
                     $hardFails += $name
                 }
@@ -2717,16 +2770,26 @@ function Invoke-CheckMode {
         Write-Warn "Interrupted previous run detected (state '$($interrupted.State)'). Re-run install/update/repair to recover cleanly."
     }
     $checkout = Get-CheckoutStatus -Dir $InstallDir
-    if ($null -ne $checkout -and $checkout.IsGit) {
-        if ($checkout.GitAvailable) {
-            Write-Info "Git checkout: origin='$($checkout.Origin)' branch=$($checkout.Branch) sha=$($checkout.Sha) dirty=$($checkout.IsDirty)"
+    $__coIsGit = [bool](Get-PropValue -Object $checkout -Name "IsGit" -Default $false)
+    if (($null -ne $checkout) -and $__coIsGit) {
+        if ([bool](Get-PropValue -Object $checkout -Name "GitAvailable" -Default $false)) {
+            $__coOrigin = [string](Get-PropValue -Object $checkout -Name "Origin" -Default "")
+            $__coBranch = [string](Get-PropValue -Object $checkout -Name "Branch" -Default "")
+            $__coSha = [string](Get-PropValue -Object $checkout -Name "Sha" -Default "")
+            $__coDirty = [string](Get-PropValue -Object $checkout -Name "IsDirty" -Default "")
+            Write-Info "Git checkout: origin='$__coOrigin' branch=$__coBranch sha=$__coSha dirty=$__coDirty"
         } else {
             Write-Info ".git present but git CLI unavailable."
         }
     }
-    if ($null -ne $meta -and $null -eq $meta.Corrupt) {
-        Write-Info "Installed: $(if ($meta.tag) { $meta.tag } else { $meta.commit }) (channel $($meta.channel), $($meta.installed_at))"
-    } elseif ($null -ne $meta -and $meta.Corrupt) {
+    $__metaCorrupt = [bool](Get-PropValue -Object $meta -Name "Corrupt" -Default $false)
+    if (($null -ne $meta) -and (-not $__metaCorrupt)) {
+        $__metaTag = [string](Get-PropValue -Object $meta -Name "tag" -Default "")
+        $__metaCommit = [string](Get-PropValue -Object $meta -Name "commit" -Default "")
+        $__metaShow = $__metaTag
+        if ([string]::IsNullOrWhiteSpace($__metaShow)) { $__metaShow = $__metaCommit }
+        Write-Info "Installed: $__metaShow (channel $((Get-PropValue -Object $meta -Name "channel" -Default "?")), $((Get-PropValue -Object $meta -Name "installed_at" -Default "?")))"
+    } elseif (($null -ne $meta) -and $__metaCorrupt) {
         Write-Warn "Install metadata is corrupt — treated as unknown/corrupted install."
     } else {
         Write-Info "No install metadata — no managed BreachPilot install at $InstallDir."
@@ -2742,15 +2805,18 @@ function Invoke-CheckMode {
         try {
             $resolved = Resolve-BreachPilotVersion
             $have = ""
-            if ($null -ne $meta -and $null -eq $meta.Corrupt) {
-                $have = [string]$meta.commit
-                if (-not [string]::IsNullOrWhiteSpace([string]$meta.tag)) { $have = [string]$meta.tag }
+            $__metaCorrupt2 = [bool](Get-PropValue -Object $meta -Name "Corrupt" -Default $false)
+            if (($null -ne $meta) -and (-not $__metaCorrupt2)) {
+                $have = [string](Get-PropValue -Object $meta -Name "commit" -Default "")
+                $__haveTag = [string](Get-PropValue -Object $meta -Name "tag" -Default "")
+                if (-not [string]::IsNullOrWhiteSpace($__haveTag)) { $have = $__haveTag }
             }
             $want = $resolved.Tag
             if ([string]::IsNullOrWhiteSpace($want)) { $want = $resolved.Sha }
             Write-Host " Installed: $(if ($have) { $have } else { '(none)' })"
             Write-Host " Latest ($($resolved.Channel)): $want"
-            if ($have -eq $want -or ($have -ne "" -and $resolved.Sha -eq [string]$meta.commit)) {
+            $__metaCommit2 = [string](Get-PropValue -Object $meta -Name "commit" -Default "")
+            if ($have -eq $want -or ($have -ne "" -and $resolved.Sha -eq $__metaCommit2)) {
                 Write-Host " Status: Up to date" -ForegroundColor Green
             } elseif ([string]::IsNullOrWhiteSpace($have)) {
                 Write-Host " Status: Not installed" -ForegroundColor Yellow
@@ -2766,36 +2832,40 @@ function Invoke-CheckMode {
 
     Write-Step "Dependencies (read-only)"
     $py = Find-BestPython
-    if ($null -ne $py) { Write-Ok "Python $($py.Version) ($($py.Command))" } else { Write-Warn "No compatible Python (>= 3.11) found" }
+    if ($null -ne $py) { Write-Ok "Python $((Get-PropValue -Object $py -Name "Version" -Default "?")) ($((Get-PropValue -Object $py -Name "Command" -Default "?")))" } else { Write-Warn "No compatible Python (>= 3.11) found" }
     $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
     $vh = Test-VenvHealthy -VenvPython $venvPy -InstallDir $InstallDir
     if ($vh.Healthy -and -not $vh.NeedsDeps) { Write-Ok "venv healthy" }
     elseif ($vh.Healthy) { Write-Warn "venv works but project deps missing" }
     else { Write-Info "venv: $($vh.Reason)" }
     $node = Test-NodeInstall
-    if ($node.Present) {
+    if ([bool](Get-PropValue -Object $node -Name "Present" -Default $false)) {
         $okFlag = "OK"
-        if (-not $node.Supported) { $okFlag = "OLD" }
-        Write-Info "Node $($node.NodeVersion) / npm $($node.NpmVersion) [$okFlag, need 18+]"
+        if (-not [bool](Get-PropValue -Object $node -Name "Supported" -Default $false)) { $okFlag = "OLD" }
+        Write-Info "Node $((Get-PropValue -Object $node -Name "NodeVersion" -Default "?")) / npm $((Get-PropValue -Object $node -Name "NpmVersion" -Default "?")) [$okFlag, need 18+]"
     } else { Write-Info "Node.js not installed (WebUI-build only)" }
     $nmap = Find-Nmap -InstallDir $InstallDir
     if ($nmap.Present) { Write-Ok "Nmap: $($nmap.VersionLine) [$($nmap.Path)]" } else { Write-Warn "Nmap not found" }
     $git = Test-GitInstall
     if ($git.Present) { Write-Ok "Git: $($git.Version)" } else { Write-Info "Git not installed (optional — ZIP download path works without it)" }
     $active = Get-ActiveProvider -InstallDir $InstallDir
-    Write-Info "Active provider: $($active.Provider) (embeddings: $($active.Embeddings))"
+    Write-Info "Active provider: $((Get-PropValue -Object $active -Name "Provider" -Default "?")) (embeddings: $((Get-PropValue -Object $active -Name "Embeddings" -Default "?")))"
     $ol = Test-OllamaInstall
-    if ($ol.CliPresent) {
+    if ([bool](Get-PropValue -Object $ol -Name "CliPresent" -Default $false)) {
         $dstat = "stopped"
-        if ($ol.DaemonUp) { $dstat = "running" }
-        Write-Info "Ollama CLI: $($ol.Version) (daemon $dstat)"
+        if ([bool](Get-PropValue -Object $ol -Name "DaemonUp" -Default $false)) { $dstat = "running" }
+        Write-Info "Ollama CLI: $((Get-PropValue -Object $ol -Name "Version" -Default "?")) (daemon $dstat)"
     } else { Write-Info "Ollama CLI not installed (needed only when provider/embeddings use ollama)" }
     $dk = Test-DockerInstall
-    Write-Info "Docker: $($dk.Detail) $(if ($dk.Version) { "[$($dk.Version)]" })"
+    $__dkVer = [string](Get-PropValue -Object $dk -Name "Version" -Default "")
+    $__dkDetail = [string](Get-PropValue -Object $dk -Name "Detail" -Default "?")
+    Write-Info "Docker: $__dkDetail $(if ($__dkVer) { "[$__dkVer]" })"
     $img = Get-ConfiguredSandboxImage -InstallDir $InstallDir
-    if ($dk.DaemonUp) {
+    if ([bool](Get-PropValue -Object $dk -Name "DaemonUp" -Default $false)) {
         $chk = Invoke-ExternalCommand -Command "docker" -Arguments @("image", "inspect", $img) -TimeoutSeconds 30 -AllowFailure
-        if ($chk.ExitCode -eq 0) { Write-Ok "Sandbox image present: $img" } else { Write-Warn "Sandbox image missing: $img" }
+        $__chkCode = 1
+        try { $__chkCode = [int](Get-PropValue -Object $chk -Name "ExitCode" -Default 1) } catch { $__chkCode = 1 }
+        if ($__chkCode -eq 0) { Write-Ok "Sandbox image present: $img" } else { Write-Warn "Sandbox image missing: $img" }
     }
     $dist = Join-Path $InstallDir "webui\dist\index.html"
     if (Test-Path -LiteralPath $dist) { Write-Ok "WebUI built (webui\dist\index.html)" } else { Write-Info "WebUI not built" }
@@ -2934,7 +3004,7 @@ function Invoke-RepairMode {
     Install-Launcher -InstallDir $InstallDir -VenvPython $venvPy | Out-Null
     $binDir = Get-LauncherDir
     Add-UserPath -Entry $binDir | Out-Null
-    Offer-ApiKeySetup -InstallDir $InstallDir -VenvPython $venvPy
+    Request-ApiKeySetup -InstallDir $InstallDir -VenvPython $venvPy
     Write-InstallState -InstallDir $InstallDir -State "validating"
     $dr = Invoke-BreachPilotDoctor -VenvPython $venvPy -InstallDir $InstallDir
     $dj = Get-DoctorJson -VenvPython $venvPy
@@ -2972,22 +3042,32 @@ function Show-FinalSummary {
     $dk = Test-DockerInstall
     $bpVer = ""
     if ($null -ne $Resolved) {
-        $bpVer = $Resolved.Tag
-        if ([string]::IsNullOrWhiteSpace($bpVer)) { $bpVer = $Resolved.Sha.Substring(0, [Math]::Min(12, $Resolved.Sha.Length)) }
+        $bpVer = [string](Get-PropValue -Object $Resolved -Name "Tag" -Default "")
+        if ([string]::IsNullOrWhiteSpace($bpVer)) {
+            $__rSha = [string](Get-PropValue -Object $Resolved -Name "Sha" -Default "")
+            if (-not [string]::IsNullOrWhiteSpace($__rSha)) { $bpVer = $__rSha.Substring(0, [Math]::Min(12, $__rSha.Length)) }
+        }
     }
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host " BreachPilot is ready" -ForegroundColor Green
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host (" BreachPilot       {0} / {1}" -f $bpVer, $Resolved.Channel)
-    Write-Host (" Python            {0}" -f $(if ($py) { $py.Version } else { "missing" }))
-    Write-Host (" Node              {0}" -f $(if ($node.Present) { "$($node.NodeVersion) / npm $($node.NpmVersion)" } else { "not installed (WebUI-build only)" }))
+    Write-Host (" Python            {0}" -f $(if ($py) { (Get-PropValue -Object $py -Name "Version" -Default "?") } else { "missing" }))
+    $__sumNodePresent = [bool](Get-PropValue -Object $node -Name "Present" -Default $false)
+    Write-Host (" Node              {0}" -f $(if ($__sumNodePresent) { "$((Get-PropValue -Object $node -Name "NodeVersion" -Default "?")) / npm $((Get-PropValue -Object $node -Name "NpmVersion" -Default "?"))" } else { "not installed (WebUI-build only)" }))
     Write-Host (" Nmap              {0}" -f $(if ($nmap.Present) { "$($nmap.VersionLine) [$($nmap.Path)]" } else { "missing" }))
     Write-Host (" Git               {0}" -f $(if ($git.Present) { $git.Version } else { "not installed (optional)" }))
-    Write-Host (" Docker            {0}" -f $(if ($dk.CliPresent) { "$($dk.Version) / $($dk.Detail)" } else { "not installed" }))
-    Write-Host (" Ollama            {0}" -f $(if ($ol.CliPresent) { "$($ol.Version) / $(if ($ol.DaemonUp) { 'daemon running' } else { 'daemon stopped' })" } else { "skipped / not required" }))
-    Write-Host (" WebUI             {0}" -f $(if ($WebUI.Built) { "built" } elseif ($WebUI.Skipped) { "skipped" } else { "not built" }))
-    Write-Host (" Sandbox           {0}" -f $(if ($Sandbox.Status -eq "ready") { "ready ($((Get-ConfiguredSandboxImage -InstallDir $InstallDir)))" } else { $Sandbox.Status }))
+    $__sumDkCli = [bool](Get-PropValue -Object $dk -Name "CliPresent" -Default $false)
+    Write-Host (" Docker            {0}" -f $(if ($__sumDkCli) { "$((Get-PropValue -Object $dk -Name "Version" -Default "?")) / $((Get-PropValue -Object $dk -Name "Detail" -Default "?"))" } else { "not installed" }))
+    $__sumOlCli = [bool](Get-PropValue -Object $ol -Name "CliPresent" -Default $false)
+    $__sumOlUp = [bool](Get-PropValue -Object $ol -Name "DaemonUp" -Default $false)
+    Write-Host (" Ollama            {0}" -f $(if ($__sumOlCli) { "$((Get-PropValue -Object $ol -Name "Version" -Default "?")) / $(if ($__sumOlUp) { 'daemon running' } else { 'daemon stopped' })" } else { "skipped / not required" }))
+    $__sumWebBuilt = [bool](Get-PropValue -Object $WebUI -Name "Built" -Default $false)
+    $__sumWebSkip = [bool](Get-PropValue -Object $WebUI -Name "Skipped" -Default $false)
+    Write-Host (" WebUI             {0}" -f $(if ($__sumWebBuilt) { "built" } elseif ($__sumWebSkip) { "skipped" } else { "not built" }))
+    $__sumSbStatus = [string](Get-PropValue -Object $Sandbox -Name "Status" -Default "?")
+    Write-Host (" Sandbox           {0}" -f $(if ($__sumSbStatus -eq "ready") { "ready ($((Get-ConfiguredSandboxImage -InstallDir $InstallDir)))" } else { $__sumSbStatus }))
     Write-Host (" Doctor            {0}" -f $DoctorStatus)
     Write-Host (" Install location  {0}" -f $InstallDir)
     $binDir = Get-LauncherDir
@@ -3067,19 +3147,26 @@ function Invoke-Main {
         Write-Fail "No existing install at $installDir to update. Run plain 'install.ps1' for a fresh install (or point -InstallDir at the existing one)."
         return $script:ExitInvalidArgs
     }
-    if ((-not $Update) -and $hasExisting -and ($null -ne $existingMeta) -and ($null -eq $existingMeta.Corrupt) -and -not $Force) {
-        Write-Info "Existing managed install detected at $installDir ($($existingMeta.tag) $($existingMeta.commit)). Re-running as repair/update of that install — user data preserved."
+    $__existCorrupt = [bool](Get-PropValue -Object $existingMeta -Name "Corrupt" -Default $false)
+    if ((-not $Update) -and $hasExisting -and ($null -ne $existingMeta) -and (-not $__existCorrupt) -and -not $Force) {
+        $__exTag = [string](Get-PropValue -Object $existingMeta -Name "tag" -Default "")
+        $__exCommit = [string](Get-PropValue -Object $existingMeta -Name "commit" -Default "")
+        Write-Info "Existing managed install detected at $installDir ($__exTag $__exCommit). Re-running as repair/update of that install — user data preserved."
     }
     $interrupted = Test-InterruptedInstall -InstallDir $installDir
-    if ($interrupted.Interrupted) {
-        Write-Warn "Interrupted previous run detected (state '$($interrupted.State)') — recovering: verifying what completed before continuing."
-        Write-Log "Interrupted state: $($interrupted.State); backup: $($interrupted.BackupDir)" -Level "WARN"
+    $__intInterrupted = [bool](Get-PropValue -Object $interrupted -Name "Interrupted" -Default $false)
+    if ($__intInterrupted) {
+        $__intState = [string](Get-PropValue -Object $interrupted -Name "State" -Default "?")
+        $__intBackup = [string](Get-PropValue -Object $interrupted -Name "BackupDir" -Default "")
+        Write-Warn "Interrupted previous run detected (state '$__intState') — recovering: verifying what completed before continuing."
+        Write-Log "Interrupted state: $__intState; backup: $__intBackup" -Level "WARN"
     }
 
     # ---- Phase: resolve version ----
     $script:PhaseTotal = 12
     Write-Step "Resolving BreachPilot version"
-    if ($Offline -and ($null -eq $existingMeta -or $null -ne $existingMeta.Corrupt)) {
+    $__existCorruptOff = [bool](Get-PropValue -Object $existingMeta -Name "Corrupt" -Default $false)
+    if ($Offline -and (($null -eq $existingMeta) -or $__existCorruptOff)) {
         Write-Fail "-Offline given but no usable local metadata to resolve from. Connect once (or supply a staged tree) and re-run."
         return $script:ExitDownload
     }
@@ -3090,9 +3177,10 @@ function Invoke-Main {
         Write-Log "Version resolution error: $($_.Exception.Message)" -Level "ERROR"
         return $script:ExitDownload
     }
-    if ($Update -and ($null -ne $existingMeta) -and ($null -eq $existingMeta.Corrupt)) {
-        $sameTag = ((-not [string]::IsNullOrWhiteSpace($resolved.Tag)) -and ($resolved.Tag -eq [string]$existingMeta.tag))
-        $sameSha = ((-not [string]::IsNullOrWhiteSpace($resolved.Sha)) -and ($resolved.Sha -eq [string]$existingMeta.commit))
+    $__existCorruptUpd = [bool](Get-PropValue -Object $existingMeta -Name "Corrupt" -Default $false)
+    if ($Update -and ($null -ne $existingMeta) -and (-not $__existCorruptUpd)) {
+        $sameTag = ((-not [string]::IsNullOrWhiteSpace($resolved.Tag)) -and ($resolved.Tag -eq [string](Get-PropValue -Object $existingMeta -Name "tag" -Default "")))
+        $sameSha = ((-not [string]::IsNullOrWhiteSpace($resolved.Sha)) -and ($resolved.Sha -eq [string](Get-PropValue -Object $existingMeta -Name "commit" -Default "")))
         if (($sameTag -or $sameSha) -and -not $Force) {
             Write-Host ""
             Write-Host "Already up to date ($($resolved.Tag) $($resolved.Sha.Substring(0, 12))). Nothing to do." -ForegroundColor Green
@@ -3102,14 +3190,16 @@ function Invoke-Main {
     }
     if ($hasExisting) {
         $checkout = Get-CheckoutStatus -Dir $installDir
-        $safety = Test-CheckoutSafe -Checkout $checkout -Dir $installDir
-        if ((-not $safety.Safe) -and -not $Force) {
-            Write-Fail $safety.Reason
+        $safety = Test-CheckoutSafe -Checkout $checkout
+        $__safeOk = [bool](Get-PropValue -Object $safety -Name "Safe" -Default $false)
+        $__safeReason = [string](Get-PropValue -Object $safety -Name "Reason" -Default "?")
+        if ((-not $__safeOk) -and -not $Force) {
+            Write-Fail $__safeReason
             return $script:ExitInvalidArgs
-        } elseif (-not $safety.Safe) {
-            Write-Warn "Proceeding despite checkout concern (-Force): $($safety.Reason)"
+        } elseif (-not $__safeOk) {
+            Write-Warn "Proceeding despite checkout concern (-Force): $__safeReason"
         } else {
-            Write-Log "Checkout safety: $($safety.Reason)" -Level "INFO"
+            Write-Log "Checkout safety: $__safeReason" -Level "INFO"
         }
     }
     Write-InstallState -InstallDir $installDir -State "resolving"
@@ -3119,6 +3209,9 @@ function Invoke-Main {
     $stagingParent = Join-Path ([System.IO.Path]::GetTempPath()) ("BreachPilot-Install-" + [guid]::NewGuid().ToString("N"))
     $archiveSha = ""
     $stagedRoot = ""
+    # Function scope: the backup made during deploy must survive to the doctor
+    # gate (rollback) and finalizing (KeepBackup/delete). Never re-declared.
+    $deployBackupDir = ""
     try {
         New-Item -ItemType Directory -Path $stagingParent -Force | Out-Null
     } catch {
@@ -3173,8 +3266,6 @@ function Invoke-Main {
             Write-StepDone
 
             # ---- Phase: atomic deploy ----
-            $script:PhaseIndex++  # deploy shares the "Finalizing" numbering visually; keep count honest:
-            $script:PhaseIndex--
             Write-Step "Deploying (backup + atomic replace)"
             Write-InstallState -InstallDir $installDir -State "backup_created"
             $backupRef = ""
@@ -3184,7 +3275,11 @@ function Invoke-Main {
                     # Updating the very checkout we run from: never move the live
                     # dir (we execute from it). Copy staged files over the top,
                     # excluding runtime/user data + ourselves.
-                    $backupHolder.Value = Backup-BreachPilotInstall -InstallDir $installDir
+                    $deployBackupDir = Backup-BreachPilotInstall -InstallDir $installDir
+                    $backupHolder.Value = $deployBackupDir
+                    try {
+                        Set-Content -LiteralPath (Join-Path $installDir $script:StateFileName + ".backup") -Value $deployBackupDir -Encoding UTF8
+                    } catch { }
                     $excl = @(".venv", "venv", "__pycache__", ".git", "node_modules", "webui\node_modules", "webui\dist",
                         "reports", "exploit_workspace", "research_workspace", "swarm_workspace",
                         "secr.json", ".env", ".webui_secret_key", "*.db", "*.log",
@@ -3193,14 +3288,20 @@ function Invoke-Main {
                         if ($excl -contains $item.Name) { continue }
                         Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $installDir $item.Name) -Recurse -Force
                     }
-                    Write-Ok "In-place checkout refreshed from $($resolved.Tag) (user data + venv + .git untouched)."
+                    $__depLabel = [string](Get-PropValue -Object $resolved -Name "Tag" -Default "")
+                    if ([string]::IsNullOrWhiteSpace($__depLabel)) { $__depLabel = [string](Get-PropValue -Object $resolved -Name "Sha" -Default "?") }
+                    Write-Ok "In-place checkout refreshed from $__depLabel (user data + venv + .git untouched)."
                 } else {
                     $backupHolder.Value = Deploy-StagedTree -InstallDir $installDir -StagedRoot $stagedRoot -BackupDirOut ([ref]$backupRef)
+                    $deployBackupDir = $backupHolder.Value
+                    try {
+                        Set-Content -LiteralPath (Join-Path $installDir $script:StateFileName + ".backup") -Value $deployBackupDir -Encoding UTF8
+                    } catch { }
                 }
             } catch {
                 Write-Fail "Deploy failed: $($_.Exception.Message)"
                 $bd = $backupHolder.Value
-                if (-not [string]::IsNullOrWhiteSpace($bd) -and -not $runningFromCheckout) {
+                if (-not [string]::IsNullOrWhiteSpace($bd)) {
                     try {
                         Restore-BreachPilotInstall -InstallDir $installDir -BackupDir $bd
                         Write-InstallState -InstallDir $installDir -State "rollback"
@@ -3223,12 +3324,6 @@ function Invoke-Main {
             }
         }
     }
-    # Re-resolve backup dir (in-place path sets it inside the try above).
-    $backupDir = ""
-    try {
-        if ($runningFromCheckout -and -not $Update -and -not $Force) { $backupDir = "" }
-    } catch { }
-
     # ---- Dependency phases ----
     Write-Step "Python"
     try {
@@ -3264,7 +3359,7 @@ function Invoke-Main {
     Write-Step "System tools"
     Install-NmapIfNeeded -InstallDir $installDir | Out-Null
     $gitInfo = Test-GitInstall
-    if ($gitInfo.Present) { Write-Ok "Git: $($gitInfo.Version)" }
+    if ([bool](Get-PropValue -Object $gitInfo -Name "Present" -Default $false)) { Write-Ok "Git: $((Get-PropValue -Object $gitInfo -Name "Version" -Default "?"))" }
     else { Write-Skip "Git not installed — optional (source ZIP path works without it). Manual: https://git-scm.com/downloads" }
     Install-OllamaIfNeeded -InstallDir $installDir | Out-Null
     Write-StepDone
@@ -3282,7 +3377,7 @@ function Invoke-Main {
     $binDir = Get-LauncherDir
     $pathRes = Add-UserPath -Entry $binDir
     Install-Shortcuts -InstallDir $installDir
-    Offer-ApiKeySetup -InstallDir $installDir -VenvPython $venvPython
+    Request-ApiKeySetup -InstallDir $installDir -VenvPython $venvPython
     Write-StepDone
 
     Write-Step "Doctor"
@@ -3310,7 +3405,7 @@ function Invoke-Main {
                     -DoctorStatus "ROLLED BACK" -ExitCode $script:ExitRolledBack
                 return $script:ExitRolledBack
             } catch {
-                Write-Fail "ROLLBACK FAILED: $($_.Exception.Message). Backup at '$backupDir'."
+                Write-Fail "ROLLBACK FAILED: $($_.Exception.Message). Backup at '$deployBackupDir'."
                 return $script:ExitFailure
             }
         }
@@ -3339,15 +3434,15 @@ function Invoke-Main {
         Write-Log "Could not refresh installed install.ps1 copy: $($_.Exception.Message)" -Level "WARN"
     }
     # Delete the pre-update backup after critical validation — unless -KeepBackup.
-    if ((-not [string]::IsNullOrWhiteSpace($backupDir)) -and (Test-Path -LiteralPath $backupDir)) {
+    if ((-not [string]::IsNullOrWhiteSpace($deployBackupDir)) -and (Test-Path -LiteralPath $deployBackupDir)) {
         if ($KeepBackup) {
-            Write-Info "Keeping pre-update backup: $backupDir (-KeepBackup)."
+            Write-Info "Keeping pre-update backup: $deployBackupDir (-KeepBackup)."
         } else {
             try {
-                Remove-Item -LiteralPath $backupDir -Recurse -Force
-                Write-Log "Deleted pre-update backup after validation: $backupDir" -Level "INFO"
+                Remove-Item -LiteralPath $deployBackupDir -Recurse -Force
+                Write-Log "Deleted pre-update backup after validation: $deployBackupDir" -Level "INFO"
             } catch {
-                Write-Warn "Could not delete pre-update backup $backupDir`: $($_.Exception.Message). Remove it manually when satisfied."
+                Write-Warn "Could not delete pre-update backup $deployBackupDir`: $($_.Exception.Message). Remove it manually when satisfied."
             }
         }
     }
@@ -3395,21 +3490,6 @@ function Invoke-Main {
 
     return $finalCode
 }
-
-# ---------------------------------------------------------------------------
-# Entry
-# ---------------------------------------------------------------------------
-$code = $script:ExitFailure
-try {
-    $code = Invoke-Main
-} catch {
-    $msg = Redact-Secrets $_.Exception.Message
-    Write-Fail "Fatal: $msg"
-    Write-Log "FATAL: $($_.ScriptStackTrace)" -Level "ERROR"
-    $code = $script:ExitFailure
-}
-Write-Host "Installer log: $script:LogFile"
-exit $code
 
 # ---------------------------------------------------------------------------
 # Bootstrap: help, arg validation, logging, UX helpers
@@ -3478,7 +3558,7 @@ function Initialize-Logging {
     }
 }
 
-function Redact-Secrets {
+function Protect-SecretText {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
     $out = $Text
@@ -3500,19 +3580,52 @@ function Redact-Secrets {
     return $out
 }
 
+function Get-PropValue {
+    <#
+    .SYNOPSIS
+        StrictMode-safe property read: returns $Default when the property or
+        object is missing instead of throwing. THE canonical accessor for
+        GitHub API JSON, doctor JSON, install metadata, and any external data.
+    .NOTES
+        Quoting trap: never use -Default "") INSIDE an interpolated string
+        ("... $(Get-PropValue ... -Default "") ...") — the "" reads as an
+        escape sequence and breaks parsing. Extract to a local first, or use
+        a non-empty default ("?") when interpolating.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+    if ($null -eq $Object) { return $Default }
+    # Hashtables/ordered dicts: PSObject.Properties does NOT expose keys —
+    # check Contains first (works for Hashtable + OrderedDictionary).
+    try {
+        if ($Object -is [System.Collections.IDictionary]) {
+            if ($Object.Contains($Name)) { return $Object[$Name] }
+            return $Default
+        }
+    } catch { return $Default }
+    try {
+        $prop = $Object.PSObject.Properties[$Name]
+        if ($null -eq $prop) { return $Default }
+        return $prop.Value
+    } catch {
+        return $Default
+    }
+}
+
 function Write-Log {
     param(
         [string]$Message,
         [string]$Level = "INFO"
     )
     $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    $line = "[$ts] [$Level] $(Redact-Secrets $Message)"
+    $line = "[$ts] [$Level] $(Protect-SecretText $Message)"
     if (-not [string]::IsNullOrWhiteSpace($script:LogFile)) {
         try { Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8 } catch { }
     }
-    if ($Level -eq "DEBUG" -and -not $PSBoundParameters.ContainsKey("Verbose") -and $VerbosePreference -eq "SilentlyContinue") {
-        return
-    }
+    # Always logged to the file (console output is decided by the caller).
 }
 
 function Write-Status {
@@ -3630,4 +3743,45 @@ function Get-CommandVersion {
     } catch {
         return $null
     }
+}
+
+# ---------------------------------------------------------------------------
+# Entry (LAST in file: every function above must be defined before this runs)
+# ---------------------------------------------------------------------------
+# Dot-source guard: Pester tests dot-source this file to test its pure
+# functions. Only execute the installer when run as a script, never when
+# dot-sourced (in that case $MyInvocation.InvocationName is "." and the
+# caller's command path differs from ours).
+$__isDotSourced = $false
+try {
+    $__invocation = $MyInvocation.InvocationName
+    if ($__invocation -eq ".") {
+        $__isDotSourced = $true
+    } elseif (-not [string]::IsNullOrWhiteSpace($__invocation)) {
+        try {
+            $__resolvedCmd = (Get-Command $__invocation -ErrorAction SilentlyContinue).Source
+            if (-not [string]::IsNullOrWhiteSpace($__resolvedCmd)) {
+                $__isDotSourced = -not $script:ScriptPath.TrimEnd("\").Equals(
+                    ([System.IO.Path]::GetFullPath($__resolvedCmd)).TrimEnd("\"),
+                    [StringComparison]::OrdinalIgnoreCase)
+            }
+        } catch { $__isDotSourced = $false }
+    }
+} catch { $__isDotSourced = $false }
+
+if (-not $__isDotSourced) {
+    $code = $script:ExitFailure
+    try {
+        $code = Invoke-Main
+    } catch {
+        $msg = Protect-SecretText $_.Exception.Message
+        # Write-Log/Write-Fail are defined above by the time we get here.
+        Write-Fail "Fatal: $msg"
+        Write-Log "FATAL: $($_.ScriptStackTrace)" -Level "ERROR"
+        $code = $script:ExitFailure
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:LogFile)) {
+        Write-Host "Installer log: $script:LogFile"
+    }
+    exit $code
 }

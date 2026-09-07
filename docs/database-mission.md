@@ -6,8 +6,8 @@ Persistence is SQLite, split across **two independent databases** plus the files
 
 | Database | File | Owns | Written by |
 |---|---|---|---|
-| Flow B research DB | `research_workspace/research.db` | missions, scope, tasks, hypotheses, observations, graph, evidence metadata, findings, audit, memories, embeddings, lessons | Flow B (`cli.py` / `agent_loop.py`) and Flow A's evidence bridge |
-| API runtime DB | `reports/api_runtime.db` | API runs + approval decisions | WebUI daemon (`tools/api/persistence.py`) |
+| Flow B research DB | `research_workspace/research.db` | missions, scope, tasks, hypotheses, observations, graph, evidence metadata, findings, audit, memories, embeddings, lessons | Flow B (root `cli.py` / `agent_loop.py` shims → `legacy.*`) and Flow A's evidence bridge |
+| API runtime DB | `reports/api_runtime.db` | runs, decisions, users, annotations, custom_goals, app_state | WebUI daemon (`tools/api/persistence.py`) |
 
 Per AGENTS.md rule 2, the two flows (Flow A exploit engine, Flow B legacy research loop) **share only the `db.py` and `mission.py` schemas**. Flow A's own state lives in `exploit_workspace/<ip>/exploit_audit.jsonl` (tamper-evident JSONL, not SQLite) and is bridged into the shared `evidence` table read-only (see [Evidence bridge](#evidence-bridge-flow-a--flow-b)).
 
@@ -19,10 +19,18 @@ Per AGENTS.md rule 2, the two flows (Flow A exploit engine, Flow B legacy resear
 - **`research_workspace/<mission_id>/`** — per-mission *filesystem* workspace (evidence/, reports/, logs/, tasks/) created by `MissionController._init_workspace` (`mission.py:386-402`). Evidence files live here; their metadata rows live in `research.db`.
 - **`reports/api_runtime.db`** — API daemon state, `ApiPersistence(reports_dir)` (`tools/api/persistence.py:90-95`). Deliberately separate so the daemon never touches Flow B's schema (`tools/api/persistence.py:3`).
 - **`exploit_workspace/<ip>/exploit_audit.jsonl`** — Flow A's append-only audit log (not SQLite); promoted into `evidence` via `promote_exploit_audit` (`evidence.py:288-340`).
+- No top-level `sandbox/` directory exists — sandbox code lives at `tools/sandbox/` (manager, docker backend/lifecycle, network) with the worker image at `docker/sandbox/` (`tools/sandbox/manager.py:1-14`; `docker/sandbox/Dockerfile:1-3`).
+- Canonical audit helpers live at `tools/kernel/audit.py` (credential redaction + audit decorators), re-exported by `tools/mcp_shared.py` for backwards compat (`tools/kernel/audit.py:1-11`; `tools/mcp_shared.py:33-46`).
 
 ## Schema (Flow B research DB)
 
-Schema version: **5** (`db.py:23`). DDL in `db.py:39-312`; migrations in `db.py:391-711`.
+Schema version: **10** (`db.py:23`). DDL in `db.py:39-312`; migrations in `db.py:390-863`.
+
+- v6 — `graph_nodes_v2` / `graph_edges_v2` typed intelligence-graph pair (`db.py:697-746`); legacy `graph_nodes` / `graph_edges` stay untouched.
+- v7 — belief-state columns on `hypotheses` + `belief_transitions` log (`db.py:749-778`).
+- v8 — `evidence.provenance_json` + `evidence_references` links (`db.py:781-803`).
+- v9 — `decision_telemetry` log (`db.py:806-838`).
+- v10 — `attempt_fingerprints` dedup table (`db.py:841-863`).
 
 ### ER-style diagram
 
@@ -32,12 +40,17 @@ missions 1 ──< scope_rules
    ├──< tasks 1 ──< observations
    │     │
    │     └──< outcome_assessments >── hypotheses (1 per mission+key)
+   │                                     └──< belief_transitions (v7)
    │
    ├──< graph_nodes 1 ──< graph_edges (from/to node FKs)
+   ├──< graph_nodes_v2 1 ──< graph_edges_v2 (v6, scope-based)
    ├──< evidence (task_id FK nullable, finding_id loose ref)
+   │     └──< evidence_references (v8, source_table/source_id loose ref)
    ├──< findings
    ├──< audit_logs
    ├──< memories
+   ├──< decision_telemetry (v9)
+   ├──< attempt_fingerprints (v10)
    └──< embeddings (source_table/source_id loose ref)
 
 lessons (global, no mission FK — cross-mission learning)
@@ -62,6 +75,12 @@ _migrations (version ledger)
 | `memories` | id, mission_id, memory_type, target, fact, tags_json, confidence, metadata_json, created_at | `MemoryManager.remember` (`memory.py:71-113`), `mark_dead_end` (`memory.py:194-202`) | `MemoryManager.retrieve` / `retrieve_relevant` / `summarize_target` (`memory.py:115-231`) |
 | `embeddings` | id, mission_id, source_table, source_id, embedding_json, created_at | `SemanticMemoryManager.store_embedding` (`tools/semantic_memory.py:110-129`) | `find_similar` (`tools/semantic_memory.py:175-241`) |
 | `lessons` | id, pattern_hash, target_signature, action_type, outcome, confidence, embedding_json, metadata_json, text, created_at | `SemanticMemoryManager.store_lesson` (`tools/semantic_memory.py:131-173`), `ExperienceStore.record_outcome` (`tools/experience_store.py:96`) | `find_similar_lessons` (`tools/semantic_memory.py:243-333`), `ExperienceStore` Bayesian priors (`tools/experience_store.py:179-261`), `tools/skill_feedback.py` |
+| `graph_nodes_v2` | id, scope, node_type, value, properties_json, confidence, status, first_seen, last_seen, evidence_refs_json, observation_count, contradiction_count, source, created_at | v6 migration (`db.py:697-746`) | Implementation note: consumers not traced in this pass |
+| `graph_edges_v2` | id, scope, source_node_id, target_node_id, edge_type, properties_json, confidence, source, first_seen, last_seen, evidence_refs_json, observation_count, contradiction_count, created_at | v6 migration (`db.py:697-746`) | Implementation note: consumers not traced in this pass |
+| `belief_transitions` | id, hypothesis_id, from_status, to_status, reason, evidence_refs_json, created_at | v7 migration (`db.py:749-778`) | Implementation note: consumers not traced in this pass |
+| `evidence_references` | id, source_table, source_id, evidence_id, relation, weight, created_at | v8 migration (`db.py:781-803`) | Implementation note: consumers not traced in this pass |
+| `decision_telemetry` | id, mission_id, run_id, timestamp, agent, event_type, decision, candidate_paths_json, selected_path, rejected_paths_json, ranking_scores_json, confidence, info_gain, graph_nodes_json, hypotheses_json, memory_retrieved_json, critic_objections_json, model_used, tokens, latency_ms, created_at | v9 migration (`db.py:806-838`) | Implementation note: consumers not traced in this pass |
+| `attempt_fingerprints` | id, mission_id, fingerprint, target, service, action_family, status, detail, evidence_snapshot_json, repeat_count, retry_justification, timestamp, created_at | v10 migration (`db.py:841-863`) | Implementation note: consumers not traced in this pass |
 | `_migrations` | version, applied_at | `ensure_schema` (`db.py:376-388`) | same |
 
 ### Status enums
@@ -167,19 +186,56 @@ ORDER BY t.priority DESC, t.created_at ASC LIMIT 1
 
 ## API runtime DB (`reports/api_runtime.db`)
 
-Separate schema, version 2 (`tools/api/persistence.py:18-19`), thread-safe via a single `threading.Lock` per connection (`tools/api/persistence.py:94`):
+Separate schema, version **5** (`tools/api/persistence.py:18`), thread-safe via a single `threading.Lock` (`tools/api/persistence.py:164`):
 
-- **`runs`** — id, created_at, updated_at, state, request_json, preview_json, result_json, resumed_from, error, cancelled_at, title. States: draft, awaiting_confirmation, running, awaiting_input, queued, cancelling, cancelled, completed, interrupted, failed. `recover_interrupted` marks live runs `interrupted` and expires pending decisions on daemon startup (`tools/api/persistence.py:258-276`).
-- **`decisions`** — id, run_id (FK cascade), kind, prompt_text, required_text, options_json, status (pending/answered/expired), answer, created_at, answered_at. Written by `ApiDecisionProvider.request` (`tools/run_service/providers.py:122-139`), answered via `answer_decision` (`tools/api/persistence.py:300-321`).
-- **`title`** column (v2 migration, `tools/api/persistence.py:62-64`) holds AI-generated session titles from `tools/api/session_titler.py` (best-effort `gemma4:31b-cloud` call, persisted via `update_run_title`, `tools/api/persistence.py:180-195`).
+- **`runs`** — id, created_at, updated_at, state, request_json, preview_json, result_json, resumed_from, error, cancelled_at, title, is_demo (`tools/api/persistence.py:27-40`). Live states (`draft`, `preparing`, `awaiting_confirmation`, `running`, `awaiting_input`, `queued`, `cancelling`) are marked `interrupted` with pending decisions expired on daemon startup via `recover_interrupted` (`tools/api/persistence.py:492-510`).
+- **`decisions`** — id, run_id (FK cascade), kind, prompt_text, required_text, options_json, status (pending/answered/expired), answer, created_at, answered_at (`tools/api/persistence.py:42-54`). Written by `ApiDecisionProvider.request` (`tools/run_service/providers.py:210`), answered via `answer_decision` (`tools/api/persistence.py:537-558`).
+- **`users`** — id, username (UNIQUE), password_hash, password_salt, created_at, last_login (v3, `tools/api/persistence.py:65-72`).
+- **`annotations`** — id, run_id (FK cascade), user_id, username, body, finding_ref, created_at (v3, `tools/api/persistence.py:74-83`).
+- **`custom_goals`** — id, name (UNIQUE, NOCASE), objective, created_at, updated_at (v5, `tools/api/persistence.py:87-95`).
+- **`app_state`** — key, value tombstone/flag store (v4, `tools/api/persistence.py:121-125`); `runs.is_demo` flags demo sessions (`tools/api/persistence.py:39`).
+- Migrations: v2 `runs.title` (`tools/api/persistence.py:101-103`); v3 users + annotations (`tools/api/persistence.py:108-119`); v4 `is_demo` + `app_state` (`tools/api/persistence.py:122-125`); v5 custom_goals (`tools/api/persistence.py:128-134`). `title` holds AI-generated session titles from `tools/api/session_titler.py` (default `TITLE_MODEL = "gemma4:31b-cloud"`, persisted via `update_run_title`, `tools/api/persistence.py:355-370`).
 
 ## Migration & back-compat
 
-- `ensure_schema` (`db.py:376-388`) runs DDL (idempotent `CREATE TABLE IF NOT EXISTS`) then applies pending migrations 1..`_SCHEMA_VERSION`, recording each in `_migrations`.
-- v2 — `tasks` phase enum widened to include `exploit`/`post_exploit`; table rebuilt with FK off, legacy phase values remapped (`db.py:406-488`).
-- v3 — created_at indexes for high-volume tables (`db.py:491-510`).
-- v4 — adds `hypotheses` + `outcome_assessments` tables, `tasks.hypothesis_id`/`check_fingerprint`, `observations.hypothesis_evidence_json`; backfills hypothesis identity for historical tasks without inferring success from execution status (`db.py:513-692`).
-- v5 — `lessons.text` column (`db.py:695-711`).
-- API DB migrations are gated on `PRAGMA table_info` checks so re-runs are safe (`tools/api/persistence.py:107-134`).
-- Extension rule: schema changes go in `DDL` + `_SCHEMA_VERSION` + a `_migrate_vN_*` helper (`docs/extension-guide.md:204-212`).
-- Back-compat notes: `get_default_db` ensures the schema (incl. `lessons`) exists on fresh Flow A installs (`db.py:808-816`); resume paths call `ensure_schema` before reading (`agent_loop.py:113-118`); `_row_to_*` helpers tolerate missing JSON fields; `_coerce_state` accepts both `HypothesisState` and mappings (`outcome_judge.py:1009-1036`).
+- `ensure_schema` (`db.py:377-387`) runs DDL (idempotent `CREATE TABLE IF NOT EXISTS`) then applies pending migrations 1..`_SCHEMA_VERSION`, recording each in `_migrations`.
+- v2 — `tasks` phase enum widened to include `exploit`/`post_exploit`; table rebuilt with FK off, legacy phase values remapped (`db.py:415-496`).
+- v3 — created_at indexes for high-volume tables (`db.py:498-517`).
+- v4 — adds `hypotheses` + `outcome_assessments` tables, `tasks.hypothesis_id`/`check_fingerprint`, `observations.hypothesis_evidence_json`; backfills hypothesis identity for historical tasks without inferring success from execution status (`db.py:520-679`).
+- v5 — `lessons.text` column (`db.py:682-694`).
+- v6 — `graph_nodes_v2` / `graph_edges_v2` typed intelligence-graph tables; legacy graph tables untouched (`db.py:697-746`).
+- v7 — belief-state columns on `hypotheses` + `belief_transitions` log (`db.py:749-778`).
+- v8 — `evidence.provenance_json` + `evidence_references` links (`db.py:781-803`).
+- v9 — `decision_telemetry` log (`db.py:806-838`).
+- v10 — `attempt_fingerprints` dedup table with unique `(mission_id, fingerprint)` index (`db.py:841-863`).
+- API DB `_init_db` (`tools/api/persistence.py:191-267`) runs `_DDL` then applies `_MIGRATION_V2`..`_MIGRATION_V5` idempotently; v2 adds `runs.title` (`tools/api/persistence.py:101-103`), v3 adds users + annotations (`tools/api/persistence.py:108-119`), v4 adds `runs.is_demo` + `app_state` (`tools/api/persistence.py:122-125`), v5 adds custom_goals (`tools/api/persistence.py:128-134`).
+- Extension rule: schema changes go in `DDL` + `_SCHEMA_VERSION` + a `_migrate_vN_*` helper (`docs/extension-guide.md:224-225`).
+- Back-compat notes: `get_default_db` ensures the schema (incl. `lessons`) exists on fresh Flow A installs (`db.py:955-969`); the legacy resume path calls `ensure_schema` before reading (`legacy/agent_loop.py:118`); `_row_to_*` helpers tolerate missing JSON fields; `_coerce_state` accepts both `HypothesisState` and mappings (`outcome_judge.py:1009-1036`).
+- Root Flow B entry points (`cli.py`, `agent_loop.py`, `mission.py`, `evidence.py`, `task_queue.py`, `memory.py`, `tool_router.py`, `finding_verifier.py`, `report_generator.py`, `observer.py`) are `DeprecationWarning` shims re-exporting `legacy.*` (`cli.py:1-9`; `legacy/README.md:13-17`).
+
+## Related documentation
+
+- [Runtime flows](runtime-flows.md) — Database-Backed Research Loop vs Exploit Session Flow.
+- [Architecture](architecture.md) — Flow A vs Flow B split and shared schemas.
+- [Outcome Judgment and Evidence Handling](outcome-evidence.md) — evidential versus execution status and the Flow A audit trail.
+- [Disposable Execution Sandbox](sandbox.md) — sandbox execution funnel and worker image.
+- [Extension Guide](extension-guide.md) — adding persistent data (`DDL` + `_SCHEMA_VERSION` + `_run_migration`).
+- [API Persistence](api/persistence.md) — the `api_runtime.db` schema, migrations, runs, and decisions.
+
+## Source map
+
+- `db.py`
+- `tools/api/persistence.py`
+- `tools/api/session_titler.py`
+- `tools/run_service/providers.py`
+- `tools/kernel/audit.py`
+- `tools/mcp_shared.py`
+- `tools/sandbox/manager.py`
+- `docker/sandbox/Dockerfile`
+- `cli.py`
+- `agent_loop.py`
+- `mission.py`
+- `legacy/README.md`
+- `legacy/cli.py`
+- `legacy/agent_loop.py`
+- `docs/extension-guide.md`

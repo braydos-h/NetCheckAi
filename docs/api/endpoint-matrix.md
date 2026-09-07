@@ -119,7 +119,7 @@ Generated from code — no invented routes. Handler names are the Python functio
 |--------|-------|---------|---------|----------|------|-------------------|-------|
 | `GET` | `/api/v1/runs/{run_id}/graph` | `get_run_graph` (`graph.py:167`) | — | `200 {run_id,nodes:[{id,type,label,...}],edges:[{source,target,relation}]}` `404 run not found` / `404 graph_disabled` when `api.graph_route:false` | bearer | `webui/src/routes/GraphPage.tsx` (legacy) | — |
 
-## Graph explorer — `tools/api/routes/graph_explorer.py` (`APIRouter(prefix="/api/v1/graph", tags=["graph-explorer"])`) — `app.py:153`
+## Graph explorer — `tools/api/routes/graph_explorer.py` (`APIRouter(prefix="/api/v1/graph", tags=["graph-explorer"])`) — `app.py:153` — Detail: [Graph Explorer Endpoints](endpoints/graph-explorer.md)
 
 All below additionally gated `api.graph_route` → `404 graph_disabled` (`graph_explorer.py:61`); unknown node/run `404`; invalid enum filter silently ignored.
 
@@ -132,7 +132,7 @@ All below additionally gated `api.graph_route` → `404 graph_disabled` (`graph_
 | `GET` | `/api/v1/graph/runs/{run_id}/nodes/{node_id}/neighbors` | `get_neighbors` (`graph_explorer.py:133`) | `?max_hops1..4 default1&max_nodes1..200 default50` | `200 {run_id,start_node,nodes,edges}` `404` | bearer | same | — |
 | `GET` | `/api/v1/graph/runs/{run_id}/paths` | `get_paths` (`graph_explorer.py:154`) | `?start&end&max_length1..8 default4&max_paths1..8 default5` | `200 {run_id,paths:[[[{distance,node,edge}]]]}` unknown endpoints `[]` | bearer | same | — |
 
-## Benchmarks — `tools/api/routes/benchmarks.py` (`APIRouter(prefix="/api/v1/benchmarks", tags=["benchmarks"])`) — `app.py` (wired unconditionally; backed by `tools/benchmark/`)
+## Benchmarks — `tools/api/routes/benchmarks.py` (`APIRouter(prefix="/api/v1/benchmarks", tags=["benchmarks"])`) — `app.py` (wired unconditionally; backed by `tools/benchmark/`) — Detail: [Benchmarks Endpoints](endpoints/benchmarks.md)
 
 | Method | Route | Handler | Request | Response | Auth | Frontend consumer | Tests |
 |--------|-------|---------|---------|----------|------|-------------------|-------|
@@ -151,13 +151,13 @@ All below additionally gated `api.graph_route` → `404 graph_disabled` (`graph_
 | `POST` | `/api/v1/benchmarks/baseline` | `save_baseline_route` (`benchmarks.py:259`) | `{run_id}` | `200 {saved,path,run_id}` `404/409` | bearer | same `saveBaseline` | same |
 | `GET` | `/api/v1/benchmarks/compare` | `compare_runs` (`benchmarks.py:276`) | `?run_a&run_b` | `200 RunComparison{run_a,run_b,comparison:{metrics,scenarios,categories}}` `404/409` | bearer | same `compareRuns` (`ComparisonView`) | same |
 
-## Ops — `tools/api/routes/ops.py` (`APIRouter(prefix="/api/v1/ops", tags=["ops"])`) — `app.py` (wired unconditionally; read-only rollup)
+## Ops — `tools/api/routes/ops.py` (`APIRouter(prefix="/api/v1/ops", tags=["ops"])`) — `app.py` (wired unconditionally; read-only rollup) — Detail: [Ops Endpoints](endpoints/ops.md)
 
 | Method | Route | Handler | Request | Response | Auth | Frontend consumer | Tests |
 |--------|-------|---------|---------|----------|------|-------------------|-------|
 | `GET` | `/api/v1/ops/summary` | `ops_summary` (`ops.py`) | — | `200 {killchain:{enabled,goal_state,require_verification},snapshots:{enabled,provider,counterfactual},eval:{enabled,baseline_path,baseline_exists},browser:{enabled,backend},provider:{active}}` | bearer | `webui/src/routes/OpsPage.tsx` | `tests/test_ops_summary.py` |
 
-## Users/annotations — `tools/api/routes/users.py` (`APIRouter(prefix="/api/v1", tags=["users"])`) — `app.py:154` only when `api.multi_operator:true`
+## Users/annotations — `tools/api/routes/users.py` (`APIRouter(prefix="/api/v1", tags=["users"])`) — `app.py:154` only when `api.multi_operator:true` — Detail: [Users Endpoints](endpoints/users.md)
 
 | Method | Route | Handler | Request | Response | Auth | Frontend consumer | Tests |
 |--------|-------|---------|---------|----------|------|-------------------|-------|

@@ -123,17 +123,26 @@ main.tsx
                       └─ <Layout>  (sidebar + active-run pill + footer)
                            ├─ "/"                       → HomePage
                            ├─ "/sessions"               → RunListPage
-                           ├─ "/runs/new"                → NewRunPage → <Wizard>
+                           ├─ "/runs/new"                → NewRunPage → <RunWizard>
                            ├─ "/runs/:runId"             → RunPage
                            ├─ "/runs/:runId/artifacts"   → ArtifactsPage
                            ├─ "/runs/:runId/loot"        → LootPage
+                           ├─ "/runs/:runId/graph"       → GraphPage
                            ├─ "/skills"                  → SkillsPage
                            ├─ "/modules"                 → AttackModulesPage
                            ├─ "/goals"                   → GoalsPage
+                           ├─ "/graph"                   → AttackGraphPage
+                           ├─ "/stats"                   → StatsPage
+                           ├─ "/benchmarks"              → BenchmarksPage
+                           ├─ "/benchmarks/new"          → BenchmarksStartPage
+                           ├─ "/benchmarks/history"      → BenchmarksHistoryPage
+                           ├─ "/benchmarks/:runId"       → BenchmarkRunPage
+                           ├─ "/ops"                     → OpsPage
+                           ├─ "/connections"             → ConnectionsPage
                            ├─ "/memory"                  → MemoryPage
                            ├─ "/system"                  → SystemPage
                            ├─ "/help"                    → HelpPage
-                           └─ "*"                        → <Navigate to="/">
+                           └─ "*"                        → <Navigate to="/sessions">
 ```
 
 The two gates run before any route renders. `TokenGate` blocks until a valid
@@ -147,10 +156,10 @@ hasn't dismissed it this session.
 |-------|-------|-------|
 | Server state (runs, decisions, config, secrets, tools, artifacts, audit, swarm, loot) | TanStack Query | `api/hooks.ts`. Cache keys centralized in `queryKeys`. Polls while active, stops at terminal. |
 | Live run events | `useRunEvents` (`api/ws.ts`) | WS-first, SSE fallback. Local React state, deduped by `sequence`. |
-| Token | `sessionStorage` (`breachpilot.apiToken.v1`) | Cleared on 401 / sign-out. Never `localStorage`. |
+| Token | module-level `inMemoryToken` (`api/client.ts`) | In-memory only; cleared via shared `expireSession` funnel on 401 / WS 4401 / sign-out. Never `sessionStorage`/`localStorage`. |
 | Onboarding dismissed | `sessionStorage` (`breachpilot.onboarding.v1`) | Per-session flag. |
-| Wizard form state | `Wizard.tsx` local `useState` | Lifted goal/target/review state so `buildRequest()` can serialize it. |
-| URL state | react-router | `?path=recon\|attack` preselects wizard path; `:runId` route params. |
+| Wizard form state | `run-create/RunWizard.tsx` local `useState` | Goal/target/review state so `buildRequest()` can serialize it. |
+| URL state | react-router | `?path=recon\|attack\|fast` preselects wizard path; `:runId` route params. |
 
 There is no global client store (no Redux/Zustand). TanStack Query is the
 cache; `useState`/`useRef` hold the rest.
@@ -178,7 +187,7 @@ pending.
 ### TokenGate
 
 First-load screen. Operator pastes the bearer token (from `.webui_secret_key`
-or `BREACHPILOT_API_TOKEN`). On submit the SPA stores it via
+or `BREACHPILOT_API_TOKEN`). On submit the SPA stores it in memory via
 `setStoredToken` and calls `GET /capabilities` to verify:
 
 - 401 → "Token rejected", clear token.
@@ -191,11 +200,17 @@ to `/`.
 
 ### Token storage
 
-- Key: `breachpilot.apiToken.v1` in **`sessionStorage`** (survives reloads,
-  clears on tab close — deliberate, so a forgotten tab doesn't leak a token).
+- Held in the module-level `inMemoryToken` in `api/client.ts` — never in
+  `sessionStorage`/`localStorage`, where any XSS payload could replay it
+  against the loopback API. Trade-off: a page refresh drops the session and
+  `TokenGate` re-prompts (accepted: the token is one paste away in
+  `.webui_secret_key`). Covered by `api/tokenStorage.test.ts`.
 - Sent as `Authorization: Bearer <token>` on every REST call (`apiFetch`) and
-  as the `auth` field of the WS/SSE handshake.
-- Never logged, never persisted to disk by the SPA.
+  as the `auth` field of the WS handshake; the fetch-backed SSE transport in
+  `api/sse.ts` also sends it only in the `Authorization` header (never in the
+  URL, which would leak it into history/logs).
+- Never logged, never persisted to disk by the SPA. Only the telemetry session
+  baseline (`breachpilot.telemetry.sessionBaseline.v1`) uses `sessionStorage`.
 
 ### WebSocket auth
 
@@ -246,12 +261,20 @@ view. Returns `{ events, status, authError, transport, reconnect, lastSeq }`.
 
 ### SSE fallback
 
-After 3 consecutive WS failures the hook switches to Server-Sent Events:
+After 3 consecutive WS failures the hook switches to fetch-backed SSE
+(`api/sse.ts` `streamSSE` — the browser's native `EventSource` cannot set an
+`Authorization` header):
 
-- URL: `<origin>/api/v1/runs/<id>/events/stream?after=<seq>&token=<token>`.
-- Same dedup/sort logic via `appendEvent`.
-- On SSE error: same backoff reconnect loop. SSE can fall back to WS again
-  on the next `reconnect()`.
+- URL: `<origin>/api/v1/runs/<id>/events/stream?after=<seq>` (cursor factory
+  re-invoked per attempt; token sent only in the `Authorization` header).
+- Incremental `SseParser` (chunk-safe UTF-8 decode, `data:`/`event:`/`id:`/
+  `retry:` fields, `:` keepalive comments dropped); dedup by `sequence` with
+  `appendBounded`/`eventStore`.
+- `SSE_WATCHDOG_MS` (90s, three missed 30s keepalives) aborts a silently dead
+  stream; exponential backoff capped at 10s. `onStatus` drives the transport
+  badge; `onFatal` with `authError` stops reconnecting.
+- On SSE error: same backoff reconnect loop. SSE falls back to WS again on
+  the next `reconnect()`.
 
 ### Close codes
 
@@ -266,12 +289,15 @@ After 3 consecutive WS failures the hook switches to Server-Sent Events:
 A browser disconnect **does not cancel the run** — the backend ring buffer +
 `events.jsonl` cover the gap; reconnect with the last `sequence` you saw as
 `after`. `reconnect()` forces an immediate WS reconnect, resetting attempt
-counters.
+counters. The WS-layer watchdog marks the stream stale after 45s of silence
+(incl. heartbeats) and force-reconnects at 90s (`STALE_AFTER_MS` /
+`WATCHDOG_TIMEOUT_MS` in `ws.ts`), matching the 90s SSE watchdog.
 
 ### Transport badge
 
-The Run page shows `WS` / `SSE` / `—` next to the run state, sourced from
-`events.transport`.
+The Run page shows `WS` / `SSE` / connection-state labels (`reconnecting`,
+`offline`, `connecting`, `error`, `—`), derived in `RunPage.tsx` from
+`events.transport` + `events.status`.
 
 ---
 
@@ -293,8 +319,8 @@ run" and surfaces a banner. Polls every 5s.
 
 ### New Run (`/runs/new`)
 
-Thin wrapper around the [`Wizard`](#the-run-wizard) component. On create,
-navigates to `/runs/<runId>` with `state.justCreated`.
+Thin wrapper around [`RunWizard`](#the-run-wizard). On create, navigates to
+`/runs/<runId>`.
 
 ### Run (`/runs/:runId`)
 
@@ -308,6 +334,12 @@ See [Artifacts, Audit & Logs](#artifacts-audit--logs).
 
 See [Loot & Credentials](#loot--credentials).
 
+### Run Graph (`/runs/:runId/graph`)
+
+Per-run attack-path view (`GraphPage.tsx`): `AttackGraphDag` (DAG layout from
+run artifacts) above the legacy `AttackGraph` list, gated on the
+`enhanced/enhanced_report.json` artifact.
+
 ### Modules (`/modules`)
 
 Read-only catalog of pre-packaged attack modules (`GET /attack/modules`): name,
@@ -319,6 +351,30 @@ flag. Search + family filter. `tools/attack_modules/` is the source; see
 
 Read-only catalog of preset goals (`GET /goals`) grouped by risk requirement
 (safe / gated / high) with the opt-in requirement each level demands.
+
+### Memory (`/memory`)
+
+Attack-memory browser (`MemoryPage.tsx`, `useMemory`): lessons + items with
+confidence filter, search, per-tab tables. Read-only.
+
+### Stats (`/stats`)
+
+Telemetry rollup (`StatsPage.tsx`): 14-day run histogram, recent runs, and
+`useTelemetry` aggregates (tokens, calls, durations), capped at 200 runs / 50
+telemetry records.
+
+### Connections (`/connections`)
+
+Operator-connection manager (`ConnectionsPage.tsx`, `useConnections` /
+`useConnection` / `useCheckConnection` / `useRemoveConnection`): list, health
+check, and removal with confirm dialog.
+
+### Ops (`/ops`)
+
+Read-only operations rollup (`OpsPage.tsx`, `GET /ops/summary`): kill-chain,
+snapshots (+ counterfactual flag), eval baseline presence, browser backend, and
+active provider. Enabling stays in System → Config (`PATCH /config`). Covered
+by `tests/test_ops_summary.py`.
 
 ### Help (`/help`)
 
@@ -345,7 +401,9 @@ adds the live progress view (current trial, phases, actions, sandbox state),
 the structured mission timeline, scenario results table with
 verified-vs-claimed columns, failure categories, the configuration and
 environment (reproducibility pins: git SHA, model id/version, config hash,
-sandbox image digest), and a Save-as-baseline action.
+sandbox image digest), and a Save-as-baseline action. Routes:
+`/benchmarks` (dashboard), `/benchmarks/new` (start form), `/benchmarks/history`
+(trend charts), `/benchmarks/:runId` (live + detail).
 
 ### System (`/system`)
 
@@ -355,15 +413,18 @@ See [System Page](#system-page).
 
 ## The Run Wizard
 
-`Wizard.tsx` — 4 steps, mirroring the CLI questionary flow.
+`run-create/RunWizard.tsx` — steps in `run-create/RunStepper.tsx`
+(`STEPS = ["opsec", "settings", "target", "review"]`), mirroring the CLI
+questionary flow.
 
 ```
-path ──▶ settings ──▶ target ──▶ review
+opsec ──▶ settings ──▶ target ──▶ review
 ```
 
 | Step | Collects |
 |------|----------|
-| `path` | Recon-first vs straight attack (sets `mode` + `recon_first`). Preselectable via `?path=recon\|attack`. |
+| `opsec` | OPSEC posture settings (see `OpsecSettings`). |
+| `settings` | Execution path + model/profile/power-ups (see below). Preselectable via `?path=recon\|attack\|fast`. |
 | `settings` | Model alias (provider-aware: Ollama live list + registry, or ChatGPT discovered models + `chatgpt.default_model`; refresh button); power-ups grid (filtered by `capabilities.run_options.flags`); recon-first tri-state; observer mode; skills mode + include/exclude multi-select; goal (preset by risk group or custom text, attack path only); run kind; `yes` skip-confirm toggle. |
 | `target` | IPv4/IPv6/FQDN. Client-side `isValidTarget` mirrors `tools.validation_utils` (strict IPv4 octets, IPv6 must contain `:`, FQDN TLD ≥2 alpha). |
 | `review` | Summary card (target/mode/goal/model/transport/permission/destructive/budgets/skill activations) + the start-confirm gate. |
@@ -418,8 +479,10 @@ goals are free text. Setting a goal on the attack path disables recon-first.
 
 ### Event stream (left, main column)
 
-`EventList` renders the deduped, sequence-sorted event list with
-sticky-to-bottom scrolling and a "jump to latest" button when scrolled up.
+`EventViewer` (`components/events/EventViewer.tsx`, rows in `eventRows.ts`)
+renders the deduped, sequence-sorted event list (virtualized via TanStack
+Virtual) with sticky-to-bottom scrolling, pause, search, type filters, and a
+"jump to latest" button when scrolled up.
 Event rendering:
 
 | Event type | Rendered as |
@@ -639,9 +702,9 @@ showing `loot_type`, `description`, and a collapsible `<pre>` with
   already starts with `http` or `/api/`.
 - `ApiError` — `{ status, code, details, requestId, raw }` with `isAuth` /
   `isConflict` / `isNotFound` getters. `status === 0` means network failure.
-- `wsUrlForRun` / `sseUrlForRun` — build WS/SSE URLs from `window.location`
-  + stored token (used by `ws.ts`; SSE URL here uses the query-string token
-  path).
+- `wsUrlForRun`-style URL building lives in `ws.ts` from `window.location`
+  + stored token. The fetch-backed SSE transport (`sse.ts`) sends the token
+  only in the `Authorization` header — never `?token=` in the URL.
 
 ### `ws.ts`
 
@@ -700,9 +763,10 @@ editing in place — they are vendored, not an npm dependency.
 |-----------|------|
 | `Layout` | Sidebar + mobile header + active-run pill + footer. |
 | `TokenGate` / `OnboardingGate` | Pre-route gates. |
-| `Wizard` | 4-step run creation. |
-| `RunForm` | Legacy single-form; still exports `SegmentedControl`, `TriStateToggle`, `ToggleRow`, `SkillMultiSelect` used by the Wizard. |
-| `EventList` / `BootChecklist` / `ToolCallCard` / `DecisionCard` / `ReconAssessmentCard` / `GoalSuggestionCard` / `SessionSummaryCard` | Event-stream renderers. |
+| `run-create/RunWizard` | Multi-step run creation (opsec → settings → target → review). |
+| `run-create/*` | Step sections: `ModeSelector`, `TargetField`, `GoalSelector`, `ModelSelector`, `ExecutionProfile`, `AdvancedExecutionSettings`, `SkillsSettings`, `OpsecSettings`, `RunReview`, `RunStepper`, `RunSummary`. |
+| `ui/segmented` | `SegmentedControl`, `TriStateToggle`, `SkillMultiSelect` shared by the wizard (not a legacy `RunForm`). |
+| `events/EventViewer` + `eventRows` / `BootChecklist` / `ToolCallCard` / `DecisionCard` / `ReconAssessmentCard` / `GoalSuggestionCard` / `SessionSummaryCard` | Event-stream renderers. |
 | `StatusBadge` | Run-state → colored badge. |
 | `CopyButton` | Clipboard copy with icon + label. |
 | `ConfigEditor` | System → Config form. |
@@ -737,8 +801,10 @@ now / Ns / Nm / Nh / Nd / ISO date), `formatBytes` (B/KB/MB/GB/TB).
   (e.g. `// ponytail: ...`). The codebase follows this.
 - **Server state via TanStack Query only** — no ad-hoc `useEffect` fetches.
   Add a hook in `hooks.ts`, add a key in `queryKeys`.
-- **Token via `client.ts` only** — never read `sessionStorage` directly
-  outside the client layer.
+- **Token via `client.ts` only** — never read the bearer token outside the
+  client layer (the token lives in module memory; `sessionStorage` holds only
+  the telemetry session baseline, onboarding flag, notice keys, and
+  permission-mode prefs).
 - **Error surfaces:** `ApiError` is the normalized shape; use its
   `.isAuth` / `.isConflict` / `.isNotFound` getters rather than checking
   `status` literally.
@@ -779,10 +845,11 @@ Radix + `cva` + `cn`, matching the existing file style.
 
 ### Add an event renderer
 
-`EventList`'s `renderSimpleEvent` switch handles non-tool, non-approval
-events. Add a `case` for a new `EventType` and a dedicated card component if
-the payload is structured (see `ReconAssessmentCard` / `GoalSuggestionCard`
-for the pattern). Add the type to `EventType` in `types.ts`.
+`EventViewer`'s `renderSimpleEvent` (in `components/events/EventViewer.tsx`)
+switch handles non-tool, non-approval events. Add a `case` for a new
+`EventType` and a dedicated card component if the payload is structured (see
+`ReconAssessmentCard` / `GoalSuggestionCard` for the pattern). Add the type
+to `EventType` in `types.ts`.
 
 ### Add a tab to the Run page
 
@@ -833,9 +900,8 @@ webui/
    │  ├─ Layout.tsx
    │  ├─ TokenGate.tsx
    │  ├─ OnboardingGate.tsx
-   │  ├─ Wizard.tsx              # 4-step run creation
-   │  ├─ RunForm.tsx             # legacy form + shared toggles
-   │  ├─ EventList.tsx           # event stream renderer
+   │  ├─ run-create/RunWizard.tsx # multi-step run creation (+ step sections)
+   │  ├─ events/EventViewer.tsx  # event stream renderer (+ eventRows.ts)
    │  ├─ BootChecklist.tsx
    │  ├─ ToolCallCard.tsx
    │  ├─ DecisionCard.tsx
@@ -852,10 +918,20 @@ webui/
    └─ routes/
       ├─ HomePage.tsx
       ├─ RunListPage.tsx
-      ├─ NewRunPage.tsx          # wraps <Wizard>
+      ├─ NewRunPage.tsx          # wraps <RunWizard>
       ├─ RunPage.tsx             # live run view
       ├─ ArtifactsPage.tsx
       ├─ LootPage.tsx
+      ├─ GraphPage.tsx           # per-run graph view
+      ├─ MemoryPage.tsx
+      ├─ SkillsPage.tsx
+      ├─ AttackModulesPage.tsx
+      ├─ GoalsPage.tsx
+      ├─ StatsPage.tsx
+      ├─ ConnectionsPage.tsx
+      ├─ BenchmarksPage.tsx / BenchmarksStartPage.tsx / BenchmarksHistoryPage.tsx / BenchmarkRunPage.tsx
+      ├─ OpsPage.tsx
+      ├─ HelpPage.tsx
       └─ SystemPage.tsx
 ```
 

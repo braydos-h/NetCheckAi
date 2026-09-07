@@ -127,6 +127,26 @@ export const defaultQueryOptions = {
   meta: { onErrorAuthClear: true } as const,
 };
 
+// ── Polling policy ──────────────────────────────────────────────────────────
+// One place for every refetch cadence so idle tabs stop hammering the daemon.
+// FAST = something the operator is watching change; SLOW = background freshness;
+// false = frozen (terminal runs, removed connections).
+export const POLL_FAST = 5_000;
+export const POLL_SLOW = 30_000;
+export const POLL_IDLE = 60_000;
+
+/** Poll `fast` while the cached run is active (or unknown), else freeze. */
+export function activeRunPoll(
+  qc: { getQueryData: <T>(key: unknown) => T | undefined },
+  runId: string | null | undefined,
+  fast: number = POLL_SLOW,
+): number | false {
+  if (!runId) return false;
+  const run = qc.getQueryData<RunDetail>(queryKeys.run(runId));
+  if (!run || isActiveState(run.state)) return fast;
+  return false;
+}
+
 export function useCapabilities(enabled = true) {
   return useQuery<Capabilities>({
     queryKey: queryKeys.capabilities,
@@ -310,8 +330,9 @@ export function useTelemetry() {
     queryFn: () => apiFetch<TelemetryResponse>("/system/telemetry"),
     ...defaultQueryOptions,
     staleTime: 15_000,
-    refetchInterval: 8_000,
-    refetchIntervalInBackground: true,
+    // Active-tab only: telemetry is advisory, and background polling kept an
+    // idle dashboard hitting the daemon every 8s forever.
+    refetchInterval: POLL_FAST,
   });
 }
 
@@ -500,12 +521,7 @@ export function useRunSandbox(runId: string | null | undefined) {
     queryFn: () => apiFetch<RunSandboxResponse>(`/runs/${encodeURIComponent(runId as string)}/sandbox`),
     ...defaultQueryOptions,
     enabled: !!runId,
-    refetchInterval: () => {
-      if (!runId) return false;
-      const run = qc.getQueryData<RunDetail>(queryKeys.run(runId));
-      if (!run || isActiveState(run.state)) return 30_000;
-      return false;
-    },
+    refetchInterval: () => activeRunPoll(qc, runId),
   });
 }
 
@@ -697,13 +713,12 @@ export function useRuns(limit = 50, offset = 0, sort: string = "created_desc", q
       return apiFetch<RunListResponse>(`/runs?${params.toString()}`);
     },
     ...defaultQueryOptions,
-    // Poll fast only while at least one run is in an active state; when every
-    // run is terminal, back off to a slow cadence so an idle dashboard is not
-    // hammering the API every 5s forever.
+    // Poll fast only while at least one run is active; when every run is
+    // terminal, back off so an idle dashboard stops hammering the API.
     refetchInterval: (query) => {
       const rows: RunListRow[] | undefined = query.state.data?.runs;
       const hasActive = !!rows?.some((r) => isActiveState(r.state));
-      return hasActive ? 5_000 : 60_000;
+      return hasActive ? POLL_FAST : POLL_IDLE;
     },
     placeholderData: keepPreviousData,
   });
@@ -722,7 +737,7 @@ export function useRun(runId: string | null | undefined) {
       // wizard's startup panel reflects the transition promptly.
       if (data.state === "preparing") return 1_000;
       if (data.state === "running" || data.state === "queued" || data.state === "cancelling") {
-        return 5_000;
+        return POLL_FAST;
       }
       return false;
     },
@@ -818,7 +833,7 @@ export function useDecisions(runId: string | null | undefined) {
       const data = query.state.data;
       if (!data) return 10_000;
       const hasPending = data.decisions.some((d) => d.status === "pending");
-      return hasPending ? 5_000 : false;
+      return hasPending ? POLL_FAST : false;
     },
   });
 }
@@ -1066,12 +1081,7 @@ export function useProposed(runId: string | null | undefined, enabled = true) {
     queryFn: () => apiFetch<ProposedResponse>(`/runs/${encodeURIComponent(runId as string)}/proposed`),
     ...defaultQueryOptions,
     enabled: !!runId && enabled,
-    refetchInterval: () => {
-      if (!runId) return false;
-      const run = qc.getQueryData<RunDetail>(queryKeys.run(runId));
-      if (!run || isActiveState(run.state)) return 10_000;
-      return false;
-    },
+    refetchInterval: () => activeRunPoll(qc, runId, 10_000),
   });
 }
 
@@ -1114,7 +1124,7 @@ export function useConnections(params?: { status?: string; target?: string }) {
       if (hasActive) return 12_000;
       if (hasStale) return 15_000;
       // No active/stale — slow poll for sidebar badge updates
-      return 30_000;
+      return POLL_SLOW;
     },
     refetchOnWindowFocus: false,
   });
@@ -1131,7 +1141,7 @@ export function useConnection(connectionId: string | null | undefined, enabled =
       if (!data) return 10_000;
       if (data.status === "removed") return false;
       if (data.status === "active" || data.status === "stale") return 10_000;
-      return 30_000;
+      return POLL_SLOW;
     },
   });
 }

@@ -1889,9 +1889,19 @@ backup_live_install() {
 
 restore_backup() {
     [[ -n "$BP_UPDATE_BACKUP" && -d "$BP_UPDATE_BACKUP" ]] || return 1
-    [[ -n "$BP_SOURCE_DIR" ]] || return 1
-    rm -rf "$BP_SOURCE_DIR" 2>/dev/null || true
-    mv "$BP_UPDATE_BACKUP" "$BP_SOURCE_DIR" || return 1
+    [[ -n "$BP_SOURCE_DIR" && "$BP_SOURCE_DIR" != "/" ]] || return 1
+    # Move (never rm) the broken tree aside first, so a failed mv below
+    # still leaves both trees recoverable.
+    local broken="${BP_SOURCE_DIR}.broken"
+    rm -rf "$broken" 2>/dev/null || true
+    if [[ -e "$BP_SOURCE_DIR" ]]; then
+        mv "$BP_SOURCE_DIR" "$broken" || return 1
+    fi
+    if ! mv "$BP_UPDATE_BACKUP" "$BP_SOURCE_DIR"; then
+        mv "$broken" "$BP_SOURCE_DIR" 2>/dev/null || true
+        return 1
+    fi
+    rm -rf "$broken" 2>/dev/null || true
     BP_UPDATE_BACKUP=""
     return 0
 }

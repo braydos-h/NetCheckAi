@@ -10,8 +10,10 @@ import {
   Coins,
   Cpu,
   Gauge,
+  HeartPulse,
   History,
   Info,
+  OctagonAlert,
   Layers3,
   ListChecks,
   RefreshCw,
@@ -77,18 +79,20 @@ interface StateMeta {
   barClass: string;
 }
 
+// Active states share one hue deliberately — they collapse to a single
+// "Active" identity; distinct hues are reserved for distinct outcomes.
 const STATE_META: Record<RunState, StateMeta> = {
   draft: { label: "Draft", barClass: "bg-muted-foreground/45" },
   preparing: { label: "Preparing", barClass: "bg-muted-foreground/50" },
-  awaiting_confirmation: { label: "Awaiting confirmation", barClass: "bg-amber-500/80" },
+  awaiting_confirmation: { label: "Active", barClass: "bg-amber-500/80" },
   queued: { label: "Queued", barClass: "bg-muted-foreground/50" },
-  running: { label: "Running", barClass: "bg-amber-500/80" },
-  awaiting_input: { label: "Awaiting input", barClass: "bg-amber-500/80" },
+  running: { label: "Active", barClass: "bg-amber-500/80" },
+  awaiting_input: { label: "Active", barClass: "bg-amber-500/80" },
   completed: { label: "Completed", barClass: "bg-emerald-500/85" },
   failed: { label: "Failed", barClass: "bg-destructive/85" },
   cancelled: { label: "Cancelled", barClass: "bg-slate-500/75" },
   interrupted: { label: "Interrupted", barClass: "bg-orange-500/80" },
-  cancelling: { label: "Cancelling", barClass: "bg-amber-500/80" },
+  cancelling: { label: "Active", barClass: "bg-amber-500/80" },
 };
 
 const STATE_ORDER: RunState[] = [
@@ -463,7 +467,7 @@ function KpiOverview({
         available={telemetryAvailable}
       />
       <StatCard
-        icon={CheckCircle2}
+        icon={HeartPulse}
         label="LLM reliability"
         value={formatPercent(llmSuccessRate)}
         sub={telemetryAvailable ? `${formatCount(llmSuccessCount)} successful · ${formatCount(llmFailureCount)} failed` : "Telemetry unavailable"}
@@ -501,11 +505,12 @@ function StatCard({
   loading: boolean;
   available: boolean;
 }) {
+  // Values wear text tokens — tone lives on the icon chip only.
   const toneClasses: Record<Tone, { icon: string; value: string; border: string }> = {
     neutral: { icon: "bg-primary/10 text-primary", value: "text-foreground", border: "border-primary/15" },
-    success: { icon: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", value: "text-emerald-700 dark:text-emerald-300", border: "border-emerald-500/20" },
-    danger: { icon: "bg-destructive/10 text-red-600 dark:text-red-300", value: "text-red-600 dark:text-red-300", border: "border-destructive/20" },
-    warning: { icon: "bg-amber-500/10 text-amber-700 dark:text-amber-300", value: "text-amber-700 dark:text-amber-300", border: "border-amber-500/20" },
+    success: { icon: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", value: "text-foreground", border: "border-emerald-500/20" },
+    danger: { icon: "bg-destructive/10 text-red-600 dark:text-red-300", value: "text-foreground", border: "border-destructive/20" },
+    warning: { icon: "bg-amber-500/10 text-amber-700 dark:text-amber-300", value: "text-foreground", border: "border-amber-500/20" },
   };
   const classes = toneClasses[tone];
 
@@ -590,9 +595,11 @@ function TokenUsageChart({ data }: { data: TokenDay[] }) {
     values: { prompt: point.prompt, completion: point.completion, unattributed: point.unattributed },
   }));
   const hasUnattributed = data.some((point) => point.unattributed > 0);
+  // Completion is a categorical identity (prompt vs completion), not a status —
+  // emerald stays reserved for success states.
   const segments: DailyChartSegment[] = [
     { key: "prompt", label: "Prompt", className: "bg-primary/75" },
-    { key: "completion", label: "Completion", className: "bg-emerald-500/80" },
+    { key: "completion", label: "Completion", className: "bg-sky-500/80" },
   ];
   if (hasUnattributed) segments.push({ key: "unattributed", label: "Unattributed", className: "bg-muted-foreground/45" });
 
@@ -620,7 +627,7 @@ function TokenUsageChart({ data }: { data: TokenDay[] }) {
               rows={[
                 { label: "Total tokens", value: formatTokens(point.total) },
                 { label: "Prompt tokens", value: formatTokens(point.values.prompt ?? 0), colorClass: "bg-primary" },
-                { label: "Completion tokens", value: formatTokens(point.values.completion ?? 0), colorClass: "bg-emerald-500" },
+                { label: "Completion tokens", value: formatTokens(point.values.completion ?? 0), colorClass: "bg-sky-500" },
                 ...(hasUnattributed
                   ? [{ label: "Unattributed", value: formatTokens(point.values.unattributed ?? 0), colorClass: "bg-muted-foreground/60" }]
                   : []),
@@ -632,7 +639,7 @@ function TokenUsageChart({ data }: { data: TokenDay[] }) {
         <ChartLegend
           items={[
             { label: "Prompt", className: "bg-primary" },
-            { label: "Completion", className: "bg-emerald-500" },
+            { label: "Completion", className: "bg-sky-500" },
             ...(hasUnattributed ? [{ label: "Unattributed", className: "bg-muted-foreground/60" }] : []),
           ]}
         />
@@ -689,7 +696,7 @@ function DailyStackedBarChart({
                   >
                     {point.total > 0 && stackTotal > 0 ? (
                       <div
-                        className="flex w-full flex-col-reverse overflow-hidden rounded-t-sm border border-foreground/10 shadow-sm transition-[filter] group-hover:brightness-110 group-focus-visible:brightness-110"
+                        className="flex w-full flex-col-reverse gap-px overflow-hidden rounded-t-sm border border-foreground/10 bg-background p-px shadow-sm transition-[filter] group-hover:brightness-110 group-focus-visible:brightness-110"
                         style={{ height: `${Math.max(6, (point.total / max) * 100)}%` }}
                       >
                         {segments.map((segment) => {
@@ -908,11 +915,9 @@ function MetricHelp({ label, help }: { label: string; help: string }) {
 function ContextMeter({ label, value }: { label: string; value: number | null }) {
   const percentage = value != null && Number.isFinite(value) ? value : null;
   const clamped = percentage == null ? 0 : Math.min(100, Math.max(0, percentage));
-  const fillClass = percentage != null && percentage >= 90
-    ? "bg-destructive"
-    : percentage != null && percentage >= 75
-      ? "bg-amber-500"
-      : "bg-primary";
+  // One magnitude, one hue — High/Critical ride on the badge + icon, not the fill.
+  const level = percentage != null && percentage >= 90 ? "critical" : percentage != null && percentage >= 75 ? "high" : null;
+  const LevelIcon = level === "critical" ? OctagonAlert : level === "high" ? AlertTriangle : null;
 
   return (
     <div>
@@ -921,7 +926,15 @@ function ContextMeter({ label, value }: { label: string; value: number | null })
           <span className="font-medium">{label}</span>
           <MetricHelp label={label} help="Estimated context tokens as a percentage of the configured model context window. Higher values mean less remaining context, not an automatic error." />
         </span>
-        <span className="font-mono font-semibold tabular-nums">{formatPercent(percentage)}</span>
+        <span className="flex items-center gap-1.5 font-mono font-semibold tabular-nums">
+          {formatPercent(percentage)}
+          {level && LevelIcon && (
+            <span className={cn("inline-flex items-center gap-0.5 text-[10px] uppercase tracking-wide", level === "critical" ? "text-destructive" : "text-amber-700 dark:text-amber-300")}>
+              <LevelIcon className="h-3 w-3" aria-hidden />
+              {level}
+            </span>
+          )}
+        </span>
       </div>
       <div
         className="mt-2 h-2 overflow-hidden rounded-full bg-muted"
@@ -932,7 +945,7 @@ function ContextMeter({ label, value }: { label: string; value: number | null })
         aria-valuenow={percentage == null ? undefined : clamped}
         aria-valuetext={percentage == null ? "No context sample" : `${percentage.toFixed(1)} percent`}
       >
-        {percentage != null && <div className={cn("h-full rounded-full transition-[width]", fillClass)} style={{ width: `${clamped}%` }} />}
+        {percentage != null && <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${clamped}%` }} />}
       </div>
       <p className="mt-1 text-[10px] text-muted-foreground">Higher means less remaining context.</p>
     </div>

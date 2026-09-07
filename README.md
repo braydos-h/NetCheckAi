@@ -269,9 +269,34 @@ Full model: [docs/safety-model.md](docs/safety-model.md)
 ### Linux (primary platform)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/braydos-h/BreachPilot/main/install.sh | bash
+#   ^ fresh machine: downloads the newest version into ~/.local/share/breachpilot
+bp                        # launch from any directory; opens http://127.0.0.1:8765
+```
+
+From an existing checkout:
+
+```bash
 ./install.sh              # full bootstrap: OS prereqs + Ollama + venv + WebUI + models + --doctor + launchers
 bp                        # launch from any directory; opens http://127.0.0.1:8765
 ```
+
+Installer essentials (`./install.sh --help` for all options):
+
+```bash
+./install.sh --check      # read-only health check, changes nothing
+./install.sh --update     # atomic update with rollback (managed installs)
+./install.sh --repair     # fix venv/deps/launchers/WebUI in place
+./install.sh --full       # core + WebUI + Kali arsenal + scanners + models
+./install.sh --uninstall  # remove app files, keep your data (see below)
+```
+
+Default paths: install `~/.local/share/breachpilot`, launchers
+`~/.local/bin/{breachpilot,bp}`, log `~/.local/state/breachpilot/install.log`.
+Updates and uninstalls preserve `config.yaml`, `.env`, `secr.json`,
+`mission.yaml`, `reports/`, `research_workspace/`, `exploit_workspace/`,
+`swarm_workspace/`, `api_runtime.db`, and `logs/`.
+Full reference: [docs/deployment.md](docs/deployment.md).
 
 Or step by step with make targets:
 

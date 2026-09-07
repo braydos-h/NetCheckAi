@@ -63,6 +63,39 @@ subsystem: mcp
 - `tests/test_persistent_session_manager.py` — session CRUD, listeners
 - `tests/test_mcp_tool_registration.py` — expects `start_tmux_session`, `start_background_job`, `start_listener`
 
+## Sandbox execution + egress guard (zero-tool helpers)
+
+`sandbox_exec.py` and `egress_guard.py` register no `@mcp.tool` — they are the shared execution plane that sessions, terminal, Metasploit, and scanner tools funnel through. Documented here because background sessions/listeners run on the same contained-vs-host path.
+
+### `sandbox_exec.py` — contained-execution funnel
+
+```python
+def run_command_in_sandbox(ctx: Any, command: str, *, timeout: int, cwd_host: Any = None, tool_name: str = "", user: str = "") -> tuple[bool, Any]
+def run_argv_in_sandbox(ctx: Any, argv: list[str], *, target_ip: str = "", command: str = "", timeout: int = 300, cwd_host: Any = None, tool_name: str = "") -> tuple[bool, Any]
+def collect_command_targets(command: str) -> list[str]
+def sandbox_error_block(exc: Exception, *, tool_name: str = "") -> str
+def sandbox_fallback_notice(ctx: Any) -> str
+def loopback_hint(target_ip: str, config: Any) -> str
+```
+
+- `run_command_in_sandbox` / `run_argv_in_sandbox` return `(True, SandboxResult)` on a contained execution, `(False, None)` when no sandbox manager is attached (sandbox disabled → documented legacy host-execution mode), and raise `SandboxError` on sandbox/policy/scope/entry failure — the caller renders the `SANDBOX_*` block. Fail-closed: host execution is never an automatic fallback for attack commands.
+- Scope: the FULL extracted target list (not just the primary) goes through the manager's own `_enforce_scope` first (`_enforce_full_scope`), so a multi-destination command whose primary is allowlisted but whose secondary is not still blocks. `collect_command_targets` uses the same extractor union as the tool-layer target lock, so the scope gate can never authorize what the string layer would deny.
+- Entry gates: non-empty command/argv, positive-int timeout, safe `--user` token (`_SAFE_USER_RE`), path-like `cwd_host` mapped via `manager.container_path` (outside-workspace fails closed). The argv variant runs `argv` verbatim (never shelled); its `command` string is extraction-only.
+- `loopback_hint` returns a `HINT:` remediation line when a loopback target fails from inside the sandbox (container-local loopback; needs `sandbox.network.map_host_loopback:true`), decoding obfuscated loopback forms via the shared endpoint-IP extractor. Advisory only.
+- `sandbox_fallback_notice` emits `SANDBOX_FALLBACK:` only when the server degraded via the boot-time native fallback (`ctx.sandbox_notice`); configured host mode stays quiet. Config: `sandbox.*` (`enabled`, `fallback_native`, `network.map_host_loopback`).
+
+### `egress_guard.py` — runtime egress enforcement for `run_python_file` children
+
+```python
+DENIAL_MARKER = "BP_EGRESS_DENIED"
+def build_egress_preamble(allowlist: list[str] | None) -> str
+def egress_denied_in_output(text: Any) -> str | None
+```
+
+- The static `_target_lock_block` body scan only sees literal destinations; a host built at runtime (`sys.argv` slicing, concat, base64/hex decode, `os.environ`) sails through. The tool prepends a stdlib-only preamble (`GUARD_PREAMBLE`, `json`/`ipaddress`/`socket`/`os` — the child may run in the sandbox worker where `tools.*` is not importable) that wraps `socket.socket.connect` / `socket.create_connection` and denies any host outside the effective target-IP allowlist at connect time.
+- Matcher: exact case-insensitive, `*.wildcard` with dot boundary (bare parent NOT covered), CIDR. Fail-closed (matcher error denies); empty allowlist permits everything. Known ceiling: subprocess-spawned network clients (`curl`/`nc` via `os.system`) are NOT intercepted — literals there are still caught by the static scan, and the sandbox netns firewall is the backstop when sandboxed.
+- `egress_denied_in_output` extracts the denied host from the `BP_EGRESS_DENIED` marker so the tool renders a clean `BLOCKED:` result instead of a traceback.
+
 ## Related Docs
 
 - `docs/mcp/tool-families/terminal.md` — terminal's `_target_lock_block` reused here

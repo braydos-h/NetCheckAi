@@ -68,14 +68,17 @@ double-click launcher that passes args through (e.g. `START.bat --menu`).
 ### Linux (./install.sh one-shot)
 
 ```bash
-# Option 0: one-shot bootstrap (recommended — OS prereqs + Ollama + venv +
-#           WebUI + models + --doctor + `bp` launchers).
-#           See README "Quick start in 60 seconds" for the short version.
-./install.sh
+# Fresh machine (no checkout needed): downloads the newest version into
+# ~/.local/share/breachpilot. Safe to pipe: HTTPS-only, pinned repo/branch.
+curl -fsSL https://raw.githubusercontent.com/braydos-h/BreachPilot/main/install.sh | bash
 bp                        # launch from any directory; opens http://127.0.0.1:8765
 
+# From an existing checkout:
+./install.sh
+
 # Full Kali arsenal (metasploit/searchsploit/hydra/impacket):
-INSTALL_KALI_TOOLS=1 ./install.sh
+./install.sh --full
+# (legacy env equivalent: INSTALL_KALI_TOOLS=1 ./install.sh)
 
 # Option A: make (thin wrappers, Makefile)
 make install         # venv + pip install -r requirements.txt (Makefile:14-16)
@@ -97,12 +100,98 @@ python -m pip install -r requirements.txt
 ```
 
 `./install.sh` is the primary path (OS prereqs + Ollama + venv + WebUI +
-models + `--doctor` + `bp` launchers; `INSTALL_KALI_TOOLS=1 ./install.sh`
+models + `--doctor` + `bp`/`breachpilot` launchers; `./install.sh --full`
 for the full Kali arsenal). `scripts/setup-linux.sh` is the lightweight
 alternative: it checks for `nmap`, `ollama`, `tmux`, `searchsploit`,
 `msfconsole`, `hydra`, and `impacket` and prints install hints for anything
 missing (setup-linux.sh:42-48). It never installs or runs anything against a
 target — host prep only.
+
+#### Installer CLI (`./install.sh --help`)
+
+| Option | Effect |
+|---|---|
+| `--update` | Atomic update of a managed install: newest Release → tag → `main`; staged build + validation, then swap with automatic rollback. Refuses dev checkouts unless `--allow-dev`. |
+| `--version VERSION` | Pin an exact tag/branch/SHA instead of resolving newest. |
+| `--install-dir PATH` | Managed-install location (default `~/.local/share/breachpilot`). |
+| `--repair` | Recreate venv, reinstall deps, fix launchers/PATH, rebuild stale WebUI. Config + data untouched. |
+| `--check` | Read-only diagnostics (platform/core/services/tools matrix). Changes nothing. |
+| `--doctor` | Run `python main.py --doctor` against the install. |
+| `--uninstall` | Remove app files + launchers + PATH block. Preserves user data (below). |
+| `--minimal` / `--standard` / `--full` | Profiles: core only / +WebUI+recon (default) / +Kali+scanners+models. |
+| `--with-kali-tools` / `--without-kali-tools`, `--with-scanners` / `--without-scanners` | Feature flags (override the profile). |
+| `--with-chatgpt` | Opt-in ChatGPT provider runtime (bun + vendored openai-oauth). |
+| `--skip-models` | Skip model pulls (same as `SKIP_MODEL_PULL=1`). |
+| `--no-path` | Skip launchers and shell rc edits. |
+| `--dry-run` / `--yes` / `--verbose` / `--quiet` | Preview / non-interactive / debug / minimal output. |
+
+Exit codes: 0 ok · 1 failure · 2 bad args · 3 unsupported platform ·
+4 preflight · 5 download/version · 6 validation · 7 update/rollback.
+
+#### Version resolution
+
+1. Explicit `--version`. 2. Latest stable GitHub Release. 3. Newest git tag.
+4. Default branch (`main`) as a documented fallback. This repo currently
+publishes no Releases, so the live path is tags → `main`. The installer
+prints `Repository / Version / Commit / Install path / Source` for every
+managed install and never silently installs an older version. Tarballs are
+structure-validated after extraction; the exact commit SHA is recorded in
+`.install-info`. No published checksums exist today, so authenticity rests on
+HTTPS + the pinned `github.com/braydos-h/BreachPilot` origin — stated openly
+in the script header, not hidden.
+
+#### Update + rollback design
+
+`--update` never touches the live tree until the new tree is proven:
+
+1. Preflight (disk, network, sudo, Python ≥ 3.11). 2. Resolve newest ref.
+3. Download the tarball into a `mktemp` staging dir; reject empty files,
+invalid gzip, `..`/absolute paths; verify `main.py` + `pyproject.toml` +
+`requirements.txt` + `tools/`. 4. Copy user data (below) into the staged
+tree. 5. Full build inside staging (venv, pinned pip install, WebUI,
+sandbox image). 6. Full validation (tree, imports, config parse, launcher,
+WebUI bundle, `--doctor --json` core checks). 7. `cp -a` backup of the live
+install. 8. Atomic swap (live aside → staged in). 9. Post-activation
+validation (Ollama, models, launchers, fresh `.install-info`). 10. Drop the
+backup only on success.
+
+Any failure after step 7 restores the backup automatically (including on
+SIGINT/SIGTERM via trap). A failed update leaves the previous installation
+usable. `--update` inside a git checkout without `.install-info` is refused
+— that directory is your development repo, not a managed install.
+
+#### Persistent user data
+
+These are copied into staged builds on update, staged out of the tree on
+uninstall (restored to `<parent>/breachpilot-user-data`), and never
+overwritten by a fresh install: `config.yaml`, `.env`, `secr.json`,
+`.webui_secret_key`, `mission.yaml`, `reports/`, `research_workspace/`,
+`exploit_workspace/`, `swarm_workspace/`, `api_runtime.db`, `logs/`.
+Venvs, `__pycache__`, and `.install-info` are never carried across versions.
+`--uninstall` removes managed app files, `~/.local/bin/{breachpilot,bp}`,
+and the guarded PATH block only — system packages (Python, git, node, nmap)
+are left alone.
+
+#### Supported platforms
+
+| Platform | Status |
+|---|---|
+| Kali Linux (x86_64/arm64) | Primary — full arsenal via `--full` |
+| Debian / Ubuntu / Mint / Pop (x86_64/arm64) | Supported — Kali-only pkgs degrade to hints |
+| macOS + Homebrew (x86_64/arm64) | Best-effort — no Metasploit/exploitdb |
+| Other Linux / other arch | Refused with a clear message (exit 3) |
+
+Requirements: Python ≥ 3.11 (`requires-python`, pyproject.toml:11), git,
+curl, tar, Node 18+ (WebUI build only), Docker (sandbox worker image only,
+default-on and fail-closed). nmap is core (doctor fails without it);
+scanners/credentials/exploit binaries are optional per-tool. The installer
+determines sudo needs upfront and never prompts mid-run after long work.
+
+Troubleshooting: rerun with `--verbose`; read
+`~/.local/state/breachpilot/install.log` (XDG_STATE_HOME respected, secrets
+never logged — `GITHUB_TOKEN`/`OLLAMA_API_KEY` are redacted by construction).
+Validate with `bp --doctor`. Installer tests: `pytest tests/test_install_sh.py`
+(hermetic — isolated HOME, no host writes).
 
 ## Dependency installation: requirements.txt vs pyproject extras
 

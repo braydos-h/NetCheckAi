@@ -189,3 +189,88 @@ where the term is defined or primarily used.
   model provider, gitignored; NOT application config (AGENTS.md rule 5).
   App config lives in `config.yaml` — see
   [config-reference.md](config-reference.md).
+
+## Appendix A — Additional terms (alphabetical)
+
+Quick index (see one-line definitions below):
+
+| Term | Primary pointer |
+|---|---|
+| allowlist lock | `tools/kernel/allowlist.py:79` |
+| `api_runtime.db` | `tools/api/persistence.py:19` |
+| audit chain | `tools/exploit_agent/policy.py:144` |
+| benchmark suite | `tools/benchmark/service.py:23` |
+| blackboard | `tools/swarm/blackboard.py:47` |
+| campaign | `tools/campaign/orchestrator.py:40` |
+| credential vault | `tools/credential_store.py:297` |
+| decision broker | `tools/api/decision_broker.py:19` |
+| event broker | `tools/api/event_broker.py:431` |
+| exploit policy | `tools/exploit_agent/policy.py:292` |
+| HITL proposal | `tools/mcp_tools/hitl.py:155` |
+| killchain | `tools/killchain/machine.py:45` |
+| operator connection | `tools/operator_connection/manager.py:106` |
+| oracle | `tools/eval_harness.py:635` |
+| orchestrator | `tools/swarm/orchestrator.py:41` |
+| permission mode | `tools/exploit_agent/policy.py:18` |
+| PoE/PoC verification | `tools/verification/poe_verifier.py:238` |
+| `research.db` | `db.py:959` |
+| retest | `tools/mcp_tools/retest.py:279` |
+| run handle | `tools/api/run_manager.py:86` |
+| semantic matching | `tools/skill_embeddings.py:95` |
+| skill reselect | `tools/exploit_agent/skills.py:44` |
+| snapshot | `tools/snapshots.py:556` |
+| tool catalog | `tools/exploit_agent/tool_catalog.py:207` |
+| XBEN | `tools/benchmark/xben/manifest.py:53` |
+
+- **allowlist lock** — Effective target set unioning config `exploit.allowed_targets` with runtime env (`EXPLOIT_TARGET`, `EXPLOIT_TARGET_IP`, `EXPLOIT_TARGET_DOMAIN`, `EXPLOIT_DISCOVERED_TARGETS`) (`tools/kernel/allowlist.py:79 _allowed_target_list`, `:114 add_discovered_target`; matcher `tools/validation_utils.py:651 is_target_in_allowlist`; enforcement `tools/mcp_tools/terminal/allowlist.py:203 _target_lock_block` via `tools/kernel/audit.py:369 make_require_allowlist`).
+- **api_runtime.db** — API-run SQLite store name (`tools/api/persistence.py:19 _API_DB_NAME`, path built at `:162` under the reports dir), separate from Flow B's `research.db`.
+- **audit chain** — Append-only, tamper-evident `exploit_audit.jsonl` record of every tool call (`tools/exploit_agent/policy.py:144 EXPLOIT_AUDIT_FILENAME`, `:148` completeness comment, `:382 approve_action`).
+- **benchmark suite** — Reproducible oracle-verified trial runner (`tools/benchmark/service.py:23 BenchmarkService`; run shape `tools/benchmark/models.py:303 RunConfig`; refusal path `tools/benchmark/runner.py:180`).
+- **blackboard** — Swarm shared dict-like mission state bus (`tools/swarm/blackboard.py:47 Blackboard`).
+- **campaign** — Persistent multi-phase attack queue across targets driven by the autonomous orchestrator (`tools/campaign/orchestrator.py:40 AutonomousOrchestrator`; state `tools/campaign/state.py:183 AttackState`; executor `tools/campaign/executor.py:50 AttackModuleExecutor`).
+- **credential vault** — Fernet at-rest encryption wrapper plus persistent loot/credential store (`tools/credential_store.py:167 _Vault`, `:297 CredentialStore`; key basename deny-list `:181 DENY_BASENAME`).
+- **decision broker** — Per-run approval-decision futures between agent, server, and WebUI (`tools/api/decision_broker.py:19 DecisionBroker`, `:50 await_answer`, `:63 resolve`).
+- **event broker** — Per-run JSONL plus ring-buffer pub/sub feeding SSE/WS (`tools/api/event_broker.py:431 RunEventBroker`, `:692 EventBrokerRegistry`; reconnect note `:6`).
+- **exploit policy** — Attack-path approval object auto-approving everything on `full_access` except the threaded mission ScopeGate consult (`tools/exploit_agent/policy.py:292 ExploitPolicy`, `:382 approve_action`).
+- **HITL proposal** — Agent-submitted `PROPOSED` candidate finding awaiting a human `APPROVED`/`REJECTED` decision (`tools/mcp_tools/hitl.py:49 PROPOSED`, `:155 propose_new_finding`, `:301 register_hitl_tools`, `:370 hitl_decide` operator-only).
+- **killchain** — Opt-in evidence-verified stage machine (`tools/killchain/machine.py:45 KillChainMachine`; goal `tools/killchain/states.py:49 SHELL_AS_ROOT`; default `tools/config/schema.py:547 goal_state`).
+- **operator connection** — Persistent RCE callback session management (`tools/operator_connection/manager.py:106 ConnectionManager`, `:47 ConnectionRecord`).
+- **oracle** — Per-target expected-findings JSON used for scoring, never the agent's own claim (`tools/eval_harness.py:635 load_target_oracle`, `:646 score_against_oracle`).
+- **orchestrator** — Either the swarm specialist-decomposition controller (`tools/swarm/orchestrator.py:41 SwarmOrchestrator`) or the persistent campaign controller (`tools/campaign/orchestrator.py:40 AutonomousOrchestrator`).
+- **permission mode** — `read_only` vs `approve_only` vs `full_access` tri-state resolved from config (`tools/exploit_agent/policy.py:18 ExploitPermission`; resolver `tools/cli_exploit_settings.py:13 _resolve_exploit_permission`).
+- **PoE/PoC verification** — Independent compromise re-proof (PoE canary/executor check `tools/verification/poe_verifier.py:238 verify_compromise_sync`; PoC probe tool `tools/mcp_tools/poc_verifier.py:26 register_poc_verifier_tools`; candidate re-proof `tools/mcp_tools/verify.py:133 register_verify_tools`).
+- **research.db** — Flow B legacy mission SQLite filename (`db.py:959`, docstring example `:323`).
+- **retest** — Re-execution of a confirmed finding's stored PoC probe returning `STILL_OPEN`/`FIXED`/`INCONCLUSIVE` (`tools/mcp_tools/retest.py:279 retest_finding`, `:149 classify_retest_output`, `:273 register_retest_tools`).
+- **run handle** — In-memory per-run owner object holding the allowlist snapshot and lifecycle state (`tools/api/run_manager.py:86 RunHandle`, `:169` active-handle map).
+- **semantic matching** — Cosine-similarity skill ranking over `nomic-embed-text`, advisory-only with deterministic tag-match floor (`tools/skill_embeddings.py:95 semantic_rank`).
+- **skill reselect** — Mid-run advisory skill-hint rebuild when new services/CVEs appear, rate-guarded (`tools/exploit_agent/skills.py:44 _maybe_reselect_skills`; caps `tools/config/schema.py:719`).
+- **snapshot** — Opt-in fail-open rollback point before destructive actions (`tools/snapshots.py:556 SnapshotManager`, `:48 SnapshotRef`, `:607 before_destructive`).
+- **tool catalog** — Phase-narrowed allow-map from phase name to tool families (`tools/exploit_agent/tool_catalog.py:198 PHASE_TOOL_FAMILIES`, `:207 select_tools_for_phase`).
+- **XBEN** — Declarative benchmark suite manifest parsed into a scenario (`tools/benchmark/xben/manifest.py:53 parse_manifest`; scenario shape `tools/benchmark/models.py:293`).
+
+```bash
+#Spot-check any pointer, e.g.:
+grep -n "_allowed_target_list" tools/kernel/allowlist.py | head
+grep -n "class RunHandle" tools/api/run_manager.py
+grep -n "def parse_manifest" tools/benchmark/xben/manifest.py
+```
+
+### Related documentation
+
+- [attack-modules.md](attack-modules.md), [mcp-wiring.md](mcp-wiring.md), [evaluation.md](evaluation.md), [benchmarks.md](benchmarks.md), [skills.md](skills.md), [swarm.md](swarm.md), [safety-model.md](safety-model.md), [run-service.md](run-service.md), [api.md](api.md), [config-reference.md](config-reference.md)
+
+### Source map
+
+- `tools/campaign/orchestrator.py`, `tools/campaign/state.py`, `tools/campaign/executor.py`
+- `tools/swarm/orchestrator.py`, `tools/swarm/blackboard.py`
+- `tools/exploit_agent/policy.py`, `tools/cli_exploit_settings.py`, `tools/exploit_agent/tool_catalog.py`, `tools/exploit_agent/skills.py`
+- `tools/kernel/allowlist.py`, `tools/kernel/audit.py`, `tools/validation_utils.py`, `tools/mcp_tools/terminal/allowlist.py`
+- `tools/api/decision_broker.py`, `tools/api/event_broker.py`, `tools/api/run_manager.py`, `tools/api/persistence.py`
+- `tools/benchmark/service.py`, `tools/benchmark/models.py`, `tools/benchmark/runner.py`, `tools/benchmark/xben/manifest.py`
+- `tools/eval_harness.py`
+- `tools/verification/poe_verifier.py`, `tools/mcp_tools/poc_verifier.py`, `tools/mcp_tools/verify.py`, `tools/mcp_tools/retest.py`, `tools/mcp_tools/hitl.py`
+- `tools/killchain/machine.py`, `tools/killchain/states.py`, `tools/snapshots.py`
+- `tools/skill_embeddings.py`, `tools/operator_connection/manager.py`, `tools/credential_store.py`
+- `db.py`, `tools/config/schema.py`
+
+Implementation note: `RunHandle.allowlist` snapshot semantics and the single-active-run compat accessor (`tools/api/run_manager.py:205`) were read but not exhaustively traced; treat the one-line definition above as the verified shape, not a lifecycle guarantee.

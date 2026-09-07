@@ -76,32 +76,43 @@ A score of 0 means the module is not applicable and is excluded from ranking
 ## Registry mechanism
 
 The registry lives in `tools/attack_modules/registry.py`. Registration is
-**explicit**: every module class is imported and appended to the
-`_MODULE_CLASSES` list (`registry.py:87-178`). There is no auto-discovery by
-subclass scan.
+**filesystem auto-discovery**: the single source is the filesystem under
+`tools/attack_modules/modules/`, scanned with `pkgutil.iter_modules`
+(`registry.py:21-67`). There is no manual `_MODULE_CLASSES` literal to edit.
 
 ### How modules register
 
-1. Define the class in the relevant category file under
-   `tools/attack_modules/modules/` (e.g. `web.py`, `network_smb.py`).
-2. Re-export it from `tools/attack_modules/modules/__init__.py` and add it to
-   `__all__` (`modules/__init__.py:3-183`).
-3. Import it in `tools/attack_modules/registry.py` and append it to
-   `_MODULE_CLASSES` (`registry.py:8-85`, `registry.py:87-178`).
+1. Define an `AttackModule` subclass in the relevant category file under
+   `tools/attack_modules/modules/` (e.g. `modules/web/sqli.py`,
+   `modules/network_smb.py`).
+2. `_discover_attack_modules()` imports every module file and walks
+   subpackages too: category families split into packages such as
+   `modules/web/` and `modules/ics/` still register their classes, because a
+   plain `iter_modules` loop skips packages and the walker explicitly queues
+   each subpackage `__path__` (`registry.py:27-42`). Discovery runs on import
+   and is idempotent (`registry.py:71`).
+3. Dedupe is by class identity and by `module.name`: a family mid-split that
+   defines the same modules twice (e.g. `modules/ics_iot.py` alongside
+   `modules/ics/`) registers only once, since `module.name` is the registry
+   key for `get_module` / `run_attack_module` (`registry.py:60-67`).
 4. `tools/attack_modules/__init__.py` re-exports the registry helpers and all
-   module classes for tests that import them by name (`__init__.py:8-34`).
+   module classes for tests that import them by name.
+
+The `@register_attack_module` decorator remains as an explicit opt-in for
+out-of-tree or test modules: it appends the decorated class when absent and
+returns it unchanged (`registry.py:96-106`).
 
 Out-of-tree modules register through the plugin system instead:
 `registry._plugin_extra_module_classes()` lazily consults
-`tools.plugins.PLUGIN_REGISTRY.extra_module_classes` (`registry.py:181-191`),
+`tools.plugins.PLUGIN_REGISTRY.extra_module_classes` (`registry.py:74-85`),
 and `list_modules()` / `get_module()` append those instances
-(`registry.py:194-202`, `registry.py:331-341`). See
-[docs/plugin-development.md](plugin-development.md) §4a.
+(`registry.py:109-117`, `registry.py:292-302`). See
+[plugin-development.md](plugin-development.md) §4a.
 
 ### Registry metadata fields
 
 The metadata schema is the class attributes on `AttackModule`
-(`base.py:163-168`), surfaced by `to_json()` (`base.py:251-258`):
+(`base.py:335-340`), surfaced by `to_json()` (`base.py:646-653`):
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -110,7 +121,7 @@ The metadata schema is the class attributes on `AttackModule`
 | `target_services` | `list[str]` | `[]` | Lowercased service names matched against `ctx.services` (+30 each). |
 | `target_ports` | `list[int]` | `[]` | Ports matched against `ctx.services` (+20 each). |
 | `required_cves` | `list[str]` | `[]` | CVE IDs that must be present in `ctx.cves` (+40 each). |
-| `target_versions` | `dict[str, list[str]]` | `{}` | Service name → known-vulnerable version substrings; any match adds a flat +25 (`base.py:188-204`). |
+| `target_versions` | `dict[str, list[str]]` | `{}` | Service name → known-vulnerable version substrings; any match adds a flat +25 once (`base.py:325-332`). |
 
 There is **no explicit risk field** in the metadata. Risk is implicit in
 module behavior: read-only / detection / planning modules (detection, ICS/IoT,
@@ -122,47 +133,57 @@ below marks this derived risk.
 
 | Function | Purpose |
 | --- | --- |
-| `list_modules()` | Instantiated copies of all registered modules (built-in + plugin) (`registry.py:194-202`). |
-| `find_modules(ctx, experience_store=None)` | Modules with `applicability > 0`, sorted by composite score (`registry.py:205-246`). |
-| `get_module(name)` | Case-insensitive lookup by `name`, returns an instance or `None` (`registry.py:331-341`). |
-| `_module_primary_service(mod, ctx)` | Single source of truth for which `service:version` a module's outcome is recorded against (`registry.py:249-282`). |
-| `_module_target_signature(mod, ctx)` | Builds the `service:version:os` ExperienceStore key (`registry.py:285-298`). |
-| `_module_experience_confidence(mod, ctx, store)` | Mean Bayesian confidence for the module's target signature, neutral 0.5 when absent (`registry.py:301-328`). |
+| `list_modules()` | Instantiated copies of all registered modules (built-in + plugin) (`registry.py:109-117`). |
+| `find_modules(ctx, experience_store=None)` | Modules with `applicability > 0`, sorted by composite score (`registry.py:120-159`). |
+| `explain_modules(ctx, experience_store=None)` | Per-module score breakdowns parallel to `find_modules` (`registry.py:214-246`). |
+| `find_producers(artifact_kind)` | Modules whose `produces` claims the kind (`registry.py:273-282`). |
+| `missing_prerequisites(mod, ctx)` | Declared `requires` not satisfiable from `ctx` (`registry.py:285-289`). |
+| `get_module(name)` | Case-insensitive lookup by `name`, returns an instance or `None` (`registry.py:292-302`). |
+| `_module_primary_service(mod, ctx)` | Single source of truth for which `service:version` a module's outcome is recorded against (`registry.py:162-195`). |
+| `_module_target_signature(mod, ctx)` | Builds the `service:version:os` ExperienceStore key (`registry.py:198-211`). |
+| `_module_experience_confidence(mod, ctx, store)` | Mean Bayesian confidence for the module's target signature, neutral 0.5 when absent (`registry.py:249-270`). |
 
 ### Experience-aware ranking
 
 `find_modules` blends static applicability with historical Bayesian confidence
-when an `experience_store` is provided (`registry.py:205-246`): the composite
+when an `experience_store` is provided (`registry.py:120-159`): the composite
 score is `static + (confidence - 0.5) * 20`, so experience swings the ordering
 by at most ±10 and can never include a module with 0 applicability. The
-write side (`generate_dynamic_script`, `base.py:217-249`) and the read side
+write side (`generate_dynamic_script`, `base.py:612-644`) and the read side
 (`_module_target_signature`) share `_module_primary_service` so they can never
 disagree on which `service:version:os` signature an outcome was recorded
-against (`registry.py:249-271`).
+against (`registry.py:162-211`).
 
 ## Module inventory
 
-All modules live in `tools/attack_modules/modules/`. Risk is derived from
-behavior, not a metadata field: **low** = read-only / detection / planning
-(never sets `shell_type`/`privilege_level`), **high** = active exploitation /
-credential attack / persistence.
+All modules live in `tools/attack_modules/modules/`. Two families are split
+into subpackages: web probes live in `modules/web/` (`sqli.py`, `upload.py`,
+`xss.py`, re-exported by `modules/web/__init__.py`) and ICS modules live in
+`modules/ics/` (`bacnet.py`, `modbus.py`, `s7.py`, re-exported by
+`modules/ics/__init__.py`). The legacy `modules/ics_iot.py` still defines the
+same ICS classes; the registry dedupes by `module.name`, so each registers
+once (see Registry mechanism above).
+
+Risk is derived from behavior, not a metadata field: **low** = read-only /
+detection / planning (never sets `shell_type`/`privilege_level`), **high** =
+active exploitation / credential attack / persistence.
 
 | Module | Family | Purpose | Risk |
 | --- | --- | --- | --- |
-| `Log4jRCE` | web | Log4j JNDI injection RCE (CVE-2021-44228), generates a payload sender script (`web.py:8-39`) | high |
-| `BasicAuthBuster` | web | Brute-force HTTP Basic Auth with a small default wordlist (`web.py:41-73`) | high |
-| `APIFuzzer` | web | Fuzz common REST endpoints for disclosure/injection (`web.py:75-106`) | high |
-| `WebShellUpload` | web | Upload PHP/JSP/ASPX web shells via file-upload flaws (`web.py:108-145`) | high |
-| `SQLInjection` | web | sqlmap integration recipe for SQLi testing (`web.py:147-161`) | high |
-| `XSSScanner` | web | Reflected/stored XSS payload injection (`web.py:163-201`) | high |
-| `SSTIProbe` | web | Server-side template injection detection across engines (`web.py:208-303`) | high |
-| `GraphQLIntrospect` | web | GraphQL schema extraction, depth/batching/alias attacks (`web.py:305-449`) | high |
-| `RaceRequest` | web | Concurrent requests for TOCTOU race conditions (`web.py:456-578`) | high |
-| `TimingOracle` | web | Timing side-channel detection for user enumeration / blind extraction (`web.py:580-710`) | high |
-| `RequestSmuggling` | web | CL.TE / TE.CL / TE.TE HTTP request smuggling (`web.py:712-853`) | high |
-| `SSRFProbe` | web | SSRF detection via internal-URL payloads (target-fetched only) (`web.py:860-948`) | high |
-| `XXEProbe` | web | In-band + OOB XML external entity injection (`web.py:951-1087`) | high |
-| `LFITraversal` | web | LFI / path traversal detection incl. `php://filter` (`web.py:1090-1186`) | high |
+| `Log4jRCE` | web/upload | Log4j JNDI injection RCE (CVE-2021-44228), generates a payload sender script (`modules/web/upload.py`) | high |
+| `BasicAuthBuster` | web/upload | Brute-force HTTP Basic Auth with a small default wordlist (`modules/web/upload.py`) | high |
+| `APIFuzzer` | web/upload | Fuzz common REST endpoints for disclosure/injection (`modules/web/upload.py`) | high |
+| `WebShellUpload` | web/upload | Upload PHP/JSP/ASPX web shells via file-upload flaws (`modules/web/upload.py`) | high |
+| `RaceRequest` | web/upload | Concurrent requests for TOCTOU race conditions (`modules/web/upload.py`) | high |
+| `SQLInjection` | web/sqli | sqlmap integration recipe for SQLi testing (`modules/web/sqli.py`) | high |
+| `SSTIProbe` | web/sqli | Server-side template injection detection across engines (`modules/web/sqli.py`) | high |
+| `XXEProbe` | web/sqli | In-band + OOB XML external entity injection (`modules/web/sqli.py`) | high |
+| `LFITraversal` | web/sqli | LFI / path traversal detection incl. `php://filter` (`modules/web/sqli.py`) | high |
+| `SSRFProbe` | web/sqli | SSRF detection via internal-URL payloads (target-fetched only) (`modules/web/sqli.py`) | high |
+| `XSSScanner` | web/xss | Reflected/stored XSS payload injection (`modules/web/xss.py`) | high |
+| `GraphQLIntrospect` | web/xss | GraphQL schema extraction, depth/batching/alias attacks (`modules/web/xss.py`) | high |
+| `TimingOracle` | web/xss | Timing side-channel detection for user enumeration / blind extraction (`modules/web/xss.py`) | high |
+| `RequestSmuggling` | web/xss | CL.TE / TE.CL / TE.TE HTTP request smuggling (`modules/web/xss.py`) | high |
 | `JWTTamper` | crypto_jwt | JWT alg confusion, none-alg, HMAC-to-RSA, weak-secret brute force (`crypto_jwt.py:12-148`) | high |
 | `DeserializeAttack` | deserialize | Java/PHP/.NET deserialization payload generation/injection (`deserialize.py:10-152`) | high |
 | `SMBGhost` | network_smb | SMBv3 compression RCE (CVE-2020-0796), MSF/check recipe (`network_smb.py:9-22`) | high |
@@ -201,12 +222,16 @@ credential attack / persistence.
 | `DiffPatchAnalysis` | synthesis | Reverse-engineer a patch diff into an exploit (`synthesis.py:37-61`) | high |
 | `FuzzToExploit` | synthesis | Turn crash/fuzz output into an exploit (`synthesis.py:63-87`) | high |
 | `WeaponizedExploit` | synthesis | CVE-to-exploit that also gains a reverse shell to an operator callback host; prints a canonical `COMPROMISE:` marker (`synthesis.py:90-133`) | high |
-| `ModbusEnum` | ics_iot | Read-only Modbus/TCP unit enumeration (FC 43/04, no writes) (`ics_iot.py:10-154`) | low |
-| `DNP3Enum` | ics_iot | Read-only DNP3 outstation enumeration (FC 1, class 0) (`ics_iot.py:157-298`) | low |
-| `S7Enum` | ics_iot | Read-only Siemens S7 identity via COTP/SZL reads (`ics_iot.py:301-458`) | low |
-| `BACnetEnum` | ics_iot | Read-only BACnet Who-Is/ReadProperty enumeration (`ics_iot.py:461-630`) | low |
-| `HMIDefaultCred` | ics_iot | HMI web fingerprint + small default-cred check (`ics_iot.py:633-807`) | low |
-| `IoTDefaultCred` | ics_iot | IoT web fingerprint + default-cred check (Mirai-class) (`ics_iot.py:810-991`) | low |
+| `ModbusEnum` | ics/modbus | Read-only Modbus/TCP unit enumeration (FC 43/04, no writes) (`modules/ics/modbus.py`; also defined in legacy `modules/ics_iot.py`) | low |
+| `ModbusWriteCoil` | ics/modbus | Destructive single-coil write (FC 05); dual-gated by allowlist + `ics.allow_write`/`ics.destructive_ics` (`modules/ics/modbus.py`; also in `modules/ics_iot.py`) | high |
+| `ModbusWriteRegister` | ics/modbus | Destructive holding-register write (FC 06); same dual gate (`modules/ics/modbus.py`; also in `modules/ics_iot.py`) | high |
+| `S7Enum` | ics/s7 | Read-only Siemens S7 identity via COTP/SZL reads (`modules/ics/s7.py`; also in `modules/ics_iot.py`) | low |
+| `S7PlcStop` | ics/s7 | Destructive S7 PLC stop (halts the controlled process); same dual gate (`modules/ics/s7.py`; also in `modules/ics_iot.py`) | high |
+| `S7PlcStart` | ics/s7 | Write-side S7 PLC start/cold start control command; same dual gate (`modules/ics/s7.py`; also in `modules/ics_iot.py`) | high |
+| `BACnetEnum` | ics/bacnet | Read-only BACnet Who-Is/ReadProperty enumeration (`modules/ics/bacnet.py`; also in `modules/ics_iot.py`) | low |
+| `DNP3Enum` | ics/bacnet | Read-only DNP3 outstation enumeration (FC 1, class 0) (`modules/ics/bacnet.py`; also in `modules/ics_iot.py`) | low |
+| `HMIDefaultCred` | ics/bacnet | HMI web fingerprint + small default-cred check (`modules/ics/bacnet.py`; also in `modules/ics_iot.py`) | low |
+| `IoTDefaultCred` | ics/bacnet | IoT web fingerprint + default-cred check (Mirai-class) (`modules/ics/bacnet.py`; also in `modules/ics_iot.py`) | low |
 | `ExposedVCS` | supply_chain | Detect exposed `.git/.svn/.hg/.bzr`, leak `.git/config` (read-only) (`supply_chain.py:10-75`) | low |
 | `CICDMisconfig` | supply_chain | Detect exposed CI/CD config + fingerprint CI servers (read-only) (`supply_chain.py:78-175`) | low |
 | `DependencyConfusion` | supply_chain | Detection-only dependency-confusion risk report; never registers packages (`supply_chain.py:178-220`) | low |
@@ -225,6 +250,89 @@ credential attack / persistence.
 | `ResponderRelay` | ad | SMB/NTLM relay via ntlmrelayx, targets restricted to the allowlist (`ad.py:77-103`) | high |
 | `GoldenTicket` | ad | Mint a Kerberos golden ticket from krbtgt hash (impacket-ticketer) (`ad.py:106-133`) | high |
 | `SMBSigningCheck` | ad | Detection-only SMB signing posture check (relay feasibility) (`ad.py:136-159`) | low |
+
+## Producer graph and artifact vocabulary
+
+### Producer graph (`graph.py`)
+
+`tools/attack_modules/graph.py` is the producer/consumer graph over the closed
+artifact vocabulary. Its module docstring states it is shared by the campaign
+prerequisite scheduler and planner integration tests, and that all ranking is
+deterministic: cost order (`low` < `medium` < `high`), read-only preferred on
+ties, then name (`graph.py:1-13`). The campaign batch scheduler consults
+`graph.rank_producers` to order prerequisite-recovery candidates
+cheapest/read-only-first with ctx-satisfied prerequisites ahead
+(`tools/campaign/batch.py:154-160`). `tests/test_artifact_graph.py` is the
+contract test: closed vocabulary, every `requires` has a producer, no
+producer/consumer cycle, and dead ends are terminal or documented.
+
+| Function | Signature | Purpose |
+| --- | --- | --- |
+| `rank_producers` | `rank_producers(artifact_kind, ctx=None, *, exclude="", modules=None)` | Producers of `artifact_kind`, cheapest/read-only first. When `ctx` is given, producers whose own `requires` are unsatisfied sort after satisfiable ones but are still returned. `exclude` skips a module name (no self-recovery) (`graph.py:25-61`). |
+| `chain_to` | `chain_to(target_kind, ctx, *, depth=2, modules=None)` | BFS chains `[producer..., consumer]` yielding `target_kind`. Each chain ends in a module producing the target whose prerequisites are satisfied by `ctx` or produced by an earlier link (recursively, up to `depth`). Cycle-guarded via visited names, sorted cheapest-first by summed cost rank, `[]` when unsatisfiable (`graph.py:87-143`). |
+| `orphan_requires` | `orphan_requires(modules=None)` | Map module name to required kinds with no producer (`graph.py:146-157`). |
+| `dead_end_produces` | `dead_end_produces(modules=None)` | Map module name to produced kinds with no consumer, excluding `TERMINAL_ARTIFACTS` (`graph.py:160-171`). |
+| `find_cycle` | `find_cycle(modules=None)` | Return one requires-to-produces cycle through non-currency kinds, else `[]`. Currency artifacts (`credentials`, `hash_artifact`, `user_list`, `foothold`, `shell`, `session`) cycle by design and are skipped (`graph.py:180-214`). |
+
+Two unsorted helpers sit alongside: `producers_for(kind, modules=None)` lists
+all modules producing `kind` and `consumers_of(kind, modules=None)` lists all
+modules requiring it (`graph.py:69-84`). `graph.missing_prerequisites(mod,
+ctx)` mirrors the registry helper against the closed vocabulary
+(`graph.py:64-66`).
+
+```python
+from tools.attack_modules.graph import chain_to, rank_producers
+
+# Cheapest producer of admin_priv whose own prerequisites are satisfiable first.
+producers = rank_producers("admin_priv", ctx, exclude="DCSyncAttack")
+# Full prerequisite chains yielding the artifact, up to 2 links deep.
+chains = chain_to("admin_priv", ctx, depth=2)
+```
+
+Implementation note: `orphan_requires` docstring says "(excluding terminals)"
+but the code read filters only on the produced set with no terminal-kind
+exclusion; `dead_end_produces` is the one that excludes `TERMINAL_ARTIFACTS`.
+
+### Closed artifact vocabulary (`artifacts.py`)
+
+`tools/attack_modules/artifacts.py` is the closed vocabulary for capability
+composition: `requires`/`produces` strings must come from `ARTIFACT_VOCAB`.
+Unknown kinds are absent (fail closed) and flagged by the contract test
+(`artifacts.py:1-8`). `base._artifact_present` delegates to this module
+(`base.py:75-80`).
+
+| Kind | Meaning |
+| --- | --- |
+| `credentials` | Recovered passwords, tickets, or keys usable for authentication |
+| `hash_artifact` | Captured hashes / tickets for offline cracking or relay |
+| `user_list` | Enumerated usernames / accounts (spray/roast input) |
+| `foothold` | Initial access to the target |
+| `shell` | Command execution on the target |
+| `webshell` | Web-shell access (terminal; chains consume the co-produced `foothold`) |
+| `session` | Established session (Metasploit or equivalent) |
+| `admin_priv` | Administrative / SYSTEM / root equivalence (plannable currency) |
+| `high_priv` | Realized escalation outcome, end of chain |
+| `persistence` | Surviving access mechanism (terminal finding) |
+| `signing_posture` | SMB signing posture finding (relay feasibility input) |
+| `git_config_leak` | Exposed VCS config leak finding |
+| `vuln_confirmed` | Confirmed-vulnerability finding (terminal) |
+| `lpe_candidates` | Local privilege-escalation candidate finding |
+| `k8s_sa_token` | Kubernetes service-account token finding |
+| `web_tech` | Web technology fingerprint finding |
+| `auth_scheme` | Authentication-scheme fingerprint finding |
+
+Aliases resolve onto the canonical kinds: `creds` and `password` mean
+`credentials`, `hash` means `hash_artifact`, `root_priv` and `system_priv`
+mean `admin_priv` (`artifacts.py:39-45`). Terminal artifacts with no consumer
+expected are `persistence`, `vuln_confirmed`, `high_priv`, and `webshell`
+(`artifacts.py:55-60`).
+
+| Helper | Purpose |
+| --- | --- |
+| `normalize(kind)` | Lowercase plus alias-resolve; unknown kinds pass through unchanged so the contract test can flag them (`artifacts.py:63-67`). |
+| `is_known(kind)` | True when the kind is in the closed vocabulary after aliasing (`artifacts.py:70-72`). |
+| `unknown_kinds(kinds)` | Entries outside the closed vocabulary (`artifacts.py:75-77`). |
+| `is_satisfied(kind, ctx)` | Best-effort prerequisite check against `ctx` credentials, sessions, privilege level, and structured findings. Unknown kinds return `False` (`artifacts.py:80-128`). |
 
 ## Orchestrator phases
 
@@ -316,7 +424,7 @@ rewriting) is enforced elsewhere — `tools/opsec.py` and the
 Minimal module (matching `docs/extension-guide.md:78-102`):
 
 ```python
-# tools/attack_modules/modules/web.py
+# tools/attack_modules/modules/web/sqli.py
 from tools.attack_modules.base import AttackModule, ModuleContext
 from typing import Any
 
@@ -371,8 +479,8 @@ print(f"probing {{host}}")
 6. **Re-export** the class from `tools/attack_modules/modules/__init__.py`
    (`modules/__init__.py:3-105`) and add it to `__all__`
    (`modules/__init__.py:106-183`).
-7. **Register** the class in `_MODULE_CLASSES` in
-   `tools/attack_modules/registry.py` (`registry.py:87-178`). Out-of-tree:
+7. **No registry edit needed** — filesystem auto-discovery picks up the new
+   file on import (see Registry mechanism above). Out-of-tree:
    use `registry.register_attack_module(cls)` via the plugin system instead
    (`docs/extension-guide.md:102`, `docs/plugin-development.md:153-188`).
 8. **Add tests** to `tests/test_attack_modules.py` covering registry
@@ -385,3 +493,30 @@ Read-only / detection modules should follow the detection-family conventions:
 no `shell_type`/`privilege_level` in results, target-locked to `ctx.target_ip`,
 and a fixed low `applicability` override if they should always be selectable
 (`detection.py:1-21`).
+
+## Related documentation
+
+- [extension-guide.md](extension-guide.md) — authoring a new module
+- [plugin-development.md](plugin-development.md) — out-of-tree registration via `register_attack_module`
+- [campaign.md](campaign.md) — campaign prerequisite-recovery scheduling
+- [safety-model.md](safety-model.md) — ICS write dual gate and allowlist lock
+
+## Source map
+
+- `tools/attack_modules/registry.py`
+- `tools/attack_modules/graph.py`
+- `tools/attack_modules/artifacts.py`
+- `tools/attack_modules/base.py`
+- `tools/attack_modules/__init__.py`
+- `tools/attack_modules/modules/__init__.py`
+- `tools/attack_modules/modules/web/__init__.py`
+- `tools/attack_modules/modules/web/sqli.py`
+- `tools/attack_modules/modules/web/upload.py`
+- `tools/attack_modules/modules/web/xss.py`
+- `tools/attack_modules/modules/ics/__init__.py`
+- `tools/attack_modules/modules/ics/bacnet.py`
+- `tools/attack_modules/modules/ics/modbus.py`
+- `tools/attack_modules/modules/ics/s7.py`
+- `tools/attack_modules/modules/ics_iot.py`
+- `tools/campaign/batch.py`
+- `tests/test_artifact_graph.py`
