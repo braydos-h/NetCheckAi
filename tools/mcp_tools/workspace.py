@@ -320,9 +320,7 @@ def register_workspace_tools(mcp: Any, *, ctx: ToolContext) -> None:
             # The egress-guard preamble runs first inside the worker's python
             # (same argv contract: sys.argv is pinned explicitly below).
             _sandbox_bootstrap = (
-                f"{_egress_preamble}"
-                "import runpy as _runpy; "
-                f"_runpy.run_path({container_script!r}, run_name='__main__')"
+                f"{_egress_preamble}import runpy as _runpy; _runpy.run_path({container_script!r}, run_name='__main__')"
             )
             _argv = [
                 "python3",

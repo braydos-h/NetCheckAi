@@ -525,11 +525,10 @@ async def test_run_as_root_no_longer_double_logs_raw_command(tmp_path: Path):
 async def test_run_exploit_terminal_masks_secret_command_and_output(tmp_path: Path):
     """COMMAND_ORIGINAL/SANITIZED + OUTPUT tails must be masked in the live
     result — not just in the persisted terminal.log."""
-    import unittest.mock as _mock
-
     # Mock the host-path Popen funnel: the "command" carries a bearer token,
     # the "output" carries an NTLM hash + a second token.
     import subprocess as _subprocess
+    import unittest.mock as _mock
 
     class _FakeProc:
         returncode = 0
@@ -586,7 +585,12 @@ async def test_tool_result_event_masks_secrets(tmp_path: Path):
     policy = ExploitPolicy(settings, tmp_path)
     client = MagicMock()
     client.chat.side_effect = [
-        {"message": {"content": "", "tool_calls": [{"function": {"name": "run_exploit_terminal", "arguments": {"command": "exploit"}}}]}},
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "run_exploit_terminal", "arguments": {"command": "exploit"}}}],
+            }
+        },
         {"message": {"content": "done", "tool_calls": []}},
     ]
     session = AsyncMock()

@@ -173,7 +173,10 @@ class TestTerminalAdvisory:
         monkeypatch.setenv("EXPLOIT_TARGET", "8.8.8.8")
 
         mcp = _make_server(tmp_path, opsec={"enabled": True})
-        text = _text(await mcp.call_tool("run_exploit_terminal", {"command": "ls -la"}))
+        # The target-IP lock requires destination-less commands to declare
+        # scope literally (fail-closed even when the flag is off but a union
+        # exists) -- so the quiet command names the target up front.
+        text = _text(await mcp.call_tool("run_exploit_terminal", {"command": "echo 8.8.8.8 && ls -la"}))
         assert "OPSEC_ADVISORY:" in text
         assert "Noise score: 0" in text
         assert "no rewrite available" in text

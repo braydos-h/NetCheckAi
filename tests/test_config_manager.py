@@ -741,12 +741,11 @@ def test_glm3_registry_and_info_have_no_silent_fallback(tmp_path):
     128K 'Unknown alias' fallback (provider/schema drift regression)."""
     import yaml
 
+    # schema defaults carry glm3
+    from tools.config.schema import CONFIG_SCHEMA
     from tools.config_manager import validate_config_file
     from tools.model_router import MODEL_INFO, get_model_info
     from tools.providers.ollama_provider import DEFAULT_MODEL_REGISTRY
-
-    # schema defaults carry glm3
-    from tools.config.schema import CONFIG_SCHEMA
 
     assert CONFIG_SCHEMA["models"]["registry"]["glm3"] == "glm-5.3-flash"
     assert CONFIG_SCHEMA["models"]["info"]["glm3"]["context_window"] == 128000

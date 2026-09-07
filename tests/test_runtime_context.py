@@ -25,7 +25,6 @@ from tools.exploit_agent import ExploitPermission, ExploitSettings
 from tools.goal_engine import AttackGoal
 from tools.runtime_context import RuntimeContext
 
-
 # ── Fakes ────────────────────────────────────────────────────────────────
 
 
@@ -190,6 +189,7 @@ async def test_main_wrappers_stop_mutating_module_globals(tmp_path: Path, monkey
     before_ms = set(vars(_ms))
     timeout_before = _ms.MCP_BOOT_TIMEOUT_SECONDS
 
+    @contextlib.asynccontextmanager
     async def _fake_main_session(**kwargs: Any):
         yield _FakeSession()
 

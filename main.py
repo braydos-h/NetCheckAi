@@ -104,9 +104,6 @@ from tools import mcp_session as _mcp_session
 from tools.mcp_session import (
     MCP_BOOT_TIMEOUT_SECONDS as _DEFAULT_MCP_BOOT_TIMEOUT_SECONDS,
 )
-from tools.mcp_session import (
-    mcp_tools_to_ollama,
-)
 from tools.runtime_context import RuntimeContext
 
 MCP_BOOT_TIMEOUT_SECONDS: float = _DEFAULT_MCP_BOOT_TIMEOUT_SECONDS
@@ -233,9 +230,7 @@ async def run_safety_review(
     target_ip: str,
     goal: AttackGoal,
 ) -> SafetyReview:
-    return await _safety_review_cli.run_safety_review(
-        client, model, result, target_ip, goal, ctx=get_runtime_context()
-    )
+    return await _safety_review_cli.run_safety_review(client, model, result, target_ip, goal, ctx=get_runtime_context())
 
 
 from tools import recon_assessment_cli as _recon_assessment_cli

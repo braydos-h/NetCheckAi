@@ -653,3 +653,27 @@ def test_killchain_context_parses_credential_shapes() -> None:
         credentials_found=[{"username": "old", "password": "x"}, {"username": "", "password": ""}],
     )
     assert _killchain_context(mixed)["user"] == "old"
+
+
+@pytest.mark.asyncio
+async def test_playbook_mcp_death_group_returns_failure_dict(tmp_path: Path) -> None:
+    """An anyio BaseExceptionGroup from a dead MCP subprocess (NOT an
+    Exception subclass) must be caught by _EXC_GROUP_CATCH and returned as
+    the documented failure dict — never raised out of killchain_attempt."""
+
+    class _GroupExecutor:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def __call__(self, tool_name: str, args: dict[str, Any]) -> str:
+            self.calls.append((tool_name, args))
+            raise BaseExceptionGroup("mcp subprocess died", [RuntimeError("boom")])
+
+    machine = _machine(tmp_path, tool_executor=_GroupExecutor())
+    result = await machine.attempt_transition("10.0.0.50", "creds_in_hand", "shell_as_user")
+    assert result["success"] is False
+    assert result["edge_id"] == "cred_ssh_login"
+    assert result["from_state"] == "creds_in_hand"
+    assert result["to_state"] == "shell_as_user"
+    assert result["steps"] and "error" in result["steps"][0]
+    assert "failed" in result["error"]
+    assert machine.status("10.0.0.50")["state"] == "discovered"

@@ -127,8 +127,8 @@ def test_record_summary_turn_is_idempotent_enough_for_single_use():
 
 def test_importable_via_legacy_paths():
     from tools.exploit_agent import _PhaseTracker as PTviaRoot  # noqa: F401
-    from tools.exploit_agent.runner import _PhaseTracker as PTviaLoop  # noqa: F401
     from tools.exploit_agent.phase_tracker import _PhaseTracker as PTviaModule
+    from tools.exploit_agent.runner import _PhaseTracker as PTviaLoop  # noqa: F401
 
     assert PTviaRoot is PTviaModule
     assert PTviaLoop is PTviaModule

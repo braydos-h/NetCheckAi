@@ -250,16 +250,12 @@ async def _open_exploit_mcp_session_once(
         startup_soft_fail = soft_fail
     if startup_errors is None:
         startup_errors = []
-    # Explicit per-run dependencies (see ``tools.runtime_context``): when a
-    # context is given, its UI/timeout shadow the module globals as function
-    # locals, so concurrent runs stay isolated without touching the ~30
-    # ``ui`` / timeout references below. Omitted ``ctx`` keeps the legacy
-    # module-global behavior (back-compat for existing tests/callers).
-    if ctx is not None:
-        ui = ctx.ui
-        _boot_timeout = ctx.mcp_boot_timeout_seconds
-    else:
-        _boot_timeout = MCP_BOOT_TIMEOUT_SECONDS
+    # Explicit per-run dependencies (see ``tools.runtime_context``): the
+    # context's UI/timeout are bound to function locals so concurrent runs
+    # stay isolated; omitted ``ctx`` falls back to the module globals
+    # (back-compat for existing tests/callers).
+    _ui = ctx.ui if ctx is not None else ui
+    _boot_timeout = ctx.mcp_boot_timeout_seconds if ctx is not None else MCP_BOOT_TIMEOUT_SECONDS
     try:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -765,7 +761,7 @@ async def _streamable_http_transport(
     # read must exceed the longest tool timeout (600s msf / some terminal
     # commands) plus agent idle time between calls, or a slow tool call trips
     # the SSE/POST read timeout and kills the whole MCP session.
-    timeout = httpx.Timeout(_boot_timeout, read=1800.0)
+    timeout = httpx.Timeout(MCP_BOOT_TIMEOUT_SECONDS, read=1800.0)
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers=headers,
