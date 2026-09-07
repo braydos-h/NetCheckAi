@@ -10,6 +10,7 @@ import type { Trial } from "@/features/benchmarks/types";
 
 export const STATUS_META: Record<string, { label: string; className: string }> = {
   VERIFIED: { label: "Verified", className: "bg-emerald-500/15 text-emerald-500" },
+  COMPLETED: { label: "Completed", className: "bg-emerald-500/15 text-emerald-500" },
   FAILED: { label: "Failed", className: "bg-red-500/15 text-red-500" },
   FALSE_POSITIVE: { label: "False positive", className: "bg-amber-500/15 text-amber-500" },
   TIMEOUT: { label: "Timeout", className: "bg-orange-500/15 text-orange-500" },

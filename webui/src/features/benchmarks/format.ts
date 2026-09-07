@@ -32,21 +32,32 @@ export function isActiveState(state: string): boolean {
   return state === "running" || state === "starting" || state === "cancelling";
 }
 
-/** Terminal index/run status → badge status label (STATUS_META key). */
+/** Terminal index/run status → badge status label (STATUS_META key).
+ *
+ * Run-level completion is NOT trial-level verification: a run that finished
+ * with zero verified trials must never render VERIFIED. */
 export function runStatusToBadge(status: string): string {
   switch (status) {
     case "completed":
-      return "VERIFIED";
+      return "COMPLETED";
     case "cancelled":
       return "CANCELLED";
     case "running":
     case "starting":
+    case "cancelling":
       return "RUNNING";
     case "failed":
+    case "error":
       return "FAILED";
     default:
       return status === "" ? "FAILED" : status.toUpperCase();
   }
+}
+
+/** True for terminal run statuses (polling must stop). */
+export function isTerminalStatus(status: string | undefined): boolean {
+  if (!status) return false;
+  return !isActiveState(status);
 }
 
 /** True when a run's persisted status still claims to be in flight but no

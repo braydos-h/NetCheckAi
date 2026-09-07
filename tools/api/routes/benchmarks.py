@@ -8,7 +8,9 @@ existing route conventions (bearer auth, stable error shape).
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, TypedDict
@@ -82,19 +84,27 @@ def create_router(
         # Serve from TTL cache when fresh — avoids re-parsing manifests on every overview poll.
         cached_expiry = _suite_cache.get("expiry", 0.0) or 0.0
         if time.monotonic() < cached_expiry and _suite_cache.get("data") is not None:
-            return list(_suite_cache["data"] or [])
+            return copy.deepcopy(_suite_cache["data"] or [])
         from tools.benchmark import register_default_providers
         from tools.benchmark.registry import list_suites as registry_suites
 
         register_default_providers()
         data = registry_suites()
-        _suite_cache["data"] = data
+        _suite_cache["data"] = copy.deepcopy(data)
         _suite_cache["expiry"] = time.monotonic() + _suite_ttl_s
-        return data
+        return copy.deepcopy(data)
 
     def _baseline_path() -> Path:
+        # Resolve against the storage root so the route and the runner agree
+        # (runner falls back to storage.root / "baseline.json").
         benchmark_cfg = config.get("benchmark", {}) or {}
-        return Path(str(benchmark_cfg.get("baseline_path", "")) or DEFAULT_BASELINE_PATH)
+        configured = str(benchmark_cfg.get("baseline_path", "") or "")
+        if not configured or configured == DEFAULT_BASELINE_PATH:
+            return _storage().root / "baseline.json"
+        path = Path(configured)
+        if not path.is_absolute():
+            path = (_storage().root / path).absolute()
+        return path
 
     def _baseline_meta() -> dict[str, Any]:
         baseline = load_baseline(_baseline_path())
@@ -153,7 +163,10 @@ def create_router(
             provider = get_provider(suite_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from functools import partial
+
         targets: list[dict[str, Any]] = []
+        probe_jobs: list[tuple[int, str, list[int]]] = []
         for scenario in provider.load_scenarios():
             if scenario.target_type == "docker" and scenario.target_image:
                 targets.append(
@@ -181,23 +194,51 @@ def create_router(
                     }
                 )
                 continue
-            reachable = (
-                target_ports_reachable(scenario.target_host, list(scenario.target_ports), timeout=0.5)
-                if scenario.target_ports
-                else True
-            )
+            if not scenario.target_ports:
+                targets.append(
+                    {
+                        "scenario_id": scenario.scenario_id,
+                        "target_type": scenario.target_type,
+                        "target_host": scenario.target_host,
+                        "target_ports": list(scenario.target_ports),
+                        "reachable": True,
+                        "self_provisioned": False,
+                        "detail": "",
+                    }
+                )
+                continue
             targets.append(
                 {
                     "scenario_id": scenario.scenario_id,
                     "target_type": scenario.target_type,
                     "target_host": scenario.target_host,
                     "target_ports": list(scenario.target_ports),
-                    "reachable": reachable,
+                    "reachable": False,
                     "self_provisioned": False,
-                    "detail": "" if reachable else "lab target refused all declared ports",
+                    "detail": "lab target refused all declared ports",
                 }
             )
-        ready = all(t["reachable"] for t in targets)
+            probe_jobs.append((len(targets) - 1, scenario.target_host, list(scenario.target_ports)))
+        if probe_jobs:
+            # Blocking TCP probes run off the loop, in parallel, under one overall budget.
+            try:
+                probed = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[
+                            asyncio.to_thread(partial(target_ports_reachable, host, ports, timeout=0.5))
+                            for _, host, ports in probe_jobs
+                        ],
+                        return_exceptions=True,
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                probed = [False] * len(probe_jobs)
+            for (idx, _host, _ports), ok in zip(probe_jobs, probed):
+                reachable = bool(ok) if not isinstance(ok, BaseException) else False
+                targets[idx]["reachable"] = reachable
+                targets[idx]["detail"] = "" if reachable else "lab target refused all declared ports"
+        ready = bool(targets) and all(t["reachable"] for t in targets)
         return {
             "suite": suite_id,
             "ready": ready,
@@ -225,16 +266,27 @@ def create_router(
         suite, _run = _resolve_run(run_id)
         run_dir = _storage().run_dir(suite, run_id)
         scenarios_dir = run_dir / "scenarios"
+        _TRIAL_INDEX_RE = re.compile(r"trial_(\d+)\.json$")
+
+        def _trial_index(path: Path) -> int:
+            match = _TRIAL_INDEX_RE.search(path.name)
+            return int(match.group(1)) if match else 0
+
         results: list[dict[str, Any]] = []
         if scenarios_dir.exists():
             for scenario_dir in sorted(p for p in scenarios_dir.iterdir() if p.is_dir()):
-                for trial_path in sorted(scenario_dir.glob("trial_*.json")):
-                    if trial_path.name.endswith("_events.jsonl"):
-                        continue
+                trial_paths = sorted(
+                    (p for p in scenario_dir.glob("trial_*.json") if not p.name.endswith("_events.jsonl")),
+                    key=_trial_index,
+                )
+                for trial_path in trial_paths:
                     try:
-                        results.append(json.loads(trial_path.read_text(encoding="utf-8")))
+                        payload = json.loads(trial_path.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         continue
+                    if not isinstance(payload, dict):
+                        continue
+                    results.append(payload)
         return {"run_id": run_id, "scenarios": results}
 
     @router.get("/runs/{run_id}/events")
@@ -248,7 +300,12 @@ def create_router(
         suite, _run = _resolve_run(run_id)
         events = _storage().load_events(suite, run_id, trial_id=trial_id, after=after, limit=limit)
         latest = max((int(e.get("sequence", 0) or 0) for e in events), default=after)
-        return {"run_id": run_id, "events": events, "latest_sequence": latest}
+        return {
+            "run_id": run_id,
+            "events": events,
+            "latest_sequence": latest,
+            "has_more": len(events) == limit,
+        }
 
     @router.get("/runs/{run_id}/events/stream")
     async def stream_run_events(
@@ -265,12 +322,15 @@ def create_router(
                 cursor = after
                 idle = 0
                 while True:
-                    events = st.load_events(suite, run_id, after=cursor, limit=500)
+                    events = await asyncio.to_thread(st.load_events, suite, run_id, after=cursor, limit=500)
                     for event in events:
                         cursor = max(cursor, int(event.get("sequence", 0) or 0))
                         yield f"data: {json.dumps(event, default=str)}\n\n"
                     if events:
+                        # Full page: a slow writer may have more — pace before re-reading.
                         idle = 0
+                        if len(events) >= 500:
+                            await asyncio.sleep(0.01)
                         continue
                     idle += 1
                     if idle > 60:  # ~60s without events: close so the client can re-poll
@@ -282,10 +342,27 @@ def create_router(
                         continue
                     if live is None:
                         break
+                    if not isinstance(live, dict):
+                        continue
+                    # Fanout is global — only stream events for this run.
+                    if live.get("run_id") is not None and live.get("run_id") != run_id:
+                        continue
+                    cursor = max(cursor, int(live.get("sequence", 0) or 0))
+                    yield f"data: {json.dumps(live, default=str)}\n\n"
+                    if live.get("type") in ("run_end", "run_error"):
+                        break
             finally:
                 svc.unsubscribe(queue)
 
-        return StreamingResponse(_gen(), media_type="text/event-stream")
+        return StreamingResponse(
+            _gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.post("/run")
     async def start_run(body: BenchmarkRunRequest, auth: str = Depends(_require_auth)) -> dict[str, Any]:
@@ -314,14 +391,20 @@ def create_router(
         run_id = str(body.get("run_id", "") or "")
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id is required")
-        suite, _run = _resolve_run(run_id)
+        suite, run = _resolve_run(run_id)
         summary = _storage().load_summary(suite, run_id)
         if not summary:
-            raise HTTPException(status_code=409, detail="Run has no summary yet (still running or failed)")
+            if str(run.get("status", "") or "") == "running":
+                raise HTTPException(status_code=409, detail="Run has no summary yet (still running)")
+            raise HTTPException(status_code=422, detail="Run finished without a summary (failed or cancelled)")
         from tools.benchmark.metrics import run_summary_from_dict
 
+        try:
+            run_summary = run_summary_from_dict(summary)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Run summary is invalid: {exc}") from exc
         path = _baseline_path()
-        save_baseline(run_summary_from_dict(summary), path)
+        save_baseline(run_summary, path)
         return {"saved": True, "path": str(path), "run_id": run_id}
 
     @router.get("/compare")
@@ -330,6 +413,8 @@ def create_router(
         run_b: str = Query(..., description="Candidate run id"),
         auth: str = Depends(_require_auth),
     ) -> dict[str, Any]:
+        if run_a == run_b:
+            raise HTTPException(status_code=400, detail="run_a and run_b must differ")
         suite_a, run_a_payload = _resolve_run(run_a)
         suite_b, run_b_payload = _resolve_run(run_b)
         summary_a = _storage().load_summary(suite_a, run_a)

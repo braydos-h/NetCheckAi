@@ -264,17 +264,20 @@ class BenchmarkRunner:
             render_report_html(stored_run, stored_summary),
         )
 
-        # Baseline / regression.
+        # Baseline / regression (best-effort: never fail the run).
         regression_payload: dict[str, Any] | None = None
-        if run_config.save_baseline:
-            baseline_path = Path(str(benchmark_cfg.get("baseline_path", "")) or self.storage.root / "baseline.json")
-            save_baseline(summary, baseline_path)
-            event_logger.log("baseline_saved", {"path": str(baseline_path)})
-        if run_config.check_regression:
-            baseline_path = Path(str(benchmark_cfg.get("baseline_path", "")) or self.storage.root / "baseline.json")
-            result = compare_to_baseline(summary, load_baseline(baseline_path), thresholds_from_config(self.config))
-            regression_payload = result.to_dict()
-            event_logger.log("regression_check", regression_payload, level="info" if result.passed else "error")
+        try:
+            if run_config.save_baseline:
+                baseline_path = Path(str(benchmark_cfg.get("baseline_path", "")) or self.storage.root / "baseline.json")
+                save_baseline(summary, baseline_path)
+                event_logger.log("baseline_saved", {"path": str(baseline_path)})
+            if run_config.check_regression:
+                baseline_path = Path(str(benchmark_cfg.get("baseline_path", "")) or self.storage.root / "baseline.json")
+                result = compare_to_baseline(summary, load_baseline(baseline_path), thresholds_from_config(self.config))
+                regression_payload = result.to_dict()
+                event_logger.log("regression_check", regression_payload, level="info" if result.passed else "error")
+        except Exception as exc:  # noqa: BLE001 -- baseline is advisory, run results stand
+            event_logger.log("baseline_failed", {"detail": str(exc)[:300]}, level="warn")
 
         event_logger.log(
             "run_end",
@@ -325,12 +328,37 @@ class BenchmarkRunner:
         )
         workspace = run_dir / "scenarios" / scenario.scenario_id / f"trial_{trial_index}_workspace"
 
-        # 1. Provision (or reset) the target.
+        # 0. Sandbox gate first: required-but-unavailable is infrastructure
+        # failure without provisioning anything.
+        if sandbox_shortfall:
+            trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
+            trial.failure_category = FailureCategory.SANDBOX_FAILED.value
+            trial.failure_detail = "sandbox required but disabled (no host-execution fallback)"
+            trial.sandbox = SandboxSnapshot(required=True, enabled=False, last_error=trial.failure_detail)
+            trial.ended_at = datetime.now(timezone.utc).isoformat()
+            return trial
+
+        # 1. Provision (or reset) the target. Reset failures map distinctly
+        # from first-provision failures.
         try:
             if trial_index == 0:
                 snapshot: TargetSnapshot = manager.provision(scenario)
             else:
-                snapshot = manager.reset(scenario)
+                try:
+                    snapshot = manager.reset(scenario)
+                except TargetProvisionError as exc:
+                    trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
+                    trial.failure_category = FailureCategory.TARGET_RESET_FAILED.value
+                    trial.failure_detail = str(exc)[:500]
+                    trial.ended_at = datetime.now(timezone.utc).isoformat()
+                    event_logger.log(
+                        "target_reset_failed",
+                        {"detail": trial.failure_detail},
+                        trial_id=trial_id,
+                        scenario_id=scenario.scenario_id,
+                        level="error",
+                    )
+                    return trial
             trial.target = snapshot
         except TargetProvisionError as exc:
             trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
@@ -408,26 +436,17 @@ class BenchmarkRunner:
             )
             return trial
 
-        # 2. Sandbox gate: required-but-unavailable is infrastructure failure.
-        if sandbox_shortfall:
-            trial.status = TrialStatus.INFRASTRUCTURE_ERROR.value
-            trial.failure_category = FailureCategory.SANDBOX_FAILED.value
-            trial.failure_detail = "sandbox required but disabled (no host-execution fallback)"
-            trial.sandbox = SandboxSnapshot(required=True, enabled=False, last_error=trial.failure_detail)
-            trial.ended_at = datetime.now(timezone.utc).isoformat()
-            return trial
-
         # 3. Run the mission.
-        if progress is not None:
-            progress(
-                {
-                    "type": "trial_phase",
-                    "run_id": run_id,
-                    "scenario_id": scenario.scenario_id,
-                    "trial_id": trial_id,
-                    "phase": "exploit",
-                }
-            )
+        _safe_progress(
+            progress,
+            {
+                "type": "trial_phase",
+                "run_id": run_id,
+                "scenario_id": scenario.scenario_id,
+                "trial_id": trial_id,
+                "phase": "exploit",
+            },
+        )
         mission_result = await mission.run_mission(
             scenario,
             workspace=workspace,
@@ -440,11 +459,11 @@ class BenchmarkRunner:
         trial.tool_calls = mission_result.telemetry.tool_calls
         trial.total_tokens = mission_result.telemetry.total_tokens
         trial.estimated_cost = mission_result.telemetry.estimated_cost
-        trial.claimed_summary = mission_result.claimed_summary
+        trial.claimed_summary = (mission_result.claimed_summary or "")[:300]
         trial.agent_claimed_success = mission_result.agent_claimed_success
         trial.audit_path = mission_result.audit_path
         trial.workspace = str(workspace)
-        trial.errors = list(mission_result.errors)[:10]
+        trial.errors = [str(e) for e in (mission_result.errors or [])][:10]
         trial.sandbox = mission_result.sandbox
         trial.telemetry = mission_result.telemetry
         trial.evidence_refs = sorted({str(p) for p in [mission_result.audit_path, trial.workspace] if p})
@@ -464,35 +483,49 @@ class BenchmarkRunner:
             return trial
 
         # 4. Independent verification (fresh soft-fail MCP session for shell checks).
-        if progress is not None:
-            progress(
-                {
-                    "type": "trial_phase",
-                    "run_id": run_id,
-                    "scenario_id": scenario.scenario_id,
-                    "trial_id": trial_id,
-                    "phase": "verify",
-                }
-            )
-        outcome = await self._verify(scenario, trial, event_logger)
-        trial.flags = outcome.to_dict_list()
-        trial.flags_captured = outcome.flags_captured
-        trial.flags_total = outcome.flags_total
-        trial.oracle_verified_success = outcome.verified
-        event_logger.log(
-            "oracle_result",
+        _safe_progress(
+            progress,
             {
-                "verified": outcome.verified,
-                "flags_captured": outcome.flags_captured,
-                "flags_total": outcome.flags_total,
-                "detail": outcome.detail[:800],
+                "type": "trial_phase",
+                "run_id": run_id,
+                "scenario_id": scenario.scenario_id,
+                "trial_id": trial_id,
+                "phase": "verify",
             },
-            trial_id=trial_id,
-            scenario_id=scenario.scenario_id,
         )
+        try:
+            outcome = await self._verify(scenario, trial, event_logger)
+            trial.flags = outcome.to_dict_list()
+            trial.flags_captured = outcome.flags_captured
+            trial.flags_total = outcome.flags_total
+            trial.oracle_verified_success = outcome.verified
+            event_logger.log(
+                "oracle_result",
+                {
+                    "verified": outcome.verified,
+                    "flags_captured": outcome.flags_captured,
+                    "flags_total": outcome.flags_total,
+                    "detail": outcome.detail[:800],
+                },
+                trial_id=trial_id,
+                scenario_id=scenario.scenario_id,
+            )
 
-        # 5. Classify.
-        trial.status, trial.failure_category, trial.failure_detail = self._classify(mission_result, outcome.verified)
+            # 5. Classify.
+            trial.status, trial.failure_category, trial.failure_detail = self._classify(
+                mission_result, outcome.verified
+            )
+        except Exception as exc:  # noqa: BLE001 -- verification failure is a trial outcome, not a run abort
+            trial.status = TrialStatus.FAILED.value
+            trial.failure_category = FailureCategory.VERIFICATION_FAILURE.value
+            trial.failure_detail = str(exc)[:500]
+            event_logger.log(
+                "verify_failed",
+                {"detail": trial.failure_detail},
+                trial_id=trial_id,
+                scenario_id=scenario.scenario_id,
+                level="error",
+            )
         trial.false_positive = trial.agent_claimed_success and not trial.oracle_verified_success
         if trial.false_positive:
             # Claimed-vs-verified contrast is a first-class outcome: surfaced as
@@ -560,7 +593,8 @@ class BenchmarkRunner:
         """Map mission + verification outcome to (status, failure_category, detail)."""
         if verified:
             return TrialStatus.VERIFIED.value, FailureCategory.UNKNOWN.value, ""
-        errors = mission_result.errors or []
+        errors = [str(e) for e in (mission_result.errors or [])]
+        claimed = (mission_result.claimed_summary or "")[:300]
         if any("model client build failed" in e for e in errors):
             return TrialStatus.FAILED.value, FailureCategory.MODEL_FAILED.value, errors[0][:300]
         if any("MCP" in e or "mcp" in e for e in errors) and mission_result.total_actions == 0:
@@ -569,7 +603,7 @@ class BenchmarkRunner:
             return (
                 TrialStatus.FAILED.value,
                 FailureCategory.PLANNER_FAILURE.value,
-                mission_result.claimed_summary or errors[0][:300] if errors else "no actions taken",
+                claimed or errors[0][:300] if errors else "no actions taken",
             )
         if (
             mission_result.telemetry.tool_errors > 0
@@ -580,4 +614,4 @@ class BenchmarkRunner:
                 FailureCategory.TOOL_FAILURE.value,
                 f"{mission_result.telemetry.tool_errors}/{mission_result.telemetry.tool_calls} tool calls failed",
             )
-        return TrialStatus.FAILED.value, FailureCategory.NO_EXPLOIT_PATH.value, mission_result.claimed_summary[:300]
+        return TrialStatus.FAILED.value, FailureCategory.NO_EXPLOIT_PATH.value, claimed

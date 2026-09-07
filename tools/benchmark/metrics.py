@@ -154,8 +154,14 @@ def compute_run_summary(
     summary.time_to_first_verified_success = min(
         (t.duration_seconds for t in verified if t.duration_seconds > 0), default=None
     )
+    # Sandbox blocks are reported through two channels — the sandbox snapshot
+    # (container-level ``blocked_events``) and trial telemetry
+    # (``sandbox_blocked_actions``) — that observe the SAME enforcement point.
+    # Summing both double-counts every block, so take the max per trial: when
+    # the two disagree the larger one is the honest lower bound, and when they
+    # agree (the common case) the block is counted exactly once.
     summary.sandbox_blocked_actions = sum(
-        t.sandbox.blocked_events + t.telemetry.sandbox_blocked_actions for t in trials
+        max(t.sandbox.blocked_events, t.telemetry.sandbox_blocked_actions) for t in trials
     )
     summary.infra_error_count = sum(1 for t in trials if t.status == TrialStatus.INFRASTRUCTURE_ERROR.value)
     summary.timeout_count = sum(1 for t in trials if t.status == TrialStatus.TIMEOUT.value)

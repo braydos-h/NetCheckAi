@@ -18,6 +18,7 @@ Fail-closed: a missing/unreadable baseline is a hard failure.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,8 @@ def thresholds_from_config(config: dict[str, Any] | None) -> RegressionThreshold
             value = float(reg.get(key, default))
         except (TypeError, ValueError):
             return default
+        if not math.isfinite(value):
+            return default
         return value
 
     return RegressionThresholds(
@@ -179,7 +182,32 @@ def load_baseline(baseline_path: Path | str = DEFAULT_BASELINE_PATH) -> dict[str
 def _rel_increase(current: float | None, baseline: float | None) -> float | None:
     if baseline is None or current is None or baseline <= 0:
         return None
+    if not isinstance(current, (int, float)) or not isinstance(baseline, (int, float)):
+        return None
+    if isinstance(current, bool) or isinstance(baseline, bool):
+        return None
+    if not math.isfinite(current) or not math.isfinite(baseline):
+        return None
     return (current - baseline) / baseline
+
+
+def _finite_num(value: Any) -> float | None:
+    """Coerce to a finite float; ``None`` when missing/malformed/non-finite."""
+    if isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
+def _malformed_baseline(run_id: str, metric: str) -> RegressionResult:
+    return RegressionResult(
+        passed=False,
+        baseline_run_id=run_id,
+        findings=[RegressionFinding("hard", metric, f"baseline {metric!r} malformed (fail-closed)")],
+    )
 
 
 def compare_to_baseline(
@@ -200,8 +228,13 @@ def compare_to_baseline(
         )
     result = RegressionResult(baseline_run_id=str(baseline.get("run_id", "") or ""))
 
-    base_rate = float(baseline.get("verified_success_rate", 0.0) or 0.0)
-    cur_rate = summary.verified_success_rate
+    run_id = str(baseline.get("run_id", "") or "")
+    base_rate = _finite_num(baseline.get("verified_success_rate", 0.0))
+    if base_rate is None:
+        return _malformed_baseline(run_id, "verified_success_rate")
+    cur_rate = _finite_num(summary.verified_success_rate)
+    if cur_rate is None:
+        cur_rate = 0.0
     if cur_rate < base_rate - th.success_rate_tolerance:
         result.findings.append(
             RegressionFinding(
@@ -227,8 +260,12 @@ def compare_to_baseline(
             RegressionFinding("unchanged", "verified_success_rate", f"{cur_rate:.3f} vs {base_rate:.3f}")
         )
 
-    base_fp = float(baseline.get("false_positive_rate", 0.0) or 0.0)
-    cur_fp = summary.false_positive_rate
+    base_fp = _finite_num(baseline.get("false_positive_rate", 0.0))
+    if base_fp is None:
+        return _malformed_baseline(run_id, "false_positive_rate")
+    cur_fp = _finite_num(summary.false_positive_rate)
+    if cur_fp is None:
+        cur_fp = 0.0
     if cur_fp > base_fp + th.false_positive_tolerance:
         result.findings.append(
             RegressionFinding(
@@ -296,7 +333,9 @@ def compare_to_baseline(
         base_entry = base_scenarios.get(scenario.scenario_id)
         if not isinstance(base_entry, dict):
             continue
-        base_prob = float(base_entry.get("success_probability", 0.0) or 0.0)
+        base_prob = _finite_num(base_entry.get("success_probability", 0.0))
+        if base_prob is None:
+            return _malformed_baseline(run_id, f"scenario:{scenario.scenario_id}")
         if base_prob > 0 and scenario.success_probability == 0.0:
             result.findings.append(
                 RegressionFinding(
@@ -368,6 +407,7 @@ def compare_summaries_payload(base_summary: dict[str, Any], current_summary: dic
             "false_positive_rate",
             _pct(base_summary.get("false_positive_rate")),
             _pct(current_summary.get("false_positive_rate")),
+            lower_is_better=True,
         ),
         _row(
             "median_solve_time",

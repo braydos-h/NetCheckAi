@@ -10,6 +10,7 @@ lifecycle plumbing only (no benchmark logic in route handlers).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +30,10 @@ class BenchmarkService:
             str(((config.get("benchmark", {}) or {}).get("output_dir", "")) or "reports/benchmarks")
         )
         self._active_run_id: str | None = None
+        self._last_run_id: str | None = None
         self._active_task: asyncio.Task[Any] | None = None
         self._cancel_event: asyncio.Event | None = None
+        self._start_lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
         self._status: dict[str, Any] = {"run_id": None, "state": "idle", "error": ""}
         # ponytail: bound by app.create_app so runs count toward the cap.
@@ -47,7 +50,9 @@ class BenchmarkService:
         return self._active_run_id
 
     def status(self) -> dict[str, Any]:
-        return dict(self._status)
+        payload = dict(self._status)
+        payload["last_run_id"] = self._last_run_id
+        return payload
 
     # ------------------------------------------------------------------- runs
 
@@ -57,28 +62,41 @@ class BenchmarkService:
         ``request`` keys: suite, scenarios, tags, trials, model, sandbox_required,
         timeout_seconds, save_baseline, check_regression.
         """
-        if self.is_active():
-            return {"error": "a benchmark run is already active", "run_id": self._active_run_id}
-        # ponytail: single global cap — active API runs occupy benchmark slots.
-        if self._run_manager is not None:
-            cap = int(((self.config.get("api", {}) or {}).get("max_concurrent_runs", 1)) or 1)
-            busy = len(getattr(self._run_manager, "active_run_ids", []))
-            if busy >= max(cap, 1):
-                return {"error": f"{cap} run(s) already active. Cancel one first (api.max_concurrent_runs)."}
+        from tools.benchmark.models import RunConfig
+        from tools.benchmark.registry import get_provider
 
         suite = str(request.get("suite", "") or "").strip()
         if not suite:
-            return {"error": "suite is required"}
+            return {"error": "suite is required", "code": "missing_suite"}
 
-        from tools.benchmark.models import RunConfig
+        try:
+            provider = get_provider(suite)
+        except KeyError as exc:
+            return {"error": str(exc), "code": "unknown_suite"}
+
+        scenario_ids = [str(s) for s in (request.get("scenarios") or [])]
+        tags = [str(t) for t in (request.get("tags") or [])]
+        if scenario_ids or tags:
+            matched = provider.load_scenarios(
+                scenario_ids=scenario_ids or None,
+                tags=tags or None,
+            )
+            if not matched:
+                return {"error": "no scenarios matched the given filters", "code": "no_match"}
 
         benchmark_cfg = self.config.get("benchmark", {}) or {}
+        trials_raw = request.get("trials", None)
+        if trials_raw is None:
+            trials_raw = benchmark_cfg.get("trials", 1)
+        timeout_raw = request.get("timeout_seconds", None)
+        if timeout_raw is None:
+            timeout_raw = benchmark_cfg.get("timeout_seconds", 1800)
         run_config = RunConfig(
             suite=suite,
-            scenario_ids=[str(s) for s in (request.get("scenarios") or [])],
-            tags=[str(t) for t in (request.get("tags") or [])],
-            trials=int(request.get("trials") or benchmark_cfg.get("trials", 1) or 1),
-            timeout_seconds=int(request.get("timeout_seconds") or benchmark_cfg.get("timeout_seconds", 1800) or 1800),
+            scenario_ids=scenario_ids,
+            tags=tags,
+            trials=int(trials_raw),
+            timeout_seconds=int(timeout_raw or 1800),
             model_alias=str(request.get("model", "") or ""),
             reasoning_profile=str(request.get("reasoning", "") or ""),
             sandbox_required=bool(request.get("sandbox_required", benchmark_cfg.get("sandbox_required", True))),
@@ -87,14 +105,25 @@ class BenchmarkService:
             output_dir=str(benchmark_cfg.get("output_dir", "reports/benchmarks") or "reports/benchmarks"),
         )
         if run_config.trials < 1 or run_config.trials > 20:
-            return {"error": "trials must be between 1 and 20"}
+            return {"error": "trials must be between 1 and 20", "code": "bad_trials"}
 
-        runner = BenchmarkRunner(self.config, self.config_path, model_alias=run_config.model_alias)
-        cancel = asyncio.Event()
-        self._cancel_event = cancel
-        self._status = {"run_id": None, "state": "starting", "error": ""}
-        task = asyncio.create_task(self._execute(runner, run_config, cancel))
-        self._active_task = task
+        async with self._start_lock:
+            if self.is_active():
+                return {"error": "a benchmark run is already active", "run_id": self._active_run_id}
+            # ponytail: single global cap — active API runs occupy benchmark slots.
+            if self._run_manager is not None:
+                cap = int(((self.config.get("api", {}) or {}).get("max_concurrent_runs", 1)) or 1)
+                busy = len(getattr(self._run_manager, "active_run_ids", []))
+                if busy >= max(cap, 1):
+                    return {"error": f"{cap} run(s) already active. Cancel one first (api.max_concurrent_runs)."}
+
+            runner = BenchmarkRunner(self.config, self.config_path, model_alias=run_config.model_alias)
+            cancel = asyncio.Event()
+            self._cancel_event = cancel
+            self._last_run_id = None
+            self._status = {"run_id": None, "state": "starting", "error": ""}
+            task = asyncio.create_task(self._execute(runner, run_config, cancel))
+            self._active_task = task
         # run_id is minted inside the task; wait briefly for it so callers can
         # address the run immediately (poll-loop avoids ordering hazards).
         for _ in range(100):
@@ -103,11 +132,12 @@ class BenchmarkService:
             if task.done():
                 break
             await asyncio.sleep(0.01)
-        return {"run_id": self._active_run_id, "state": self._status.get("state", "starting")}
+        return {
+            "run_id": self._active_run_id or self._last_run_id,
+            "state": self._status.get("state", "starting"),
+        }
 
     async def _execute(self, runner: BenchmarkRunner, run_config: Any, cancel: asyncio.Event) -> None:
-        loop = asyncio.get_running_loop()
-
         def _progress(event: dict[str, Any]) -> None:
             if event.get("run_id") and not self._active_run_id:
                 self._active_run_id = str(event["run_id"])
@@ -126,15 +156,17 @@ class BenchmarkService:
             raise
         except Exception as exc:  # noqa: BLE001 -- service-level guard for the API surface
             self._status = {"run_id": self._active_run_id, "state": "error", "error": str(exc)[:500]}
-            self._fanout({"type": "run_error", "error": str(exc)[:500]})
+            self._fanout({"type": "run_error", "run_id": self._active_run_id, "error": str(exc)[:500]})
         finally:
+            self._last_run_id = self._active_run_id
+            self._active_run_id = None
             self._active_task = None
             self._cancel_event = None
-            # Keep _active_run_id so the WebUI can open the just-finished run.
-            loop.call_later(0, lambda: None)
 
     async def cancel(self) -> bool:
         """Cancel the active run (if any). Returns True when cancelled."""
+        if not self.is_active():
+            return False
         if self._cancel_event is not None:
             self._cancel_event.set()
             self._status = {"run_id": self._active_run_id, "state": "cancelling", "error": ""}
@@ -169,10 +201,9 @@ class BenchmarkService:
         await self.cancel()
         task = self._active_task
         if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
-                task.cancel()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(None)

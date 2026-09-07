@@ -39,8 +39,8 @@ export async function fetchRuns(suite?: string, limit = 50): Promise<{ runs: Run
   return apiFetch(`/api/v1/benchmarks/runs?${params.toString()}`);
 }
 
-export async function fetchRun(runId: string): Promise<RunDetail> {
-  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}`);
+export async function fetchRun(runId: string, signal?: AbortSignal): Promise<RunDetail> {
+  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}`, { signal });
 }
 
 /**
@@ -49,19 +49,24 @@ export async function fetchRun(runId: string): Promise<RunDetail> {
  * moment that trial ends — so during a live run this is the only endpoint
  * that reflects completed trials. Payload shape matches `Trial`.
  */
-export async function fetchRunScenarios(runId: string): Promise<{ run_id: string; scenarios: Trial[] }> {
-  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}/scenarios`);
+export async function fetchRunScenarios(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<{ run_id: string; scenarios: Trial[] }> {
+  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}/scenarios`, { signal });
 }
 
 export async function fetchRunEvents(
   runId: string,
-  opts: { after?: number; trialId?: string; limit?: number } = {},
-): Promise<{ run_id: string; events: BenchmarkEvent[]; latest_sequence: number }> {
+  opts: { after?: number; trialId?: string; limit?: number; signal?: AbortSignal } = {},
+): Promise<{ run_id: string; events: BenchmarkEvent[]; latest_sequence: number; has_more?: boolean }> {
   const params = new URLSearchParams();
   if (opts.after) params.set("after", String(opts.after));
   if (opts.trialId) params.set("trial_id", opts.trialId);
   params.set("limit", String(opts.limit ?? 1000));
-  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}/events?${params.toString()}`);
+  return apiFetch(`/api/v1/benchmarks/runs/${encodeURIComponent(runId)}/events?${params.toString()}`, {
+    signal: opts.signal,
+  });
 }
 
 export async function startBenchmarkRun(req: BenchmarkRunRequest): Promise<{ run_id: string; state: string }> {

@@ -31,6 +31,11 @@ from tools.persistent_session_manager import PersistentSessionManager, get_sessi
 
 _LOG = logging.getLogger(__name__)
 
+# Matches the interactive msfconsole prompt (``msf6 >``, ``msf6 exploit(...) >``,
+# ``msf6 auxiliary(...) >``). Used by ``MsfconsoleSession._wait_for_prompt`` to
+# detect readiness instead of blind ``time.sleep`` handshakes.
+_MSF_PROMPT_RE = re.compile(r"msf\d*\s*[>\)]")
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -244,12 +249,17 @@ class MsfconsoleSession:
         if not result.get("success"):
             return result
 
-        # Wait for msfconsole to initialize
-        time.sleep(3)
-
-        # Verify it's responsive
+        # Wait for msfconsole to initialize: poll for the interactive prompt
+        # instead of a blind sleep — cold starts can take well over 4s.
         self._send_command("version")
-        time.sleep(1)
+        if not self._wait_for_prompt(deadline_seconds=90):
+            return {
+                "success": False,
+                "error": (
+                    "msfconsole did not show a prompt within 90s (slow init — "
+                    "the console may still be loading; retry start_console)"
+                ),
+            }
         output = self._read_output(lines=20)
 
         return {
@@ -284,6 +294,29 @@ class MsfconsoleSession:
         result = self._sm.read_session_output(self._session_name, lines=lines)
         return result.get("output", "")
 
+    def _wait_for_prompt(self, deadline_seconds: float = 90, poll: float = 2.0) -> bool:
+        """Poll msfconsole output for the interactive prompt until ``deadline_seconds``.
+
+        Returns True as soon as ``_MSF_PROMPT_RE`` matches, False on timeout.
+        Mock-friendly: any read/match failure counts as "not ready yet", never
+        raises. Worst case stalls the full deadline — equivalent to the blind
+        ``time.sleep`` this replaces.
+        """
+        start = time.monotonic()
+        while True:
+            try:
+                output = self._read_output(lines=20)
+                if output and _MSF_PROMPT_RE.search(output):
+                    return True
+            except Exception:
+                pass
+            elapsed = time.monotonic() - start
+            if elapsed >= deadline_seconds:
+                return False
+            delay = min(poll, deadline_seconds - elapsed)
+            if delay > 0:
+                time.sleep(delay)
+
     def execute(self, command: str, wait_seconds: float = 2.0, read_lines: int = 100) -> dict[str, Any]:
         """Execute a command in msfconsole and return output."""
         if not self.is_running():
@@ -296,7 +329,7 @@ class MsfconsoleSession:
             if not success:
                 return {"success": False, "error": f"Failed to send command: {command}"}
 
-            time.sleep(wait_seconds)
+            self._wait_for_prompt(deadline_seconds=wait_seconds)
             output = self._read_output(lines=read_lines)
 
         return {
@@ -347,10 +380,10 @@ class MsfconsoleSession:
         with self._lock:
             for cmd in commands:
                 self._send_command(cmd)
-                time.sleep(0.5)
+                self._wait_for_prompt(deadline_seconds=0.5, poll=0.5)
 
             # Wait for exploit to complete
-            time.sleep(wait_seconds)
+            self._wait_for_prompt(deadline_seconds=wait_seconds)
             output = self._read_output(lines=200)
 
         duration = time.monotonic() - start_time

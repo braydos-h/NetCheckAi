@@ -201,30 +201,70 @@ class BenchmarkStorage:
             return None
 
     def list_runs(self, suite: str | None = None) -> list[dict[str, Any]]:
-        """List runs (newest first) from the suite index files."""
+        """List runs (newest first) from the suite index files.
+
+        Runs still in flight have a ``run.json`` but no index entry yet;
+        those are surfaced as ``status: running`` rows so the WebUI never
+        hides an active run.
+        """
         suites = [suite] if suite else self.list_suites()
         runs: list[dict[str, Any]] = []
         for s in suites:
             if not _valid_id(s):
                 continue
+            indexed: set[str] = set()
             index_path = self.root / s / RUN_INDEX_FILENAME
             try:
                 entries = json.loads(index_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                continue
+                entries = []
             if isinstance(entries, list):
                 for entry in entries:
                     if isinstance(entry, dict):
+                        if entry.get("run_id") is not None:
+                            indexed.add(str(entry.get("run_id")))
                         row = dict(entry)
                         row.setdefault("suite", s)
                         runs.append(row)
+            suite_dir = self.root / s
+            try:
+                children = list(suite_dir.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir() or not _valid_id(child.name) or child.name in indexed:
+                    continue
+                run_json = child / "run.json"
+                if not run_json.exists():
+                    continue
+                try:
+                    data = json.loads(run_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                runs.append(
+                    {
+                        "run_id": child.name,
+                        "suite": s,
+                        "status": data.get("status", "running"),
+                        "timestamp": data.get("timestamp", ""),
+                        "trials_total": len(data.get("trials", []) or []),
+                        "solved": 0,
+                        "verified_success_rate": 0.0,
+                        "false_positive_rate": 0.0,
+                        "median_solve_time": None,
+                        "estimated_cost": None,
+                        "total_tokens": 0,
+                    }
+                )
         runs.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
         return runs
 
     def list_suites(self) -> list[str]:
         if not self.root.exists():
             return []
-        return sorted(p.name for p in self.root.iterdir() if p.is_dir())
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir() and _valid_id(p.name))
 
     def load_events(
         self, suite: str, run_id: str, *, trial_id: str = "", after: int = 0, limit: int = 500
@@ -248,8 +288,12 @@ class BenchmarkStorage:
                         continue
                     if trial_id and event.get("trial_id") != trial_id:
                         continue
-                    if after and int(event.get("sequence", 0) or 0) <= after:
-                        continue
+                    if after:
+                        try:
+                            if int(event.get("sequence", 0) or 0) <= after:
+                                continue
+                        except (TypeError, ValueError):
+                            continue  # corrupt sequence — skip the row
                     events.append(event)
                     if len(events) >= limit:
                         break
