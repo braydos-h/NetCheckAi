@@ -235,26 +235,34 @@ def _target_lock_block(
         file-indirection reason).
 
     Gates:
-        ``exploit.require_explicit_allowlist`` (off = ``None``); empty
-        effective allowlist (fail closed); ``file:`` target-list indirection
-        (denied outright, never expanded); per-destination
+        empty effective allowlist (fail closed when the flag demands an
+        explicit allowlist, permissive otherwise); ``file:`` target-list
+        indirection (denied outright, never expanded); per-destination
         ``is_target_in_allowlist`` against the full
-        ``_allowed_target_list`` union. Listen-all wildcards (``0.0.0.0``,
-        ``::``) are exempt -- ``bind()`` listens, it does not pivot.
-        Loopback (``127.0.0.1`` / ``::1`` / ``localhost``) stays gated.
+        ``_allowed_target_list`` union. The lock enforces whenever ANY
+        authorization material exists — a false
+        ``require_explicit_allowlist`` no longer silently disables every
+        check while the environment widens the lock. Listen-all wildcards
+        (``0.0.0.0``, ``::``) are exempt -- ``bind()`` listens, it does not
+        pivot. Loopback (``127.0.0.1`` / ``::1`` / ``localhost``) stays gated.
 
     Side-effects:
         None (pure string extraction + allowlist match).
     """
+    from tools.kernel.allowlist import _env_widening_note
+
     exploit_cfg = (config or {}).get("exploit", {})
-    if not exploit_cfg.get("require_explicit_allowlist", False):
-        return None
+    require = bool(exploit_cfg.get("require_explicit_allowlist", False))
     allowed_targets = _allowed_target_list(config)
     if not allowed_targets:
-        return (
-            "require_explicit_allowlist is True but allowed_targets is empty -- no targets "
-            "authorized; add exploit.allowed_targets or set EXPLOIT_TARGET"
-        )
+        # No authorization material at all: permissive only when the flag is
+        # off; flag-on with an empty union stays fail-closed.
+        if require:
+            return (
+                "require_explicit_allowlist is True but allowed_targets is empty -- no targets "
+                "authorized; add exploit.allowed_targets or set EXPLOIT_TARGET"
+            )
+        return None
     if not isinstance(command, str) or not command:
         if allow_empty:
             return None
@@ -305,5 +313,6 @@ def _target_lock_block(
                 return (
                     f"Target {_t} is not in the explicit allowlist. "
                     f"Add it to config.yaml exploit.allowed_targets to authorize."
+                    f"{_env_widening_note(config)}"
                 )
     return None

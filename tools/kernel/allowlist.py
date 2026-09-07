@@ -41,32 +41,74 @@ _MSF_PIVOT_RE = re.compile(
 )
 
 
+# Env vars unioned into the effective allowlist. Any entry from these widens
+# the lock beyond config.yaml — the gates must name that widening (see
+# ``_env_union_entries``) instead of silently absorbing it.
+_ENV_UNION_KEYS = (
+    "EXPLOIT_TARGET",
+    "EXPLOIT_TARGET_IP",
+    "EXPLOIT_TARGET_DOMAIN",
+    "EXPLOIT_DISCOVERED_TARGETS",
+    "EXPLOIT_ALLOWED_TARGETS",
+)
+
+
+def _config_only_targets(config: dict[str, Any] | None) -> list[str]:
+    """``exploit.allowed_targets`` from config alone (no env union)."""
+    exploit_cfg = (config or {}).get("exploit", {})
+    return [t for t in list(exploit_cfg.get("allowed_targets", [])) if t]
+
+
+def _env_union_entries() -> list[str]:
+    """Every allowlist entry contributed by the environment (deduped, ordered)."""
+    out: list[str] = []
+    for env_key in ("EXPLOIT_TARGET", "EXPLOIT_TARGET_IP", "EXPLOIT_TARGET_DOMAIN"):
+        val = os.environ.get(env_key, "").strip()
+        if val and val not in out:
+            out.append(val)
+    for env_key in ("EXPLOIT_DISCOVERED_TARGETS", "EXPLOIT_ALLOWED_TARGETS"):
+        raw = os.environ.get(env_key, "").strip()
+        if raw:
+            for tok in raw.split(","):
+                tok = tok.strip()
+                if tok and tok not in out:
+                    out.append(tok)
+    return out
+
+
 def _allowed_target_list(config: dict[str, Any] | None) -> list[str]:
     """The effective allowlist = config ``exploit.allowed_targets`` UNION env vars.
 
     See ``tools.mcp_shared._allowed_target_list`` docstring (verbatim move).
     """
-    exploit_cfg = (config or {}).get("exploit", {})
-    allowed = list(exploit_cfg.get("allowed_targets", []))
-    for env_key in ("EXPLOIT_TARGET", "EXPLOIT_TARGET_IP", "EXPLOIT_TARGET_DOMAIN"):
-        val = os.environ.get(env_key, "").strip()
-        if val and val not in allowed:
-            allowed.append(val)
-    discovered = os.environ.get("EXPLOIT_DISCOVERED_TARGETS", "").strip()
-    if discovered:
-        for tok in discovered.split(","):
-            tok = tok.strip()
-            if tok and tok not in allowed:
-                allowed.append(tok)
-    # Operator/CI override (read-only): comma-separated extra authorized hosts
-    # set without editing config.yaml (eval harness / CI nightly-eval job).
-    override = os.environ.get("EXPLOIT_ALLOWED_TARGETS", "").strip()
-    if override:
-        for tok in override.split(","):
-            tok = tok.strip()
-            if tok and tok not in allowed:
-                allowed.append(tok)
+    allowed = list(_config_only_targets(config))
+    for tok in _env_union_entries():
+        if tok not in allowed:
+            allowed.append(tok)
     return allowed
+
+
+def _env_widening_note(config: dict[str, Any] | None) -> str:
+    """Human-readable note naming env entries that widen the lock beyond config.
+
+    Empty when the environment contributes nothing new. Gate reasons embed
+    this so env widening is never silent — it shows up in BLOCKED/allowed
+    reasons and (via the boot-time audit event) in ``exploit_audit.jsonl``.
+    """
+    config_only = set(_config_only_targets(config))
+    extra = [t for t in _env_union_entries() if t not in config_only]
+    if not extra:
+        return ""
+    return f" (env union widens the lock: {', '.join(extra)})"
+
+
+def allowlist_env_audit_extra(config: dict[str, Any] | None) -> dict[str, Any]:
+    """``extra`` payload for audit rows naming the env widening, or ``{}``."""
+    config_only = set(_config_only_targets(config))
+    extra = [t for t in _env_union_entries() if t not in config_only]
+    if not extra:
+        return {}
+    return {"allowlist_env_union": extra}
 
 
 def add_discovered_target(host: str, ip: str | None = None, *, source: str = "") -> None:
@@ -126,49 +168,48 @@ def add_discovered_target(host: str, ip: str | None = None, *, source: str = "")
         logger.warning("add_discovered_target config load failed: %s — using env-only allowlist", e)
         config = None
 
-    exploit_cfg = (config or {}).get("exploit", {}) if isinstance(config, dict) else {}
-    require = bool(exploit_cfg.get("require_explicit_allowlist", False))
-    if not require:
+    # Discovered-host expansion is ALWAYS validated against the union: a
+    # false ``require_explicit_allowlist`` no longer lets any enumerated host
+    # silently widen the lock. An empty union still denies expansion (no base
+    # to authorize from).
+    existing_allowed = _allowed_target_list(config)
+    if not existing_allowed:
+        logger.warning(
+            "add_discovered_target denied: allowlist empty, cannot authorize %r (no base to expand from)",
+            host,
+        )
+        return
+    # Direct allowlist match (exact, wildcard with dot-boundary, CIDR)
+    if is_target_in_allowlist(host, existing_allowed):
         pass
     else:
-        existing_allowed = _allowed_target_list(config)
-        if not existing_allowed:
+        # Subdomain expansion: host must be a strict subdomain of an allowed FQDN
+        allowed_domains = [
+            a.strip().lower().lstrip("*.").rstrip(".")
+            for a in existing_allowed
+            if is_fqdn(a.strip().lower().lstrip("*."))
+        ]
+        if not allowed_domains:
             logger.warning(
-                "add_discovered_target denied: allowlist empty, cannot authorize %r (no base to expand from)",
+                "add_discovered_target denied: %r not in allowlist and no domain in allowlist to be subdomain of %r",
                 host,
+                existing_allowed,
             )
             return
-        # Direct allowlist match (exact, wildcard with dot-boundary, CIDR)
-        if is_target_in_allowlist(host, existing_allowed):
-            pass
-        else:
-            # Subdomain expansion: host must be a strict subdomain of an allowed FQDN
-            allowed_domains = [
-                a.strip().lower().lstrip("*.").rstrip(".")
-                for a in existing_allowed
-                if is_fqdn(a.strip().lower().lstrip("*."))
-            ]
-            if not allowed_domains:
-                logger.warning(
-                    "add_discovered_target denied: %r not in allowlist and no domain in allowlist to be subdomain of %r",
-                    host,
-                    existing_allowed,
-                )
-                return
-            subdomain_ok = any(is_subdomain_of(host, dom) for dom in allowed_domains if dom)
-            if not subdomain_ok:
-                logger.warning(
-                    "add_discovered_target denied: %r not in allowlist and not subdomain of %r",
-                    host,
-                    allowed_domains,
-                )
-                return
-        # Provenance, not global authorization: a resolved IP inherits the
-        # host's authorization ONLY in a hostname-tied context. It is recorded
-        # against the hostname (see tools.kernel.discovered) and is NEVER
-        # appended to EXPLOIT_DISCOVERED_TARGETS as a bare reusable entry —
-        # otherwise authorizing one hostname would silently authorize its
-        # shared-hosting/CDN IP for unrelated use.
+        subdomain_ok = any(is_subdomain_of(host, dom) for dom in allowed_domains if dom)
+        if not subdomain_ok:
+            logger.warning(
+                "add_discovered_target denied: %r not in allowlist and not subdomain of %r",
+                host,
+                allowed_domains,
+            )
+            return
+    # Provenance, not global authorization: a resolved IP inherits the
+    # host's authorization ONLY in a hostname-tied context. It is recorded
+    # against the hostname (see tools.kernel.discovered) and is NEVER
+    # appended to EXPLOIT_DISCOVERED_TARGETS as a bare reusable entry —
+    # otherwise authorizing one hostname would silently authorize its
+    # shared-hosting/CDN IP for unrelated use.
 
     vals = [t.strip() for t in os.environ.get("EXPLOIT_DISCOVERED_TARGETS", "").split(",") if t.strip()]
     if host not in vals:
@@ -182,18 +223,29 @@ def add_discovered_target(host: str, ip: str | None = None, *, source: str = "")
 
 
 def _check_allowlist(target_ip: str, config: dict[str, Any] | None) -> tuple[bool, str]:
-    """Return (allowed, reason) for target_ip against config allowlist (verbatim move)."""
+    """Return (allowed, reason) for target_ip against the effective allowlist.
+
+    The lock enforces whenever ANY authorization material exists (config
+    ``allowed_targets`` or any ``EXPLOIT_*`` env union) — a false
+    ``require_explicit_allowlist`` no longer silently disables every check
+    while the environment widens the lock. A fully empty union (no config
+    entries, no env entries) stays fail-closed when the flag demands an
+    explicit allowlist, and permissive otherwise. Env widening is named in
+    the reason so it is never silent.
+    """
     exploit_cfg = (config or {}).get("exploit", {})
-    if not exploit_cfg.get("require_explicit_allowlist", False):
-        return True, "allowlist not required"
+    require = bool(exploit_cfg.get("require_explicit_allowlist", False))
     allowed_targets = _allowed_target_list(config)
     if not allowed_targets:
-        return False, "require_explicit_allowlist is True but allowed_targets is empty"
+        if require:
+            return False, "require_explicit_allowlist is True but allowed_targets is empty"
+        return True, "no allowlist configured"
     if is_target_in_allowlist(target_ip, allowed_targets):
-        return True, "target in allowlist"
+        return True, f"target in allowlist{_env_widening_note(config)}"
     return False, (
         f"Target IP {target_ip} is not in the explicit allowlist. "
         f"Add it to config.yaml exploit.allowed_targets to authorize."
+        f"{_env_widening_note(config)}"
     )
 
 
@@ -302,13 +354,20 @@ def _extract_msf_rhosts(text: str) -> list[str]:
 
 
 def check_targets_allowlist(targets: list[str], config: dict[str, Any] | None) -> tuple[bool, str]:
-    """Return (allowed, reason) for a list of hosts (verbatim move)."""
+    """Return (allowed, reason) for a list of hosts.
+
+    Same enforcement rule as :func:`_check_allowlist`: the lock enforces
+    whenever any authorization material exists; a fully empty union stays
+    fail-closed when the flag demands an explicit allowlist, permissive
+    otherwise. Env widening is named in the reason.
+    """
     exploit_cfg = (config or {}).get("exploit", {})
-    if not exploit_cfg.get("require_explicit_allowlist", False):
-        return True, "allowlist not required"
+    require = bool(exploit_cfg.get("require_explicit_allowlist", False))
     allowed_targets = _allowed_target_list(config)
     if not allowed_targets:
-        return False, "require_explicit_allowlist is True but allowed_targets is empty"
+        if require:
+            return False, "require_explicit_allowlist is True but allowed_targets is empty"
+        return True, "no allowlist configured"
     for t in targets:
         if not t:
             continue
@@ -316,8 +375,9 @@ def check_targets_allowlist(targets: list[str], config: dict[str, Any] | None) -
             return False, (
                 f"Host {t} is not in the explicit allowlist. "
                 f"Add it to config.yaml exploit.allowed_targets to authorize."
+                f"{_env_widening_note(config)}"
             )
-    return True, "all named hosts in allowlist"
+    return True, f"all named hosts in allowlist{_env_widening_note(config)}"
 
 
 # H4: scanner verbs whose positional arguments are the scan targets.

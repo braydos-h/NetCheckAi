@@ -498,30 +498,31 @@ class SandboxManager:
     # ------------------------------------------------------------ scope gate
 
     def _enforce_scope(self, target_ip: str) -> None:
-        """Empty-allowlist / unauthorized-target fail-closed gate.
+        """Unauthorized-target fail-closed gate.
 
         The invariant, enforced independently at this layer (on top of the MCP
-        allowlist decorators and the real netns firewall): when
-        ``exploit.require_explicit_allowlist`` is true, an execution naming a
-        target outside the effective allowlist is DENIED before any container
-        work happens; with an EMPTY allowlist, every target-touching execution
-        is denied (and the netns policy authorizes nothing, so even a target-
-        less command has zero reachable destinations).
+        allowlist decorators and the real netns firewall): an execution naming
+        a target outside the effective allowlist is DENIED before any container
+        work happens whenever ANY authorization material exists (config
+        ``allowed_targets`` or any ``EXPLOIT_*`` env union). Only a fully
+        empty union skips the check here (the netns policy then authorizes
+        nothing, so even a target-less command has zero reachable
+        destinations).
 
         An empty ``target_ip`` (no destinations could be associated with the
-        execution) is denied: an execution that cannot name its target cannot
-        prove it stays inside the allowlist (variable indirection), so it
-        fail-closes here instead of relying on the firewall layer alone.
+        execution) is denied when the union is non-empty: an execution that
+        cannot name its target cannot prove it stays inside the allowlist
+        (variable indirection), so it fail-closes here instead of relying on
+        the firewall layer alone.
         """
-        from tools.kernel.allowlist import _check_allowlist
+        from tools.kernel.allowlist import _allowed_target_list, _check_allowlist
 
-        require = bool((self.config_dict or {}).get("exploit", {}).get("require_explicit_allowlist", False))
-        if not require:
+        if not _allowed_target_list(self.config_dict):
             return
         if not target_ip:
             raise SandboxScopeError(
                 "sandbox scope gate: execution names no target (empty target_ip) "
-                "while exploit.require_explicit_allowlist is true -- name the "
+                "while the allowlist is non-empty -- name the "
                 "destination literally so it can be checked against the allowlist"
             )
         allowed, reason = _check_allowlist(target_ip, self.config_dict)

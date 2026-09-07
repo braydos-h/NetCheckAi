@@ -46,9 +46,87 @@ def test_token_generated_when_no_env_no_file(tmp_path):
 
 def test_token_read_from_file(tmp_path):
     token_file = tmp_path / ".webui_secret_key"
-    token_file.write_text("file-token-456", encoding="utf-8")
+    token_file.write_text("file-token-456-with-enough-length-0123456789", encoding="utf-8")
     token = load_or_create_token(token_file, env_override="")
-    assert token == "file-token-456"
+    assert token == "file-token-456-with-enough-length-0123456789"
+
+
+def test_weak_file_token_rejected(tmp_path):
+    """File tokens must meet the same strength floor as env tokens."""
+    token_file = tmp_path / ".webui_secret_key"
+    token_file.write_text("file-token-456", encoding="utf-8")
+    with pytest.raises(ValueError, match="weak token"):
+        load_or_create_token(token_file, env_override="")
+
+
+def test_empty_file_token_rejected(tmp_path):
+    """An empty/corrupt token file fails closed — never silently replaced."""
+    token_file = tmp_path / ".webui_secret_key"
+    token_file.write_text("   \n", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        load_or_create_token(token_file, env_override="")
+
+
+def test_token_file_created_with_restrictive_perms(tmp_path):
+    import os as _os
+
+    token_file = tmp_path / ".webui_secret_key"
+    token = load_or_create_token(token_file, env_override="")
+    assert len(token) >= 32
+    if _os.name == "posix":
+        assert (token_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_token_file_atomic_no_partial_write(tmp_path, monkeypatch):
+    """A crash mid-write must not leave a half-written credential file."""
+    import os as _os
+
+    token_file = tmp_path / ".webui_secret_key"
+    real_replace = _os.replace
+
+    def _crash_before_rename(src, dst):
+        raise OSError("simulated crash before rename")
+
+    monkeypatch.setattr(_os, "replace", _crash_before_rename)
+    with pytest.raises(OSError, match="simulated crash"):
+        load_or_create_token(token_file, env_override="")
+    # The target was never created; only a temp file may remain (and it must
+    # not be at the credential path).
+    assert not token_file.exists()
+    monkeypatch.undo()
+    # Recovery works: a fresh call creates a valid token file.
+    token = load_or_create_token(token_file, env_override="")
+    assert len(token) >= 32
+
+
+def test_concurrent_creation_converges(tmp_path):
+    """Two daemons racing to create the file converge on one valid token."""
+    import threading
+
+    token_file = tmp_path / ".webui_secret_key"
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def _create():
+        try:
+            results.append(load_or_create_token(token_file, env_override=""))
+        except BaseException as exc:  # noqa: BLE001 -- collected, asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_create) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not errors
+    assert len(results) == 8
+    assert len(set(results)) == 1, "racing creators must converge on a single token"
+    assert len(results[0]) >= 32
+
+
+def test_whitespace_env_token_rejected(tmp_path):
+    with pytest.raises(ValueError, match="32"):
+        load_or_create_token(tmp_path / ".tok", env_override="has space in token value here!!")
 
 
 # ── Origin checks ────────────────────────────────────────────────────────────

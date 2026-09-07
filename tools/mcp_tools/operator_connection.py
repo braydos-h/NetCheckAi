@@ -187,11 +187,11 @@ def register_operator_connection_tools(mcp: Any, *, ctx: ToolContext) -> None:
 
         # Allowlist gate for the callback (operator box) — same pivot lock as
         # generate_payload's LHOST check and socks_pivot's upstream_host check.
-        exploit_cfg = (config or {}).get("exploit", {}) or {}
-        if exploit_cfg.get("require_explicit_allowlist", False):
-            allowed, reason = check_targets_allowlist([cb_host], config)
-            if not allowed:
-                return f"BLOCKED: {reason}\nTOOL: establish_persistence\nCALLBACK_HOST: {cb_host}"
+        # Always enforced when authorization material exists (an empty union
+        # is permissive); the flag no longer silently disables the check.
+        allowed, reason = check_targets_allowlist([cb_host], config)
+        if not allowed:
+            return f"BLOCKED: {reason}\nTOOL: establish_persistence\nCALLBACK_HOST: {cb_host}"
 
         # Render implant and write it into the attempt dir so the operator (or
         # the autonomous orchestrator) can dispatch it via run_python_file.

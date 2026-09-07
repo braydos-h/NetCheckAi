@@ -23,6 +23,7 @@ from typing import Any, Literal
 from tools.kernel.allowlist import (
     _check_allowlist,
     _extract_msf_rhosts,
+    allowlist_env_audit_extra,
 )
 
 _SECRET_ARG_NAMES = frozenset(
@@ -416,6 +417,10 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                             status="blocked" if not allowed else "started",
                             args=redacted,
                             attempt_id=attempt_id,
+                            # Explicit env-widening event: when EXPLOIT_* env
+                            # vars widen the lock beyond config.yaml, the
+                            # widening is named on the row ({} otherwise).
+                            extra=allowlist_env_audit_extra(config) or None,
                         )
                     if not allowed:
                         return f"BLOCKED: {reason}\nATTEMPT_ID: preflight\nTOOL: {fn.__name__}\nTARGET: {target_ip}"
@@ -477,6 +482,8 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                             status="blocked" if not allowed else "started",
                             args=redacted,
                             attempt_id=attempt_id,
+                            # Explicit env-widening event (see async_wrapper).
+                            extra=allowlist_env_audit_extra(config) or None,
                         )
                     if not allowed:
                         return f"BLOCKED: {reason}\nATTEMPT_ID: preflight\nTOOL: {fn.__name__}\nTARGET: {target_ip}"

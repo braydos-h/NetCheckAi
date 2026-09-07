@@ -12,11 +12,13 @@ v1 security posture:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import ipaddress
 import os
 import secrets
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -43,32 +45,152 @@ def assert_api_loopback(host: str) -> None:
         )
 
 
+# Minimum token length enforced equally for env-provided and file-loaded
+# tokens (256-bit URL-safe ≈ 43 chars; 32 chars is the floor for both).
+_MIN_TOKEN_LEN = 32
+
+
+def _valid_token_shape(token: str) -> bool:
+    """True when a loaded token meets the minimum-strength requirements.
+
+    Tokens are opaque bearer strings: printable, no whitespace (leading/
+    trailing whitespace is stripped before this check; embedded whitespace
+    or control characters reject), and at least ``_MIN_TOKEN_LEN`` chars.
+    """
+    if not token or len(token) < _MIN_TOKEN_LEN:
+        return False
+    return all(33 <= ord(c) <= 126 for c in token)
+
+
 def load_or_create_token(token_file: Path | str, *, env_override: str = "") -> str:
     """Load the bearer token from env or file, generating one if neither exists.
 
-    ``env_override`` (``BREACHPILOT_API_TOKEN``) takes precedence. The file is
-    created with ``0o600`` perms where the OS supports it (best-effort on
-    Windows). The token is never logged or returned through the API.
+    ``env_override`` (``BREACHPILOT_API_TOKEN``) takes precedence. File tokens
+    must meet the same minimum-strength requirements as env tokens; empty or
+    weak file content raises instead of being silently accepted. A corrupt
+    (unreadable, empty, or weak) file is replaced with a fresh token only
+    when it is safe to do so — never silently.
+
+    The file is created atomically (temp file + ``os.replace``) with ``0o600``
+    from the first byte on POSIX (``os.open`` with mode); on Windows the mode
+    is best-effort via ``os.chmod`` after the rename. Two daemons racing to
+    create the file converge: the loser reads the winner's token. The token
+    is never logged or returned through the API.
     """
     env_token = (env_override or os.environ.get("BREACHPILOT_API_TOKEN", "")).strip()
     if env_token:
-        if len(env_token) < 32:
-            raise ValueError("BREACHPILOT_API_TOKEN must be at least 32 characters.")
+        if not _valid_token_shape(env_token):
+            raise ValueError("BREACHPILOT_API_TOKEN must be at least 32 printable characters (no whitespace).")
         return env_token
     path = Path(token_file)
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise ValueError(f"API token file {path} is unreadable: {exc}") from exc
+    if existing:
+        if not _valid_token_shape(existing):
+            raise ValueError(
+                f"API token file {path} holds a weak token "
+                f"({len(existing)} chars; minimum {_MIN_TOKEN_LEN}). "
+                "Delete the file to generate a fresh token, or set BREACHPILOT_API_TOKEN."
+            )
+        return existing
     if path.exists():
-        token = path.read_text(encoding="utf-8").strip()
-        if token:
-            return token
+        # We read empty but the file exists: either corrupt, or a racing
+        # peer published between our read and this check. Re-read once — a
+        # peer's complete token converges; a still-empty file is corrupt, not
+        # absent. Refuse to run on an empty credential rather than silently
+        # replacing it — the operator must delete it deliberately (or set
+        # the env var).
+        try:
+            existing = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            existing = ""
+        if existing:
+            if not _valid_token_shape(existing):
+                raise ValueError(
+                    f"API token file {path} holds a weak token "
+                    f"({len(existing)} chars; minimum {_MIN_TOKEN_LEN}). "
+                    "Delete the file to generate a fresh token, or set BREACHPILOT_API_TOKEN."
+                )
+            return existing
+        raise ValueError(
+            f"API token file {path} is empty. Delete it to generate a fresh token, "
+            "or set BREACHPILOT_API_TOKEN."
+        )
     # Generate a 256-bit URL-safe token.
     token = secrets.token_urlsafe(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
+    _write_token_file_atomic(path, token)
+    # A concurrent daemon may have won the create race between our read and
+    # our write: converge on one token by re-reading. When the file now holds
+    # a *different valid* token, the peer won — adopt it. (Our own write is
+    # atomic, so the file always holds exactly one complete token.)
     try:
-        path.chmod(0o600)
-    except (OSError, NotImplementedError):
-        pass  # Windows: chmod is best-effort
+        current = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return token
+    if current and current != token:
+        if not _valid_token_shape(current):
+            raise ValueError(
+                f"API token file {path} holds a weak token after concurrent creation. "
+                "Delete the file to generate a fresh token, or set BREACHPILOT_API_TOKEN."
+            )
+        return current
     return token
+
+
+def _write_token_file_atomic(path: Path, token: str) -> None:
+    """Write ``token`` to ``path`` atomically with restrictive permissions.
+
+    POSIX: ``os.open`` with ``0o600`` + ``O_EXCL`` so the file is private
+    from the first byte and a concurrent creator fails instead of
+    interleaving; on ``FileExistsError`` the peer won — leave its file
+    alone. The payload is fsync'd, then the temp file is renamed over the
+    target with ``os.replace``. Windows: mode bits are best-effort
+    (``os.chmod`` after the rename; ACLs remain operator-managed).
+    """
+    # Unique per call (pid + thread + monotonic counter): threads in this
+    # process must not share a temp name, or a peer's rename pulls the path
+    # out from under our fd and the publish fails with FileNotFoundError.
+    _tmp_counter = getattr(_write_token_file_atomic, "_counter", 0) + 1
+    _write_token_file_atomic._counter = _tmp_counter  # type: ignore[attr-defined]
+    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{_tmp_counter}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(tmp_path, flags, 0o600)
+    except FileExistsError:
+        # Stale temp from a crashed earlier call reusing this name — replace.
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            handle.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(handle.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    try:
+        if os.name != "posix":
+            with contextlib.suppress(OSError, NotImplementedError):
+                os.chmod(tmp_path, 0o600)
+        # Atomic publish: exactly one complete token ever lands in the file,
+        # so a racing peer's re-read converges instead of seeing a half-write.
+        # (Last rename wins; the caller re-reads and adopts whoever won.)
+        os.replace(tmp_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    # Harden the final path on POSIX (rename preserves the tmp mode — belt
+    # and braces, never fails the boot).
+    if os.name == "posix":
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
 
 
 class BearerAuth:
