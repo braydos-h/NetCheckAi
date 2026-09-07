@@ -23,8 +23,7 @@ import ipaddress
 import re
 import time
 import urllib.parse
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from db import DatabaseManager
@@ -85,20 +84,41 @@ class ScopeCheckResult:
     requires_human_approval: bool = False
     is_third_party: bool = False
     rate_limit_remaining: int | None = None
+    retry_after_seconds: float | None = None
 
 
 # ── Rate limiter ───────────────────────────────────────────────────────────
 
 
+def _bucket_spec(rate_per_second: float) -> tuple[float, float]:
+    """Normalize a configured RPS into ``(rate, capacity)``.
+
+    Non-positive rates are misconfigurations — clamped to 1/s (the legacy
+    floor) rather than locking the mission out or rate-limiting nothing.
+    Burst capacity is ``max(1, rate)``: fast rates burst up to one second's
+    worth, slow fractional rates burst a single request.
+    """
+    rate = float(rate_per_second)
+    if not rate > 0:
+        rate = 1.0
+    return rate, max(1.0, rate)
+
+
 @dataclass
 class _RateBucket:
-    # Sliding-window timestamps of accepted requests in the last 1.0s.
-    # A fixed start-of-window counter allows a 2x burst at the boundary
-    # (a fresh window opens the instant the old one ends, so N requests at
-    # t=0.999 and N more at t=1.001 both pass). A sliding window of accepted
-    # timestamps closes that gap.
-    timestamps: deque = field(default_factory=deque)
-    max_per_second: float = 2.0
+    # Token bucket: ``tokens`` refill at ``rate``/s up to ``capacity``.
+    # Unlike the old 1s sliding window (which clamped fractional RPS via
+    # ``max(1, int(rps))`` and made 0.2 req/s behave as 1 req/s), this
+    # honors fractional rates: 0.2/s accrues one token every 5s.
+    tokens: float = 2.0
+    capacity: float = 2.0
+    rate: float = 2.0
+    updated: float = 0.0
+
+
+# Cap on distinct (asset, action) buckets: a long campaign must not grow
+# this dict without bound; the stalest bucket is evicted past the cap.
+_MAX_RATE_BUCKETS = 10_000
 
 
 # ── Scope Gate class ───────────────────────────────────────────────────────
@@ -297,10 +317,12 @@ class ScopeGate:
             )
 
         # ── 5. Rate limit check ──
+        rl_remaining: int | None = None
         if enforce_rate_limit:
             rl_result = self._check_rate_limit(asset_clean, action_type)
             if not rl_result.allowed:
                 return rl_result
+            rl_remaining = rl_result.rate_limit_remaining
 
         # ── 6. Risk level gating ──
         requires_human = False
@@ -314,41 +336,52 @@ class ScopeGate:
             risk_level=risk_level,
             requires_human_approval=requires_human,
             is_third_party=third_party,
-            rate_limit_remaining=None,
+            rate_limit_remaining=rl_remaining,
         )
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _check_rate_limit(self, asset: str, action_type: str) -> ScopeCheckResult:
+        """Token-bucket rate check. Pure decision — never sleeps.
+
+        Refills from ``time.monotonic()`` (injectable via ``time.monotonic``
+        monkeypatching in tests), spends one token per allowed call, and
+        reports ``rate_limit_remaining`` (whole tokens left) plus
+        ``retry_after_seconds`` on denial. Tokens never exceed capacity, so
+        idle time cannot bank an unbounded burst.
+        """
         bucket_key = f"{asset}:{action_type[:20]}"
         now = time.monotonic()
-        window = 1.0
 
         bucket = self._rate_buckets.get(bucket_key)
         if bucket is None:
-            bucket = _RateBucket(max_per_second=self._default_rps)
+            rate, capacity = _bucket_spec(self._default_rps)
+            bucket = _RateBucket(tokens=capacity, capacity=capacity, rate=rate, updated=now)
+            if len(self._rate_buckets) >= _MAX_RATE_BUCKETS:
+                stalest = min(self._rate_buckets, key=lambda k: self._rate_buckets[k].updated)
+                del self._rate_buckets[stalest]
             self._rate_buckets[bucket_key] = bucket
 
-        # Evict timestamps that have aged out of the sliding window.
-        while bucket.timestamps and (now - bucket.timestamps[0]) >= window:
-            bucket.timestamps.popleft()
+        # Refill for elapsed time, capped at capacity (no unbounded banking).
+        elapsed = max(0.0, now - bucket.updated)
+        bucket.tokens = min(bucket.capacity, bucket.tokens + elapsed * bucket.rate)
+        bucket.updated = now
 
-        # Clamp fractional RPS to 1 (sliding window is 1s, can't do <1 req/s)
-        max_rps = max(1, int(bucket.max_per_second))
-        if len(bucket.timestamps) >= max_rps:
+        if bucket.tokens >= 1.0:
+            bucket.tokens -= 1.0
             return ScopeCheckResult(
-                allowed=False,
-                reason=f"Rate limit exceeded for '{asset}' ({action_type}). Max {bucket.max_per_second} req/s.",
-                risk_level="low",
-                rate_limit_remaining=0,
+                allowed=True,
+                reason="Rate limit check passed.",
+                rate_limit_remaining=int(bucket.tokens),
             )
 
-        bucket.timestamps.append(now)
-        remaining = max(0, int(bucket.max_per_second) - len(bucket.timestamps))
+        retry_after = (1.0 - bucket.tokens) / bucket.rate if bucket.rate > 0 else 0.0
         return ScopeCheckResult(
-            allowed=True,
-            reason="Rate limit check passed.",
-            rate_limit_remaining=remaining,
+            allowed=False,
+            reason=f"Rate limit exceeded for '{asset}' ({action_type}). Max {bucket.rate:g} req/s.",
+            risk_level="low",
+            rate_limit_remaining=0,
+            retry_after_seconds=retry_after,
         )
 
     # ── Utility methods ──────────────────────────────────────────────

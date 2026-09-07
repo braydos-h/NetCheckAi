@@ -37,7 +37,7 @@ Shared by Flow A only for the Path-B no-MCP Orchestrator branch (`tools/autonomo
 - Evaluate `check_scope(asset, action_type, tool_name, risk_level, enforce_rate_limit)` (`scope_gate.py:165`) in order: 1) `action_type` exact forbidden match, 2) hard-substring deny, 3) third-party auto-reject if not explicitly allowed, 4) deny-rules, 5) allow-rules (required), 6) sliding-window rate limit (`scope_gate.py:295`), 7) high-risk → sets `requires_human_approval` when `risk_profile != "high_authorized_testing"`.
 - Provide rule engine: `_rule_matches` (domain exact, wildcard `*.`, ip, cidr `subnet_of`, url_prefix via `_url_prefix_matches`), `_classify_target_type` (recognizes `http(s)://` as `url_prefix`), `_is_third_party_asset` (anchored regex + explicit cdn checks), `_clean_asset` (IPv6-safe, CIDR-preserving, host-only — never used for URL rules).
 - URL-prefix scope (`_canonicalize_url` / `_url_prefix_matches`): rules keep scheme + hostname (case-insensitive) + normalized port (default 80/443 folded away) + path, parsed with `urllib.parse` — never string splitting. Path comparison is directory-boundary safe (`/admin` authorizes `/admin` and `/admin/...`, never `/administrator`); query/fragment are ignored; malformed URLs fail closed. `check_scope` matches `url_prefix` rules against the raw asset while host rules keep using the normalized host, so host-level scope is unaffected.
-- Rate bucket: `_RateBucket.timestamps` sliding window (`scope_gate.py:76`) clamped to `max(1, int(rps))`.
+- Rate bucket: token-bucket `_RateBucket` (tokens refill at the configured RPS up to `max(1, rate)` burst; fractional rates honored, monotonic clock, never sleeps; denials report `retry_after_seconds`).
 
 ### `risk_controller.py`
 
@@ -104,7 +104,7 @@ Shared by Flow A only for the Path-B no-MCP Orchestrator branch (`tools/autonomo
 
 ## State/Persistence
 
-- `ScopeGate` caches `_allow_rules`, `_deny_rules`, `_forbidden_action_strs` in memory; refreshed via `load_from_db()`. Rate buckets `_rate_buckets: dict[str,_RateBucket]` keyed by `f"{asset}:{action_type[:20]}"` are process-local sliding windows (evicted by `time.monotonic`).
+- `ScopeGate` caches `_allow_rules`, `_deny_rules`, `_forbidden_action_strs` in memory; refreshed via `load_from_db()`. Rate buckets `_rate_buckets: dict[str,_RateBucket]` keyed by `f"{asset}:{action_type[:20]}"` are process-local token buckets (refilled by `time.monotonic`, capped at 10k entries with stalest-evicted).
 - `RiskController` holds `_commands_executed` / `_tasks_completed` counters in memory (incremented by `ToolRouter` after each successful execution and by `AgentLoop` after each `complete`).
 - No DB writes here except indirect audit via `ToolRouter._log_block` on deny.
 
@@ -144,7 +144,7 @@ flowchart TD
     E -->|yes| X
     E -->|no| F{allow rule matches?}
     F -->|no| X
-    F -->|yes| G[_check_rate_limit sliding window]
+    F -->|yes| G[_check_rate_limit token bucket]
     G -->|exceeded| X
     G -->|ok| H{high risk && profile != high_authorized_testing?}
     H -->|yes| I[allow=true + requires_human_approval=true]
@@ -176,7 +176,7 @@ flowchart TD
 - `check_scope` with `allowed=True` **and** `requires_human_approval=True` is NOT a green light; caller must gate on explicit human `ALLOW`.
 - `RiskController.assess_action` destructive check normalizes `[\s;|&]+` → spaces and word-boundary matches so `rm\t-rf` / `rm;-rf` still blocks.
 - `ScopeGate._HARD_FORBIDDEN_SUBSTRINGS` intentionally excludes legitimate phases (`exploit`, `report`) to avoid disabling the planner's own outputs.
-- Rate buckets clamp fractional RPS to ≥1.
+- Rate buckets honor fractional RPS (0.1/s accrues one token per 10s); non-positive rates clamp to the 1/s legacy floor.
 
 ## Security Boundaries
 
