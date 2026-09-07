@@ -35,7 +35,7 @@ def _description(fm: str) -> str:
     if not m:
         return ""
     lines = [m.group(1)]
-    for ln in fm[m.end():].splitlines():
+    for ln in fm[m.end() :].splitlines():
         if ln.strip() == "" or ln[:1] in (" ", "\t"):
             lines.append(ln)
         elif KEY_RE.match(ln):
@@ -58,7 +58,7 @@ def _tags(fm: str) -> list[str]:
     if inline:
         return [inline.strip().strip("'\"")]
     tags: list[str] = []
-    for ln in fm[m.end():].splitlines():
+    for ln in fm[m.end() :].splitlines():
         item = re.match(r"^\s*-\s*(.+?)\s*$", ln)
         if item:
             tags.append(item.group(1).strip().strip("'\""))
@@ -135,10 +135,7 @@ def main() -> int:
         out.append("")
         for s in group:
             maybe = " `maybe/`" if s.maybe else ""
-            out.append(
-                f"- **{s.name}**{maybe} — {_cell(short(s.description))} "
-                f"(`{s.subdomain}`, v{s.version})"
-            )
+            out.append(f"- **{s.name}**{maybe} — {_cell(short(s.description))} (`{s.subdomain}`, v{s.version})")
         out.append("")
     out += [
         "## All skills (alphabetical)",
@@ -148,8 +145,7 @@ def main() -> int:
     ]
     for s in skills:
         out.append(
-            f"| `{s.name}` | `{s.domain}` | `{s.subdomain}` | `{s.version}` "
-            f"| {_cell(', '.join(s.tags)) or '—'} |"
+            f"| `{s.name}` | `{s.domain}` | `{s.subdomain}` | `{s.version}` | {_cell(', '.join(s.tags)) or '—'} |"
         )
     out.append("")
     DOC.parent.mkdir(parents=True, exist_ok=True)

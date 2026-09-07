@@ -321,3 +321,36 @@ def test_graph_summary_and_aggregate_state(tmp_path):
     ref = snap["activity"]["recent"][0]
     assert "exploit_audit:10.0.0.50:att-1" in ref
     assert "command" not in ref  # no raw command leakage
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Scenario: next_step selects the single highest-priority ready step
+# ──────────────────────────────────────────────────────────────────────────
+def test_next_step_selects_highest_priority_ready():
+    plan = _plan(
+        [
+            _step("root"),
+            _step("low", depends_on=[0], priority=10),
+            _step("high", depends_on=[0], priority=90),
+        ]
+    )
+    # Before root completes only root is selectable.
+    assert plan.next_step()[0] == 0
+    plan.mark_step_done(0, True, "root ok")
+    # Highest-priority ready step wins; ties fall back to insertion order.
+    assert plan.next_step()[0] == 2
+    plan.mark_step_done(2, True, "high ok")
+    assert plan.next_step()[0] == 1
+    plan.mark_step_done(1, True, "low ok")
+    # Nothing ready (all done) — and a blocked graph also yields None.
+    assert plan.next_step() is None
+
+    blocked = _plan([_step("a"), _step("b", depends_on=[0])])
+    blocked.fail_step(0, FailureClass.SCOPE_BLOCKED.value, "denied")
+    assert blocked.next_step() is None
+
+    # Selection survives a JSON round-trip (loop persists plans between runs).
+    revived = AttackPlan.from_json(plan.to_json())
+    assert revived.next_step() is None
+    revived2 = AttackPlan.from_json(blocked.to_json())
+    assert revived2.next_step() is None

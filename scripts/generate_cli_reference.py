@@ -100,7 +100,7 @@ class Flag:
         parts = []
         if self.nargs == "*":
             meta = f" (`metavar {self.metavar}`)" if self.metavar else ""
-            parts.append(f"`nargs=\"*\"`{meta}")
+            parts.append(f'`nargs="*"`{meta}')
         if self.choices:
             parts.append("`choices: " + " \\| ".join(self.choices) + "`")
         elif self.type_name:
@@ -124,7 +124,7 @@ class Flag:
         if d == "''":
             return '`""`'
         if d.startswith("Path('") and d.endswith("')"):
-            d = 'Path("' + d[len("Path('"):-len("')")] + '")'
+            d = 'Path("' + d[len("Path('") : -len("')")] + '")'
         return f"`{d}`"
 
 
@@ -133,11 +133,7 @@ def collect_flags() -> tuple[list[Flag], int, int]:
     func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "parse_args")
     flags: list[Flag] = []
     for node in ast.walk(func):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument"
-        ):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument":
             f = Flag(node)
             if f.options:
                 flags.append(f)
@@ -273,6 +269,7 @@ def build_row(f: Flag, old: list[str] | None) -> str:
         bare_type = esc(re.sub(r"\s*\(.*\)$", "", type_cell).strip("`").replace("\\|", "|"))
         if bare_type and bare_type not in old_type.replace("\\|", "|"):
             old_type = type_cell
+
         def norm(s: str) -> str:
             return s.strip().strip("`").replace('"', "").replace("'", "").strip()
 
@@ -352,8 +349,10 @@ def main() -> int:
     DOC.write_text("\n".join(out), encoding="utf-8")
 
     missing = [p for p in old_rows if p not in {f.primary for f in flags}]
-    print(f"flags: {len(flags)}, preserved rows: {len(old_rows) - len(missing)}, new rows: "
-          f"{len([f for f in flags if f.primary not in old_rows])}")
+    print(
+        f"flags: {len(flags)}, preserved rows: {len(old_rows) - len(missing)}, new rows: "
+        f"{len([f for f in flags if f.primary not in old_rows])}"
+    )
     if missing:
         print(f"WARNING: doc flags gone from parse_args (kept out): {missing}")
     print(f"wrote {DOC} (verify {today}, parse_args {start}-{end})")

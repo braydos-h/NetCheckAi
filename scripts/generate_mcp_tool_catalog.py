@@ -157,8 +157,7 @@ def main() -> None:
     lines.append("")
     lines.append("")
     lines.append(
-        f"_Generated {today} from `{len(sources)} source files` "
-        f"({total} tools across {len(families)} families)._"
+        f"_Generated {today} from `{len(sources)} source files` ({total} tools across {len(families)} families)._"
     )
     lines.append("")
 
@@ -170,15 +169,15 @@ def main() -> None:
             regs = ", ".join(f"`{n}()` (`{fam['rel']}:{ln}`)" for n, ln in fam["registrars"])
             lines.append(f"- **Registration:** {regs} — auto-discovered; no edit to `mcp_exploit_server.py`.")
         else:
-            lines.append("- **Registration:** inline `@mcp.tool` defs in `create_mcp_server()` — no `register_*` wrapper.")
+            lines.append(
+                "- **Registration:** inline `@mcp.tool` defs in `create_mcp_server()` — no `register_*` wrapper."
+            )
         lines.append("")
         lines.append("| Tool | Gates | Purpose | Source |")
         lines.append("|------|-------|---------|--------|")
         for t in tools:
             gates = " + ".join(f"`{g}`" for g in t["gates"]) if t["gates"] else "—"
-            lines.append(
-                f"| `{t['name']}` | {gates} | {_esc(t['purpose'])} | `{fam['rel']}:{t['lineno']}` |"
-            )
+            lines.append(f"| `{t['name']}` | {gates} | {_esc(t['purpose'])} | `{fam['rel']}:{t['lineno']}` |")
         lines.append("")
 
     lines.append("## Totals")

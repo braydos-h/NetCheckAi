@@ -140,6 +140,16 @@ class AttackPlan:
         ready.sort(key=lambda t: (-t[1].priority, t[0]))
         return ready
 
+    def next_step(self) -> tuple[int, AttackStep] | None:
+        """The single next action: highest-priority ready step, None if blocked.
+
+        Thin selector over ready_steps() (already priority-desc, insertion-
+        stable) so the loop advances deterministically without reimplementing
+        the ordering. Serializes through the existing to_json/from_json.
+        """
+        ready = self.ready_steps()
+        return ready[0] if ready else None
+
     def blocked_steps(self) -> list[tuple[int, AttackStep, str]]:
         """Open steps whose dependencies can never satisfy, with reason."""
         out: list[tuple[int, AttackStep, str]] = []

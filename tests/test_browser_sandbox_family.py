@@ -72,3 +72,52 @@ def test_registry_split_still_separates_real_statuses():
         assert entry.status == "sandboxed"
     for entry in PLANNED_FAMILIES.values():
         assert entry.status == "planned"
+
+
+def test_sandbox_opt_out_returns_in_process_launcher():
+    """sandbox.enabled:false is the explicit operator opt-out (host execution)."""
+    import types
+
+    import tools.browser.sandbox_launcher as _launcher_mod
+
+    launcher, block = _launcher_mod.resolve_browser_launcher(
+        types.SimpleNamespace(), {"sandbox": {"enabled": False}}
+    )
+    assert block == ""
+    assert getattr(launcher, "kind", "") == "in_process"
+
+
+def test_no_manager_blocks_even_with_native_fallback():
+    """Browser never inherits sandbox.fallback_native — no manager means BLOCKED."""
+    import types
+
+    import tools.browser.sandbox_launcher as _launcher_mod
+
+    config = {"sandbox": {"enabled": True, "fallback_native": True}}
+    launcher, block = _launcher_mod.resolve_browser_launcher(types.SimpleNamespace(), config)
+    assert launcher is None
+    assert "SANDBOX_UNAVAILABLE" in block
+    assert "fail closed" in block.lower()
+
+
+def test_worker_without_playwright_blocks_with_build_hint(monkeypatch):
+    """Sandboxed but the worker image lacks Playwright/Chromium means BLOCKED."""
+    import types
+
+    import tools.browser.sandbox_launcher as _launcher_mod
+
+    monkeypatch.setattr(_launcher_mod, "_PROBE_CACHE", {})
+
+    class _NoPlaywrightManager:
+        cfg = None  # no image override — resolution uses browser.worker_image
+
+        @staticmethod
+        def execute_argv(argv, **kwargs):  # noqa: ARG004
+            return types.SimpleNamespace(stdout="No module named playwright", stderr="", exit_code=1)
+
+    config = {"sandbox": {"enabled": True}, "browser": {"worker_image": "pw-missing-test:latest"}}
+    ctx = types.SimpleNamespace(sandbox=_NoPlaywrightManager())
+    launcher, block = _launcher_mod.resolve_browser_launcher(ctx, config)
+    assert launcher is None
+    assert "SANDBOX_UNAVAILABLE" in block
+    assert "Dockerfile.browser" in block

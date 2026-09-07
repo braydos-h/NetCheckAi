@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 from tools.attack_modules import ModuleContext
 from tools.autonomous_orchestrator import (
@@ -232,7 +233,11 @@ def test_execute_threads_access_state_into_context(tmp_path: Path, monkeypatch) 
 
     A fake module captures the ctx so the test can assert the fields landed.
     """
-    executor = AttackModuleExecutor()
+    # Fail-closed hardening blocks ungated execution before any context is
+    # built, so wire an allowing gate (same pattern as test_agent_loop.py).
+    gate = MagicMock()
+    gate.check_scope.return_value = MagicMock(allowed=True, requires_human_approval=False)
+    executor = AttackModuleExecutor(gate)
 
     captured: dict[str, Any] = {}
 
