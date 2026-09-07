@@ -876,8 +876,15 @@ def register_metasploit_tools(mcp: Any, *, ctx: ToolContext) -> None:
         except SandboxError as exc:
             return f"MSF_PAYLOAD_FAILED: blocked\n{sandbox_error_block(exc, tool_name='msf_generate_payload')}"
         result = bridge.generate_payload(
-            payload_type.strip(), lhost.strip(), port, fmt.strip(), platform.strip(), arch.strip(),
-            options, encoder.strip(), count,
+            payload_type.strip(),
+            lhost.strip(),
+            port,
+            fmt.strip(),
+            platform.strip(),
+            arch.strip(),
+            options,
+            encoder.strip(),
+            count,
         )
         if result.get("success"):
             return (
@@ -1064,9 +1071,7 @@ def register_metasploit_tools(mcp: Any, *, ctx: ToolContext) -> None:
         except SandboxError as exc:
             return f"MSF_HANDLER_STOPPED: blocked\n{sandbox_error_block(exc, tool_name='msf_stop_handler')}"
         result = bridge.stop_handler()
-        return (
-            f"MSF_HANDLER_STOPPED\nSUCCESS: {result.get('success', False)}\nOUTPUT:\n{_tail(result.get('output', ''), 500)}"
-        )
+        return f"MSF_HANDLER_STOPPED\nSUCCESS: {result.get('success', False)}\nOUTPUT:\n{_tail(result.get('output', ''), 500)}"
 
     def _post_module(session_id: int, module: str, label: str, options: str = "") -> str:
         """Shared runner for the meterpreter post wrappers.

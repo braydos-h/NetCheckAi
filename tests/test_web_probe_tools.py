@@ -145,9 +145,7 @@ async def test_graphql_rejects_port_out_of_range(tmp_path: Path):
 async def test_target_ip_crlf_rejected_without_socket(tmp_path: Path):
     mcp = _make_server(tmp_path)
     with patch("socket.create_connection") as mock_conn:
-        text = _text(
-            await mcp.call_tool("ssti_probe", {"target_ip": "10.0.0.50\r\n evil", "port": 80, "timeout": 5})
-        )
+        text = _text(await mcp.call_tool("ssti_probe", {"target_ip": "10.0.0.50\r\n evil", "port": 80, "timeout": 5}))
     assert text.startswith("BLOCKED:")
     assert "CR/LF" in text
     mock_conn.assert_not_called()
@@ -218,9 +216,7 @@ async def test_graphql_domain_target_and_sockets_closed(tmp_path: Path):
     mcp = _make_server(tmp_path)
     body = b'HTTP/1.0 200 OK\r\n\r\n{"data":{"__schema":{"queryType":{"name":"Q"},"types":[{"name":"User"}]}}}'
     with _conn(body):
-        text = _text(
-            await mcp.call_tool("graphql_introspect", {"target_ip": "example.com", "port": 80, "timeout": 10})
-        )
+        text = _text(await mcp.call_tool("graphql_introspect", {"target_ip": "example.com", "port": 80, "timeout": 10}))
     assert "GRAPHQL_INTROSPECT_RESULTS: example.com:80" in text
     assert "Introspection ENABLED" in text
     assert _FakeSock.instances, "expected at least one socket to have opened"
@@ -268,7 +264,7 @@ async def test_password_spray_redacts_password(tmp_path: Path):
 async def test_password_spray_success_lists_user_not_password(tmp_path: Path):
     mcp = _make_server(tmp_path)
     secret = "An0therS3cret-42"
-    with _conn(b"HTTP/1.0 200 OK\r\n\r\n{\"token\": \"abc\"}"):
+    with _conn(b'HTTP/1.0 200 OK\r\n\r\n{"token": "abc"}'):
         text = _text(
             await mcp.call_tool(
                 "password_spray",

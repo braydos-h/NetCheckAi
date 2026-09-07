@@ -9,6 +9,7 @@ kinds are now absent (fail closed) and flagged by the contract test.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Canonical artifact kinds. Aliases map onto these (e.g. a module declaring
@@ -120,6 +121,8 @@ def is_satisfied(kind: str, ctx: Any) -> bool:
         if isinstance(f, dict):
             if k in {str(key).lower() for key in f} or f.get("kind") == k or f.get("type") == k:
                 return True
-        elif isinstance(f, str) and f.strip().lower() == k:
-            return True
+        elif isinstance(f, str):
+            text = f.strip().lower()
+            if text == k or re.search(rf"(?:^|\s){re.escape(k)}\s*:", text):
+                return True
     return any(isinstance(ref, str) and ref.strip().lower() == k for ref in (getattr(ctx, "evidence_refs", None) or []))
