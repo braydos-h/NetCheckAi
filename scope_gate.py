@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -208,6 +209,10 @@ class ScopeGate:
         instead) -- ``check_scope`` always applies risk gating and may flag
         approval even for in-scope assets.
         """
+        # ``asset_clean`` is the host-normalized form for domain/IP/CIDR
+        # matching. ``asset_raw`` keeps scheme/path so ``url_prefix`` rules
+        # can match at path level (normalization would strip them).
+        asset_raw = asset.strip()
         asset_clean = _clean_asset(asset)
 
         # ── 1. Forbidden action type check (hard-block) ──
@@ -259,7 +264,7 @@ class ScopeGate:
         if _is_third_party_asset(asset_clean):
             third_party = True
             # Third-party assets MUST have an explicit allow rule; auto-reject otherwise.
-            if not _matches_allow_rules(asset_clean, self._allow_rules):
+            if not _matches_allow_rules(asset_clean, self._allow_rules, asset_raw):
                 return ScopeCheckResult(
                     allowed=False,
                     reason=f"'{asset_clean}' appears to be a third-party/infrastructure asset. Not in explicit scope.",
@@ -269,7 +274,7 @@ class ScopeGate:
 
         # ── 3. Check deny rules first ──
         for rule in self._deny_rules:
-            if _rule_matches(rule, asset_clean):
+            if _rule_matches(rule, asset_clean, asset_raw):
                 return ScopeCheckResult(
                     allowed=False,
                     reason=f"Asset '{asset_clean}' is explicitly out of scope (rule: {rule['pattern']}).",
@@ -280,7 +285,7 @@ class ScopeGate:
         # ── 4. Check allow rules ──
         matched_allow = None
         for rule in self._allow_rules:
-            if _rule_matches(rule, asset_clean):
+            if _rule_matches(rule, asset_clean, asset_raw):
                 matched_allow = rule
                 break
 
@@ -366,13 +371,24 @@ class ScopeGate:
 # ── Rule matching engine ───────────────────────────────────────────────────
 
 
-def _rule_matches(rule: dict[str, Any], asset: str) -> bool:
-    """Test whether a scope rule matches an asset string."""
+def _rule_matches(rule: dict[str, Any], asset: str, raw_asset: str | None = None) -> bool:
+    """Test whether a scope rule matches an asset string.
+
+    ``asset`` is the host-normalized form (see :func:`_clean_asset`) used by
+    the host/domain/IP/CIDR matchers. ``raw_asset`` is the original,
+    unstripped asset string; ``url_prefix`` rules are matched against it via
+    :func:`_url_prefix_matches` because normalization strips the scheme/path
+    that path-level rules depend on. When ``raw_asset`` is omitted it
+    defaults to ``asset``.
+    """
     target_type = rule.get("target_type", "domain")
     pattern = rule.get("pattern", "").strip()
 
     if not pattern or not asset:
         return False
+
+    if target_type == "url_prefix":
+        return _url_prefix_matches(pattern, raw_asset if raw_asset is not None else asset)
 
     asset_lower = asset.lower()
     pattern_lower = pattern.lower()
@@ -416,22 +432,95 @@ def _rule_matches(rule: dict[str, Any], asset: str) -> bool:
                 return False
             return asset_net.subnet_of(network)
 
-    if target_type == "url_prefix":
-        return asset_lower.startswith(pattern_lower)
-
     # Fallback: exact match
     return asset_lower == pattern_lower
 
 
-def _matches_allow_rules(asset: str, allow_rules: list[dict[str, Any]]) -> bool:
+# ── URL-prefix matching ────────────────────────────────────────────────────
+
+# Schemes whose default port is normalized away during comparison, so
+# ``https://host/admin`` and ``https://host:443/admin`` are the same scope.
+_URL_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _canonicalize_url(value: str) -> tuple[str, str, int | None, str] | None:
+    """Parse *value* into ``(scheme, host, port, path)`` or return None.
+
+    Uses :func:`urllib.parse.urlsplit` (never string splitting). Hostnames
+    are compared case-insensitively (lowercased here); default ports are
+    normalized to None; an empty path becomes ``"/"``. Query strings and
+    fragments do not affect resource scope and are dropped.
+
+    Returns None (fail closed) for malformed URLs: missing scheme or host,
+    invalid port, whitespace/control characters, or an unparseable value.
+    """
+    s = value.strip()
+    if not s or any(c.isspace() or ord(c) < 32 for c in s):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(s)
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if not scheme or not host:
+        return None
+    # Percent-escapes in the host are never valid DNS/IP literals — reject
+    # so an encoded host can't compare equal to (or confusingly near) a
+    # real rule hostname.
+    if "%" in host:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is not None and _URL_DEFAULT_PORTS.get(scheme) == port:
+        port = None
+    # ``urlsplit`` never raises for the path; unquote %XX only for the
+    # boundary comparison so ``/admin`` and ``/%61dmin`` compare equal.
+    # A malformed escape is left as-is rather than failing the whole rule.
+    try:
+        path = urllib.parse.unquote(parts.path) or "/"
+    except Exception:
+        path = parts.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    return (scheme, host, port, path)
+
+
+def _url_prefix_matches(pattern: str, asset: str) -> bool:
+    """Boundary-safe URL-prefix scope check.
+
+    The asset must share the rule's scheme, hostname (case-insensitive),
+    and normalized port, and its path must equal the rule path or live
+    *under* it (``/admin`` matches ``/admin`` and ``/admin/users`` but NOT
+    ``/administrator``). Query strings and fragments are ignored.
+    """
+    rule = _canonicalize_url(pattern)
+    candidate = _canonicalize_url(asset)
+    if rule is None or candidate is None:
+        return False
+    if rule[:3] != candidate[:3]:
+        return False
+    rule_path, asset_path = rule[3], candidate[3]
+    if asset_path == rule_path:
+        return True
+    # Directory-boundary prefix: "/admin" authorizes "/admin/..." only.
+    prefix = rule_path if rule_path.endswith("/") else rule_path + "/"
+    return asset_path.startswith(prefix)
+
+
+def _matches_allow_rules(asset: str, allow_rules: list[dict[str, Any]], raw_asset: str | None = None) -> bool:
     """Return True if asset matches at least one allow rule.
 
-    Supports exact match, wildcard domain (*.example.com), and CIDR.
+    Supports exact match, wildcard domain (*.example.com), CIDR, and
+    ``url_prefix`` (matched against ``raw_asset`` — the unstripped asset —
+    so path-level rules keep their scheme/path).
     """
     if not allow_rules:
         return False
     for rule in allow_rules:
-        if _rule_matches(rule, asset):
+        if _rule_matches(rule, asset, raw_asset if raw_asset is not None else asset):
             return True
     return False
 
@@ -441,6 +530,9 @@ def _classify_target_type(asset: str) -> str:
     asset = asset.strip()
     if asset.startswith("*."):
         return "wildcard_domain"
+    lowered = asset.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return "url_prefix"
     try:
         ipaddress.ip_address(asset)
         return "ip"
