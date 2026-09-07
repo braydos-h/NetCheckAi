@@ -65,3 +65,4 @@ webui/*.tsbuildinfo
 
 # Scratch / accidental test artifacts
 x/
+/web
