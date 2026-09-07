@@ -1,0 +1,23 @@
+# God-file baseline — see scripts/god_file_budget.py.
+# Grandfathered files only: `path loc bytes`. Generated with --update.
+# Growth vs this baseline is reported as a CI warning annotation.
+main.py 1521 60877
+outcome_judge.py 1081 44069
+tools/api/routes/runs.py 1011 46123
+tools/api/routes/system.py 1808 79629
+tools/attack_modules/modules/ics_iot.py 1517 58341
+tools/attack_ui.py 1392 64528
+tools/browser/playwright_backend.py 1443 60868
+tools/doctor.py 1032 44848
+tools/enhanced_reporting.py 1593 67842
+tools/eval_harness.py 1597 59973
+tools/exploit_agent/runner/_impl.py 2637 132994
+tools/mcp_tools/domain.py 1367 48980
+tools/mcp_tools/metasploit.py 1196 55376
+tools/mcp_tools/modules/web.py 1114 43475
+tools/metasploit_bridge.py 1165 42175
+tools/persistent_session_manager.py 1220 45366
+tools/providers/opencode_go_provider.py 1421 59398
+tools/recon/enumerator.py 1324 58521
+tools/sandbox/remediation.py 1072 44347
+tools/web_researcher.py 1565 57827

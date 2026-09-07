@@ -190,30 +190,8 @@ jobs:
             exit 1
           fi
           echo "MCP bare-except guard: OK"
-      - name: God-file budget (no new file >1000 LOC / 72kB)
-        run: |
-          python -c "
-          import pathlib
-          limit = 600 * 120
-          # Legacy grandfathered files (pre-date the budget guard, already >1000 LOC / 72kB):
-          # they are exempt, but NEW files must still satisfy the budget.
-          grandfathered = {
-              'tools/api/routes/system.py',
-              'tools/exploit_agent/runner/_impl.py',
-          }
-          bad = []
-          for p in pathlib.Path('tools').rglob('*.py'):
-              if p.as_posix() in grandfathered:
-                  continue
-              try:
-                  text = p.read_text(encoding='utf-8', errors='ignore')
-              except OSError:
-                  continue
-              loc = len(text.splitlines())
-              if loc > 1000 and p.stat().st_size >= limit:
-                  bad.append(f'{p} ({loc} LOC, {p.stat().st_size} B)')
-          assert not bad, 'god-file budget exceeded: new file >1000 LOC must stay <72kB (600*120) or be split: ' + ', '.join(bad)
-          "
+      - name: God-file budget (OR threshold + grandfathered growth tracking)
+        run: python scripts/god_file_budget.py
       - name: Config schema / YAML sync check (top-level keys)
         run: |
           python -c "
