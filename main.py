@@ -10,7 +10,7 @@ Usage:
 # BreachPilot by @braydos-h — https://github.com/braydos-h/BreachPilot
 from __future__ import annotations
 
-__version__ = "0.49.12"
+__version__ = "0.68.4"
 
 import argparse
 import asyncio

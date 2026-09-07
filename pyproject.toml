@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breachpilot"
-version = "0.49.12"
+version = "0.68.4"
 description = "AI-driven, locally-run penetration testing / bug bounty research agent"
 readme = "README.md"
 license = {text = "Apache-2.0"}
