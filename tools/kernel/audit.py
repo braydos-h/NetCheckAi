@@ -156,6 +156,10 @@ def _redact_nested(value: Any) -> Any:
             k: (_REDACTED if isinstance(k, str) and k.lower() in _SECRET_ARG_NAMES else _redact_nested(v))
             for k, v in value.items()
         }
+    if isinstance(value, (list, tuple)):
+        # Credential dicts nested in lists (e.g. extra={creds: [{password: ...}]})
+        # must be sanitized element-wise, not passed through.
+        return [_redact_nested(v) for v in value]
     if isinstance(value, str):
         return _mask_secret_content(value)
     return value
@@ -209,12 +213,14 @@ def _audit_log(
     if extra:
         # Optional structured context (e.g. the sandbox subsystem's container
         # id / network-policy fingerprint). Merged after the base keys so a
-        # caller-supplied override is explicit. Values are written as-is;
-        # callers must keep secrets out (sandbox audit payloads are built
-        # secret-free by construction in tools/sandbox/policy.py).
+        # caller-supplied override is explicit. Values are defensively
+        # sanitized with the same credential-redaction pipeline as ordinary
+        # argument logging — callers must still keep secrets out, but a
+        # secret-named key or secret-shaped string that slips into ``extra``
+        # never reaches disk in cleartext.
         for key, value in extra.items():
             if value is not None:
-                record[key] = value
+                record[key] = _redact_nested(value)
     # ponytail: mkdir per audit row (2x per tool call) stats the fs every time.
     parent = audit_path.parent
     if str(parent) not in _MKDIR_CACHE:

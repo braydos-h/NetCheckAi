@@ -517,12 +517,15 @@ class SandboxManager:
         """
         from tools.kernel.allowlist import _allowed_target_list, _check_allowlist
 
-        if not _allowed_target_list(self.config_dict):
+        require = bool((self.config_dict or {}).get("exploit", {}).get("require_explicit_allowlist", False))
+        if not _allowed_target_list(self.config_dict) and not require:
+            # No authorization material and no explicit-allowlist demand:
+            # nothing to enforce (the netns policy authorizes nothing).
             return
         if not target_ip:
             raise SandboxScopeError(
                 "sandbox scope gate: execution names no target (empty target_ip) "
-                "while the allowlist is non-empty -- name the "
+                "while the allowlist is enforced -- name the "
                 "destination literally so it can be checked against the allowlist"
             )
         allowed, reason = _check_allowlist(target_ip, self.config_dict)

@@ -43,9 +43,11 @@ def test_extract_msf_rhosts_empty_when_no_rhosts():
 
 
 def test_check_targets_allowlist_allowlist_not_required():
+    # Empty union + flag off: nothing to enforce against (permissive).
     cfg = {"exploit": {"require_explicit_allowlist": False, "allowed_targets": []}}
-    allowed, _ = check_targets_allowlist(["10.0.0.99"], cfg)
+    allowed, reason = check_targets_allowlist(["10.0.0.99"], cfg)
     assert allowed is True
+    assert "no allowlist configured" in reason
 
 
 def test_check_targets_allowlist_empty_targets_allowed():

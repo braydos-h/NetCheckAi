@@ -65,7 +65,19 @@ def test_check_targets_allowlist_blocks_evil() -> None:
 
 
 def test_check_targets_allowlist_disabled_when_not_required() -> None:
-    ok, _ = check_targets_allowlist(["evil.com"], {"exploit": {}})
+    # Empty union + flag off: nothing to enforce against (permissive).
+    ok, reason = check_targets_allowlist(["evil.com"], {"exploit": {}})
+    assert ok is True
+    assert "no allowlist configured" in reason
+
+
+def test_check_targets_allowlist_flag_false_still_enforces_config_union() -> None:
+    """Flag-false with a non-empty config union must still deny off-list hosts."""
+    cfg = {"exploit": {"require_explicit_allowlist": False, "allowed_targets": ["10.0.0.5"]}}
+    ok, reason = check_targets_allowlist(["evil.com"], cfg)
+    assert ok is False
+    assert "evil.com" in reason
+    ok, _ = check_targets_allowlist(["10.0.0.5"], cfg)
     assert ok is True
 
 
@@ -103,7 +115,17 @@ def test_lock_skips_bind_all_listen_wildcard() -> None:
 
 
 def test_lock_disabled_when_allowlist_not_required() -> None:
+    # Empty union + flag off: nothing to enforce against (permissive).
     assert _target_lock_block("nmap -sV 1.2.3.4", {"exploit": {}}) is None
+
+
+def test_lock_flag_false_still_enforces_config_union() -> None:
+    """Flag-false with a non-empty union must still block off-list destinations."""
+    cfg = {"exploit": {"require_explicit_allowlist": False, "allowed_targets": ["10.0.0.5"]}}
+    block = _target_lock_block("nmap -sV 1.2.3.4", cfg)
+    assert block is not None
+    assert "1.2.3.4" in block
+    assert _target_lock_block("nmap -sV 10.0.0.5", cfg) is None
 
 
 def test_lock_empty_allowlist_fail_closed() -> None:
