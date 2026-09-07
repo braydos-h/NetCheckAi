@@ -466,6 +466,8 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                         pair = _pair_fallback(target_ip, bound)
                         if pair is not None:
                             allowed, reason = pair
+                    redacted = _redact_args(dict(bound.arguments)) if audit else {}
+                    attempt_id = _extract_attempt_id(bound)
                     if audit:
                         _audit_log(
                             workspace / "exploit_audit.jsonl",
@@ -473,20 +475,35 @@ def make_require_allowlist(workspace: Path, config: dict[str, Any] | None):
                             tool_name=fn.__name__,
                             approved=allowed,
                             status="blocked" if not allowed else "started",
-                            args=_redact_args(dict(bound.arguments)),
+                            args=redacted,
+                            attempt_id=attempt_id,
                         )
                     if not allowed:
                         return f"BLOCKED: {reason}\nATTEMPT_ID: preflight\nTOOL: {fn.__name__}\nTARGET: {target_ip}"
-                    result = fn(*args, **kwargs)
+                    start = time.monotonic()
+                    try:
+                        result = fn(*args, **kwargs)
+                    except BaseException as exc:
+                        if audit:
+                            _log_failure(
+                                workspace / "exploit_audit.jsonl",
+                                target_ip=target_ip,
+                                tool_name=fn.__name__,
+                                exc=exc,
+                                args=redacted,
+                                attempt_id=attempt_id,
+                                duration_seconds=time.monotonic() - start,
+                            )
+                        raise
                     if audit:
-                        blocked = _result_is_blocked(result)
-                        _audit_log(
+                        _log_terminal(
                             workspace / "exploit_audit.jsonl",
                             target_ip=target_ip,
                             tool_name=fn.__name__,
-                            approved=not blocked,
-                            status="blocked" if blocked else "completed",
-                            args=_redact_args(dict(bound.arguments)),
+                            result=result,
+                            args=redacted,
+                            attempt_id=attempt_id,
+                            duration_seconds=time.monotonic() - start,
                         )
                     return result
 
@@ -510,23 +527,39 @@ def make_audit_tool(workspace: Path):
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 target_ip = _extract_audit_target(bound)
+                redacted = _redact_args(dict(bound.arguments))
+                attempt_id = _extract_attempt_id(bound)
                 _audit_log(
                     workspace / "exploit_audit.jsonl",
                     target_ip=target_ip,
                     tool_name=fn.__name__,
                     approved=True,
                     status="started",
-                    args=_redact_args(dict(bound.arguments)),
+                    args=redacted,
+                    attempt_id=attempt_id,
                 )
-                result = await fn(*args, **kwargs)
-                blocked = _result_is_blocked(result)
-                _audit_log(
+                start = time.monotonic()
+                try:
+                    result = await fn(*args, **kwargs)
+                except BaseException as exc:
+                    _log_failure(
+                        workspace / "exploit_audit.jsonl",
+                        target_ip=target_ip,
+                        tool_name=fn.__name__,
+                        exc=exc,
+                        args=redacted,
+                        attempt_id=attempt_id,
+                        duration_seconds=time.monotonic() - start,
+                    )
+                    raise
+                _log_terminal(
                     workspace / "exploit_audit.jsonl",
                     target_ip=target_ip,
                     tool_name=fn.__name__,
-                    approved=not blocked,
-                    status="blocked" if blocked else "completed",
-                    args=_redact_args(dict(bound.arguments)),
+                    result=result,
+                    args=redacted,
+                    attempt_id=attempt_id,
+                    duration_seconds=time.monotonic() - start,
                 )
                 return result
 
@@ -540,23 +573,39 @@ def make_audit_tool(workspace: Path):
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 target_ip = _extract_audit_target(bound)
+                redacted = _redact_args(dict(bound.arguments))
+                attempt_id = _extract_attempt_id(bound)
                 _audit_log(
                     workspace / "exploit_audit.jsonl",
                     target_ip=target_ip,
                     tool_name=fn.__name__,
                     approved=True,
                     status="started",
-                    args=_redact_args(dict(bound.arguments)),
+                    args=redacted,
+                    attempt_id=attempt_id,
                 )
-                result = fn(*args, **kwargs)
-                blocked = _result_is_blocked(result)
-                _audit_log(
+                start = time.monotonic()
+                try:
+                    result = fn(*args, **kwargs)
+                except BaseException as exc:
+                    _log_failure(
+                        workspace / "exploit_audit.jsonl",
+                        target_ip=target_ip,
+                        tool_name=fn.__name__,
+                        exc=exc,
+                        args=redacted,
+                        attempt_id=attempt_id,
+                        duration_seconds=time.monotonic() - start,
+                    )
+                    raise
+                _log_terminal(
                     workspace / "exploit_audit.jsonl",
                     target_ip=target_ip,
                     tool_name=fn.__name__,
-                    approved=not blocked,
-                    status="blocked" if blocked else "completed",
-                    args=_redact_args(dict(bound.arguments)),
+                    result=result,
+                    args=redacted,
+                    attempt_id=attempt_id,
+                    duration_seconds=time.monotonic() - start,
                 )
                 return result
 
