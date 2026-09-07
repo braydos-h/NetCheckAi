@@ -121,7 +121,7 @@ def create_app(
             from tools.api.demo_seed import ensure_demo_seed
 
             ensure_demo_seed(persistence, reports_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- demo-seed is best-effort idempotent startup; a seed failure must not block the daemon
             pass
         # Warm process-global caches (plugins/skills/model router) in the
         # background so the first POST /runs doesn't pay cold-start costs.

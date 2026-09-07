@@ -713,7 +713,8 @@ def _ensure_chatgpt_runtime(args: argparse.Namespace) -> int:
 
     try:
         config = load_config(args.config)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 -- corrupt config must not crash the provider probe; fall through as non-chatgpt
+        ui.warning(f"Could not read config ({args.config}): {exc} — skipping ChatGPT runtime setup.")
         config = {}
     if get_ai_provider(config) != "chatgpt":
         return 0

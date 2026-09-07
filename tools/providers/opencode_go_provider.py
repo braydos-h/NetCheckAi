@@ -239,7 +239,7 @@ def _convert_messages_to_input(messages: Any) -> list[dict[str, Any]]:
             try:
                 role = str(_get(msg, "role", "") or "user")
                 content = _normalize_content(_get(msg, "content", ""))
-            except Exception:
+            except Exception:  # noqa: BLE001 -- foreign-model payload shapes vary; skip uncoercible messages
                 continue
             if role == "tool":
                 _attach_output(None, "", content)
@@ -300,7 +300,7 @@ def _convert_messages_to_input(messages: Any) -> list[dict[str, Any]]:
                 if isinstance(args, dict):
                     try:
                         args_str = json.dumps(args, ensure_ascii=False)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- non-serializable args fall back to empty object
                         args_str = "{}"
                 elif isinstance(args, str):
                     args_str = args
@@ -309,7 +309,7 @@ def _convert_messages_to_input(messages: Any) -> list[dict[str, Any]]:
                 else:
                     try:
                         args_str = json.dumps(args, ensure_ascii=False)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- non-serializable args fall back to str()
                         args_str = str(args)
 
                 call_id = _get(tc, "id", None) or _get(tc, "call_id", None) or _get(func, "call_id", None)
@@ -454,7 +454,7 @@ def _normalize_responses_output(data: dict[str, Any], fallback_model: str) -> di
                 if isinstance(arguments, dict):
                     try:
                         arguments = json.dumps(arguments, ensure_ascii=False)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- non-serializable arguments fall back to empty object
                         arguments = "{}"
                 elif arguments is None:
                     arguments = "{}"
@@ -552,7 +552,7 @@ def _parse_sse_stream(
         if isinstance(raw_line, bytes):
             try:
                 line = raw_line.decode("utf-8")
-            except Exception:
+            except Exception:  # noqa: BLE001 -- hostile byte sequences decode with replacement, never crash the stream
                 line = raw_line.decode("utf-8", errors="replace")
         else:
             line = str(raw_line)
@@ -614,7 +614,7 @@ def _parse_sse_stream(
             if isinstance(delta, dict):
                 try:
                     delta = json.dumps(delta)
-                except Exception:
+                except Exception:  # noqa: BLE001 -- non-serializable stream deltas fall back to str()
                     delta = str(delta)
             slot = _ensure_slot(call_id)
             # Accumulate
@@ -638,7 +638,7 @@ def _parse_sse_stream(
                 if isinstance(args, dict):
                     try:
                         args = json.dumps(args)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- non-serializable tool args fall back to str()
                         args = str(args)
                 if consumed_event.endswith("added"):
                     # Create slot
@@ -691,7 +691,7 @@ def _parse_sse_stream(
                                 if isinstance(args, dict):
                                     try:
                                         args = json.dumps(args)
-                                    except Exception:
+                                    except Exception:  # noqa: BLE001 -- non-serializable tool args fall back to str()
                                         args = str(args)
                                 tool_accum[call_id] = {
                                     "id": call_id,
@@ -755,7 +755,7 @@ def _parse_sse_stream(
         if not isinstance(args, str):
             try:
                 args = json.dumps(args)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- non-serializable slot args fall back to str()
                 args = str(args)
             slot["function"]["arguments"] = args
         assembled.append(slot)
@@ -814,7 +814,7 @@ class OpenCodeGoResponsesClient:
         if raw_timeout is None:
             try:
                 raw_timeout = float(merged.get("request_timeout_seconds") or _DEFAULT_TIMEOUT)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- malformed timeout config falls back to default, never crashes init
                 raw_timeout = _DEFAULT_TIMEOUT
         self.timeout = float(raw_timeout) if raw_timeout is not None else _DEFAULT_TIMEOUT
 
@@ -866,10 +866,10 @@ class OpenCodeGoResponsesClient:
         body = ""
         try:
             body = response.text or ""
-        except Exception:
+        except Exception:  # noqa: BLE001 -- hostile response objects must still yield a sanitized error
             try:
                 body = json.dumps(response.json())
-            except Exception:
+            except Exception:  # noqa: BLE001 -- last-resort empty body, redacted below
                 body = ""
         # Redact key
         body = self._redacted_error(body)
@@ -929,7 +929,9 @@ class OpenCodeGoResponsesClient:
             if alias in kwargs and kwargs[alias] is not None:
                 try:
                     val = int(kwargs[alias])
-                except Exception:
+                except (TypeError, ValueError):
+                    # Non-numeric caller input: try the next alias (int() on
+                    # arbitrary input raises exactly these two).
                     continue
                 payload["max_output_tokens"] = val
                 break
@@ -1071,7 +1073,7 @@ class OpenCodeGoResponsesClient:
                     # Don't cache failures
                     return []
                 data = resp.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- discovery probe: failure degrades to registry mode, never raises
             return []
 
         ids: list[str] = []
@@ -1215,7 +1217,7 @@ def build_opencode_go_router(
         model_ids = []
         try:
             discovered = shared.discover_models(base_url, cfg)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- discovery probe: failure keeps configured models, never raises
             discovered = []
         if discovered:
             # If discovery returned ids but we have no raw metadata, filter by id heuristic

@@ -415,7 +415,7 @@ class ChatGptProxyManager:
             with httpx.Client(timeout=_HEALTH_TIMEOUT) as client:
                 resp = client.get(f"{_root_url(cfg)}/health")
                 return resp.status_code < 500
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health probe: any transport error means not-healthy (fail-closed)
             return False
 
     # --- ensure running ----------------------------------------------------
@@ -606,7 +606,7 @@ class ChatGptProxyManager:
                 resp = client.get(f"{url_base}/models")
                 resp.raise_for_status()
                 data = resp.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- model discovery probe: failure degrades to registry mode, never raises
             return []
         ids: list[str] = []
         for item in data.get("data") or []:
@@ -647,14 +647,14 @@ class ChatGptProxyManager:
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             subprocess.run(**kwargs)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- best-effort proxy stop; must never raise (called from lifecycle paths)
             pass
 
 
 def _atexit_shutdown() -> None:
     try:
         ChatGptProxyManager.get().shutdown()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- atexit shutdown must never raise during interpreter teardown
         pass
 
 

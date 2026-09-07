@@ -341,7 +341,7 @@ def _log_failure(
 def _result_is_blocked(result: Any) -> bool:
     try:
         text = str(result).lstrip().upper()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- str() on hostile result objects must never break audit classification
         return False
     return text.startswith(_BLOCKED_RESULT_MARKERS)
 

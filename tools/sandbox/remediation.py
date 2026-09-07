@@ -129,7 +129,7 @@ def _image_name_from_config(config: dict[str, Any] | None) -> str:
         cfg = SandboxConfig.from_config(config)
         if cfg.image:
             return cfg.image
-    except Exception:
+    except Exception:  # noqa: BLE001 -- config probe fallback to default image; boot must not fail on unreadable config
         pass
     return IMAGE_NAME
 
