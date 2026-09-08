@@ -96,8 +96,14 @@ export function useRunEvents(runId: string | null | undefined, options: UseRunEv
               }
               return next;
             });
+            // The detail cache is patched above; only terminal transitions
+            // change the runs list (active → terminal), so only they refetch
+            // it. Invalidating ["runs"] unprefixed would also refetch this
+            // run's detail/decisions/artifacts on every state event.
+            if (isTerminalState(state as RunState)) {
+              void queryClient.invalidateQueries({ queryKey: ["runs"], predicate: isRunListQuery });
+            }
           }
-          void queryClient.invalidateQueries({ queryKey: ["runs"] });
         } else if (event.type === "approval") {
           void queryClient.invalidateQueries({ queryKey: queryKeys.runDecisions(id) });
         } else if (event.type === "artifact") {
