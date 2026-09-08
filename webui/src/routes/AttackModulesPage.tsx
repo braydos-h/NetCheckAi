@@ -78,7 +78,14 @@ export function AttackModulesPage() {
       </div>
 
       {modules.isLoading && <SkeletonRows count={8} />}
-      {modules.error && <div className="text-sm text-destructive">Failed to load attack modules.</div>}
+      {modules.error && (
+        <div className="flex items-center gap-2 text-sm text-destructive">
+          <span>Failed to load attack modules.</span>
+          <button type="button" onClick={() => modules.refetch()} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">
+            Retry
+          </button>
+        </div>
+      )}
       {!modules.isLoading && !modules.error && list.length === 0 && (
         <p className="text-sm text-muted-foreground">No modules match.</p>
       )}

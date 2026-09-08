@@ -613,3 +613,31 @@ def test_ad_modules_registered() -> None:
 
     for name in ("ADCSEnum", "BloodHoundCollect", "ResponderRelay", "GoldenTicket", "SMBSigningCheck"):
         assert registry.get_module(name) is not None, f"{name} not registered"
+
+
+# ── P3-12: canary-secret audit proof ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_asrep_roast_password_never_reaches_audit_log(monkeypatch, tmp_path: Path) -> None:
+    """P3-12 exit proof: a canary password passed to an effects-path tool
+    must not appear in exploit_audit.jsonl (arg redaction at the audit
+    layer). The tool itself still receives the real secret (argv proves it)."""
+    run, cap = _capture_run()
+    monkeypatch.setattr(subprocess, "run", run)
+    mcp = _make_server(tmp_path)
+    canary = "CANARY-P3-12-hunter2-secret"
+    text = _text(
+        await mcp.call_tool(
+            "asrep_roast",
+            {"target_ip": "10.0.0.1", "domain": "corp", "username": "u", "password": canary},
+        )
+    )
+    assert "ASREP_ROAST_RESULT: completed" in text
+    # The tool got the real secret (functional path intact).
+    assert any(canary in str(a) for a in cap["argv"])
+    # The audit trail did not.
+    audit = tmp_path / "exploit_audit.jsonl"
+    assert audit.exists()
+    raw = audit.read_text(encoding="utf-8")
+    assert canary not in raw

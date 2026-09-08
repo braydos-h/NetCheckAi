@@ -80,6 +80,9 @@ export function Layout() {
   const [showHelp, setShowHelp] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  // Per-session banner dismissal: hides the notice without touching the
+  // permission mode (the X must never silently downgrade to read_only).
+  const [permBannerDismissed, setPermBannerDismissed] = useState<string | null>(null);
 
   // Backend OS for the sidebar badge (same source as WindowsPerformanceWarning:
   // platform.system(), never the browser UA). Falls back to "Local" while
@@ -294,7 +297,7 @@ export function Layout() {
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col xl:overflow-hidden">
         <WindowsPerformanceWarning />
-        {mode === "approve" && (
+        {mode === "approve" && permBannerDismissed !== "approve" && (
           <div
             className="flex items-center gap-2 border-b border-yellow-500/30 bg-yellow-500/10 px-4 py-1.5 text-xs text-yellow-300"
             role="status"
@@ -303,7 +306,7 @@ export function Layout() {
             <span>Approve mode: non-destructive decisions auto-answered.</span>
             <button
               type="button"
-              onClick={() => setMode("read_only")}
+              onClick={() => setPermBannerDismissed("approve")}
               aria-label="Dismiss banner"
               className="ml-auto inline-flex h-4 w-4 items-center justify-center rounded transition-colors hover:bg-foreground/10"
             >
@@ -311,7 +314,7 @@ export function Layout() {
             </button>
           </div>
         )}
-        {mode === "full_access" && (
+        {mode === "full_access" && permBannerDismissed !== "full_access" && (
           <div
             className="flex items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-4 py-1.5 text-xs text-red-200"
             role="status"
@@ -320,7 +323,7 @@ export function Layout() {
             <span>Full access mode: ALL decisions auto-answered, including destructive confirmations.</span>
             <button
               type="button"
-              onClick={() => setMode("read_only")}
+              onClick={() => setPermBannerDismissed("full_access")}
               aria-label="Dismiss banner"
               className="ml-auto inline-flex h-4 w-4 items-center justify-center rounded transition-colors hover:bg-foreground/10"
             >
@@ -343,7 +346,10 @@ export function Layout() {
             )}
           </div>
         )}
-        <div className="flex min-h-0 flex-1 flex-col overflow-auto min-w-0 animate-fade-in-up" key={location.pathname}>
+        {/* No key on the route wrapper: keying by pathname remounts the
+            whole subtree (losing tab state, refetching) on every navigation.
+            The entrance animation plays once on mount. */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto min-w-0 animate-fade-in-up">
           <Outlet />
         </div>
         <footer className="flex items-center justify-between gap-2 border-t px-4 py-2 text-xs text-muted-foreground">

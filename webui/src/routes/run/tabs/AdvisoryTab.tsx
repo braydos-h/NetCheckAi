@@ -10,6 +10,9 @@ import { Spinner } from "@/components/Loading";
 interface AdvisoryPanelProps {
   tools: Array<{ function?: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
   toolsLoading: boolean;
+  /** Tool-list fetch failure — surfaced with a retry like the other tabs. */
+  toolsError?: unknown;
+  onRetryTools?: () => void;
   features: string[];
   runActive: boolean;
   onCall: (name: string, args: Record<string, unknown>) => void;
@@ -55,7 +58,7 @@ const ADVISORY_TOOLS: Array<{ name: string; feature: string; label: string; args
   },
 ];
 
-export function AdvisoryPanel({ tools, toolsLoading, features, runActive, onCall, calling, lastResult }: AdvisoryPanelProps) {
+export function AdvisoryPanel({ tools, toolsLoading, toolsError, onRetryTools, features, runActive, onCall, calling, lastResult }: AdvisoryPanelProps) {
   const [selected, setSelected] = useState<string>("");
   const [args, setArgs] = useState<string>("{}");
   const [result, setResult] = useState<string>("");
@@ -63,6 +66,17 @@ export function AdvisoryPanel({ tools, toolsLoading, features, runActive, onCall
   const toolNames = new Set(tools.map((t) => t.function?.name ?? ""));
   const available = ADVISORY_TOOLS.filter((t) => features.includes(t.feature));
   const activeTool = ADVISORY_TOOLS.find((t) => t.name === selected);
+
+  if (toolsError) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <span>Failed to load tools.</span>
+        {onRetryTools && (
+          <Button size="sm" variant="outline" onClick={onRetryTools}>Retry</Button>
+        )}
+      </div>
+    );
+  }
 
   if (!runActive && tools.length === 0) {
     return (

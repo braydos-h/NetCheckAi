@@ -9,6 +9,9 @@ interface ManualToolPanelProps {
   runId: string;
   tools: Array<{ function?: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
   isLoading: boolean;
+  /** Tool-list fetch failure — surfaced with a retry like the other tabs. */
+  toolsError?: unknown;
+  onRetryTools?: () => void;
   selectedTool: string;
   onSelect: (name: string) => void;
   args: string;
@@ -22,6 +25,8 @@ interface ManualToolPanelProps {
 export function ManualToolPanel({
   tools,
   isLoading,
+  toolsError,
+  onRetryTools,
   selectedTool,
   onSelect,
   args,
@@ -46,6 +51,16 @@ export function ManualToolPanel({
   };
 
   if (isLoading) return <Spinner label="Loading tools..." />;
+  if (toolsError) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <span>Failed to load tools.</span>
+        {onRetryTools && (
+          <Button size="sm" variant="outline" onClick={onRetryTools}>Retry</Button>
+        )}
+      </div>
+    );
+  }
   if (tools.length === 0) {
     return (
       <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">

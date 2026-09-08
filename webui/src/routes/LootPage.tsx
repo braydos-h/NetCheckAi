@@ -12,7 +12,9 @@ import { useState } from "react";
 export function LootPage() {
   const { runId } = useParams<{ runId: string }>();
   const loot = useLoot(runId ?? null);
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  // Keyed by the stable loot key (timestamp/type/host), not the list index,
+  // so a refetch that reorders rows can't flip which card is expanded.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   return (
     <div className="space-y-4 p-4 md:p-6">
@@ -46,8 +48,8 @@ export function LootPage() {
         {(loot.data?.loot.length ?? 0) > 0 && (
           <div className="space-y-2">
             {loot.data?.loot.map((item, i) => {
-              const isOpen = !!expanded[i];
               const key = `${item.timestamp ?? i}-${item.loot_type}-${item.source_host ?? ""}`;
+              const isOpen = !!expanded[key];
               return (
                 <Card key={key}>
                   <CardHeader className="pb-2">
@@ -58,7 +60,7 @@ export function LootPage() {
                         size="sm"
                         variant="ghost"
                         className="ml-auto h-7"
-                        onClick={() => setExpanded((p) => ({ ...p, [i]: !p[i] }))}
+                        onClick={() => setExpanded((p) => ({ ...p, [key]: !p[key] }))}
                         aria-label={isOpen ? "Collapse" : "Expand"}
                       >
                         <Expand className={cn("h-3.5 w-3.5 transition-transform", isOpen && "rotate-180")} />

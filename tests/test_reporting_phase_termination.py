@@ -253,9 +253,10 @@ async def test_no_path_checkpoint_fires_without_can_terminate_monkeypatch(tmp_pa
 
 @pytest.mark.asyncio
 async def test_unmapped_tool_call_does_not_increment_reporting(tmp_path):
-    """A tool the phase map does not name falls into the recon (else) branch --
-    it must never be counted as 'reporting'. The summary turn is the only
-    source of the reporting credit, visible in the checkpoint evidence."""
+    """A tool the phase map does not name must satisfy NO phase minimum --
+    neither 'reporting' nor 'recon' (a hallucinated/unmapped call is not recon
+    work). The summary turn is the only source of the reporting credit,
+    visible in the checkpoint evidence."""
     from tools.exploit_agent import run_exploit_agent
     from tools.exploit_agent.runner import CheckpointOutcome
 
@@ -266,7 +267,7 @@ async def test_unmapped_tool_call_does_not_increment_reporting(tmp_path):
         _tool_call_msg("check_os"),
         _tool_call_msg("check_os"),
         _tool_call_msg("run_exploit_terminal"),
-        # Unmapped by the phase map (else branch → recon), NOT reporting.
+        # Unmapped by the phase map (no phase credit at all), NOT reporting.
         _tool_call_msg("list_workspace"),
         _tool_call_msg("search_cve_intel"),
         _done_msg(),
@@ -290,8 +291,9 @@ async def test_unmapped_tool_call_does_not_increment_reporting(tmp_path):
     assert len(hook.calls) == 1
     assert hook.calls[0].kind == "no_path"
     counts = hook.calls[0].evidence["phase_counts"]
-    # 2 check_os + the unmapped tool all landed in recon...
-    assert counts["recon"] == 3
+    # Only the 2 check_os calls count as recon; the unmapped list_workspace
+    # call earns no phase credit (it is not recon work).
+    assert counts["recon"] == 2
     # ...and reporting was credited exactly once, by the summary turn alone.
     assert counts["reporting"] == 1
     assert result["total_actions"] == 5

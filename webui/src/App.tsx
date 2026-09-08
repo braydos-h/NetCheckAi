@@ -1,7 +1,8 @@
 // BreachPilot by @braydos-h — https://github.com/braydos-h/BreachPilot
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Layout } from "@/components/Layout";
 import { OnboardingGate } from "@/components/OnboardingGate";
 import { TokenGate } from "@/components/TokenGate";
@@ -34,6 +35,14 @@ const BenchmarksHistoryPage = lazy(() => import("@/routes/BenchmarksHistoryPage"
 const BenchmarkRunPage = lazy(() => import("@/routes/BenchmarkRunPage").then((m) => ({ default: m.BenchmarkRunPage })));
 const OpsPage = lazy(() => import("@/routes/OpsPage").then((m) => ({ default: m.OpsPage })));
 
+/** Route-scoped error boundary: a render crash in one route shows a fallback
+ *  with a retry, and navigating away auto-resets it via the pathname key.
+ *  (The main.tsx boundary has no reset key and never resets.) */
+function RouteErrorBoundary({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -49,7 +58,7 @@ export default function App() {
                 }
               >
                 <Routes>
-                  <Route element={<Layout />}>
+                  <Route element={<RouteErrorBoundary><Layout /></RouteErrorBoundary>}>
                     <Route path="/" element={<HomePage />} />
                     <Route path="/sessions" element={<RunListPage />} />
                     <Route path="/runs/new" element={<NewRunPage />} />

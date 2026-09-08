@@ -57,7 +57,7 @@ import threading
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from tools.api.errors import sanitize
 
@@ -486,10 +486,30 @@ class RunEventBroker:
         _enqueue_plugin_event(event)
         return event
 
+    def _append_event_sync(self, event: dict[str, Any]) -> None:
+        """Blocking JSONL append (open/write/flush/fsync). Runs in a worker thread."""
+        self._events_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._events_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
     async def replay(self, after: int = 0) -> list[dict[str, Any]]:
         """Replay events with sequence > ``after`` from JSONL."""
         async with self._lock:
-            return self._replay_locked(after)
+            if self._ring and after >= self._ring[0]["sequence"] - 1:
+                return [event for event in self._ring if event["sequence"] > after]
+            path = self._events_path
+        # ponytail: file read off-loop without the lock (was a sync read
+        # under the lock). Ring fast-path above keeps the common case lock-only.
+        full = await asyncio.to_thread(self._read_jsonl_events, path)
+        return [
+            evt
+            for evt in full
+            if isinstance(evt.get("sequence"), int)
+            and not isinstance(evt.get("sequence"), bool)
+            and evt["sequence"] > after
+        ]
 
     def _replay_locked(self, after: int) -> list[dict[str, Any]]:
         if self._ring and after >= self._ring[0]["sequence"] - 1:
@@ -549,75 +569,82 @@ class RunEventBroker:
           newest-first (descending) so the client can page older.
         - ``after=X``: events with sequence > X, ascending (unchanged).
         """
+        # ponytail: snapshot under the lock, release, then read the file
+        # off-loop without the lock (was holding the lock across the await,
+        # stalling every emitter/subscriber for the whole file read).
         async with self._lock:
             if self._ring and self._ring[0]["sequence"] == 1:
-                full = list(self._ring)
+                full: list[dict[str, Any]] = list(self._ring)
+                path: Path | None = None
             else:
-                full = await asyncio.to_thread(self._read_jsonl_events, self._events_path)
+                full = []
+                path = self._events_path
+        if path is not None:
+            full = await asyncio.to_thread(self._read_jsonl_events, path)
 
-            oldest = full[0]["sequence"] if full else None
-            latest = full[-1]["sequence"] if full else None
+        oldest = full[0]["sequence"] if full else None
+        latest = full[-1]["sequence"] if full else None
 
-            first_returned: int | None = None
-            last_returned: int | None = None
-            omitted_before = 0
-            next_before: int | None = None
-            has_more_before = False
+        first_returned: int | None = None
+        last_returned: int | None = None
+        omitted_before = 0
+        next_before: int | None = None
+        has_more_before = False
 
-            if tail is not None:
-                if tail < len(full):
-                    events = full[-tail:]
-                else:
-                    events = list(full)
-                if events:
-                    first_returned = events[0]["sequence"]  # type: ignore[index]
-                    last_returned = events[-1]["sequence"]  # type: ignore[index]
-                    omitted_before = len(full) - len(events)
-                    has_more_before = omitted_before > 0
-                    next_before = first_returned if has_more_before else None
-                else:
-                    events = []
-                    has_more_before = False
-                    omitted_before = 0
-            elif before is not None:
-                older_full = [e for e in full if e["sequence"] < before]  # type: ignore[index]
-                if limit is not None:
-                    if limit < len(older_full):
-                        older = older_full[-limit:]
-                    else:
-                        older = list(older_full)
-                else:
-                    older = older_full
-                events = list(reversed(older))
-                if events:
-                    # older is ascending; events is descending.
-                    first_returned = older[0]["sequence"]  # oldest in page
-                    last_returned = older[-1]["sequence"]  # newest in page
-                    omitted_before = len(older_full) - len(older)
-                    has_more_before = omitted_before > 0
-                    next_before = first_returned if has_more_before else None
-                else:
-                    has_more_before = False
-                    omitted_before = 0
+        if tail is not None:
+            if tail < len(full):
+                events = full[-tail:]
             else:
-                events = [e for e in full if e["sequence"] > after]  # type: ignore[index]
-                if events:
-                    first_returned = events[0]["sequence"]  # type: ignore[index]
-                    last_returned = events[-1]["sequence"]  # type: ignore[index]
+                events = list(full)
+            if events:
+                first_returned = events[0]["sequence"]  # type: ignore[index]
+                last_returned = events[-1]["sequence"]  # type: ignore[index]
+                omitted_before = len(full) - len(events)
+                has_more_before = omitted_before > 0
+                next_before = first_returned if has_more_before else None
+            else:
+                events = []
                 has_more_before = False
                 omitted_before = 0
-                next_before = None
+        elif before is not None:
+            older_full = [e for e in full if e["sequence"] < before]  # type: ignore[index]
+            if limit is not None:
+                if limit < len(older_full):
+                    older = older_full[-limit:]
+                else:
+                    older = list(older_full)
+            else:
+                older = older_full
+            events = list(reversed(older))
+            if events:
+                # older is ascending; events is descending.
+                first_returned = older[0]["sequence"]  # oldest in page
+                last_returned = older[-1]["sequence"]  # newest in page
+                omitted_before = len(older_full) - len(older)
+                has_more_before = omitted_before > 0
+                next_before = first_returned if has_more_before else None
+            else:
+                has_more_before = False
+                omitted_before = 0
+        else:
+            events = [e for e in full if e["sequence"] > after]  # type: ignore[index]
+            if events:
+                first_returned = events[0]["sequence"]  # type: ignore[index]
+                last_returned = events[-1]["sequence"]  # type: ignore[index]
+            has_more_before = False
+            omitted_before = 0
+            next_before = None
 
-            return {
-                "events": events,
-                "oldest_sequence": oldest,
-                "latest_sequence": latest,
-                "has_more_before": has_more_before,
-                "first_returned_sequence": first_returned,
-                "last_returned_sequence": last_returned,
-                "omitted_before": omitted_before,
-                "next_before": next_before,
-            }
+        return {
+            "events": events,
+            "oldest_sequence": oldest,
+            "latest_sequence": latest,
+            "has_more_before": has_more_before,
+            "first_returned_sequence": first_returned,
+            "last_returned_sequence": last_returned,
+            "omitted_before": omitted_before,
+            "next_before": next_before,
+        }
 
     async def subscribe(self, after: int = 0) -> "EventSubscription":
         """Subscribe to live events. ``after`` replays from that cursor first."""

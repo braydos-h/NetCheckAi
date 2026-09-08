@@ -71,6 +71,9 @@ export function useRunEvents(runId: string | null | undefined, options: UseRunEv
   const closedByUnmountRef = useRef(false);
   const wsFailureCountRef = useRef(0);
   const runIdRef = useRef<string | null>(null);
+  // Latest connectWs, mirrored into a ref so the SSE fallback (defined first)
+  // can re-probe WebSocket without creating a hook dependency cycle.
+  const connectWsRef = useRef<(id: string) => void>(() => undefined);
   const pendingRef = useRef<RunEvent[]>([]);
   const rafRef = useRef<number | null>(null);
   // Silence watchdog state: last frame of any kind (heartbeats count), a
@@ -243,10 +246,19 @@ export function useRunEvents(runId: string | null | undefined, options: UseRunEv
             // Routed through the shared funnel so the token gate actually
             // appears (clearStoredToken alone doesn't re-render it).
             expireSession("Your session token was rejected by the API.");
-          } else {
-            setAuthError(error.message);
+            setStreamStatus("error");
+            return;
           }
+          // Non-auth SSE death (proxy buffering, idle timeout): re-probe
+          // WebSocket once — the WS path may have recovered while SSE kept
+          // failing, and SSE never re-probes on its own.
+          setAuthError(error.message);
           setStreamStatus("error");
+          if (!closedByUnmountRef.current && runIdRef.current === id) {
+            wsFailureCountRef.current = 0;
+            attemptRef.current = 0;
+            connectWsRef.current(id);
+          }
         },
       });
       sseHandleRef.current = handle;
@@ -358,13 +370,20 @@ export function useRunEvents(runId: string | null | undefined, options: UseRunEv
           return;
         }
         if (event.code === WS_CLOSE_CURSOR) {
+          // Server rejected the cursor (event-log compaction raced the
+          // replay). Reset to zero and reseed, then reconnect immediately —
+          // waiting out the backoff ladder would leave the stream dark.
           lastSeqRef.current = 0;
           eventsRef.current = [];
           droppedRef.current = 0;
           setEvents([]);
           setDropped(0);
           eventStore.clear(id);
-          void seedEvents(id);
+          attemptRef.current = 0;
+          void seedEvents(id).then(() => {
+            if (runIdRef.current === id && !closedByUnmountRef.current) connectWs(id);
+          });
+          return;
         }
         if (event.code === WS_CLOSE_NOT_FOUND) {
           setAuthError("Run not found.");
@@ -385,6 +404,11 @@ export function useRunEvents(runId: string | null | undefined, options: UseRunEv
     },
     [handleEvent, connectSse, seedEvents],
   );
+
+  // Mirror into the ref so the SSE fallback's onFatal can re-probe WS.
+  useEffect(() => {
+    connectWsRef.current = connectWs;
+  }, [connectWs]);
 
   const reconnect = useCallback(() => {
     if (!runIdRef.current || closedByUnmountRef.current) return;

@@ -628,17 +628,30 @@ export function HomePage() {
             </Button>
           </div>
 
-          {/* Stats strip */}
+          {/* Stats strip. While loading with no cached data, hold skeletons
+              instead of flashing 0s; keepPreviousData in useRuns means
+              refetches keep the previous rows visible. */}
+          {runs.isLoading && rows.length === 0 ? (
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-4" role="status" aria-label="Loading stats">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="bg-card/60 px-4 py-3">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">&nbsp;</div>
+                  <div className="mt-1 h-7 w-12 animate-pulse rounded bg-muted/60" />
+                </div>
+              ))}
+            </div>
+          ) : (
           <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-4">
             <Stat
               label="Total runs"
               value={rows.length.toString()}
-              hint={runs.isLoading ? "loading" : undefined}
+              hint={runs.isFetching && rows.length === 0 ? "loading" : undefined}
             />
             <Stat label="Active" value={activeRun ? "1" : "0"} accent={activeRun ? "yellow" : undefined} />
             <Stat label="Completed" value={doneCount.toString()} accent="emerald" />
             <Stat label="Failed" value={failedCount.toString()} accent={failedCount > 0 ? "red" : undefined} />
           </div>
+          )}
         </div>
       </section>
 

@@ -93,9 +93,10 @@ class AttackModuleExecutor:
         # output, instead of treating the module's dict as dead data. When wired
         # (AutonomousOrchestrator passes its own _tool_executor through), a
         # script/suggested_command is run, the output is classified via
-        # ``classify_exploit_result``, and ``shell_type`` / ``privilege_level``
-        # are only set when a real compromise marker (meterpreter / uid=0 / NT
-        # AUTHORITY\SYSTEM) appears -- so ``access_achieved`` and the downstream
+        # ``classify_exploit_outcome`` (outcome_truth, strict), and
+        # ``shell_type`` / ``privilege_level`` are only set when a real
+        # compromise marker (meterpreter / uid=0 / NT AUTHORITY\SYSTEM) appears
+        # -- so ``access_achieved`` and the downstream
         # privesc/lateral phases only fire on a verified foothold. Unwired
         # (legacy callers, most tests) -> behaves exactly as before: module
         # dicts pass through unchanged.
@@ -630,16 +631,31 @@ class AttackModuleExecutor:
             {"command": command[:200], "output_len": len(output_text)},
         )
 
-        # Conservative classification (Phase 1.1). Lazy import -- the dep lives
-        # in tools/exploit_agent which is always present in the runtime, but the
-        # import is deferred so a stale/missing module never breaks the
-        # executor's hot path.
+        # Strict classification (outcome_truth): the legacy loose classifier
+        # confirmed on bare 'meterpreter' / 'root' / trailing '$/#/>', so the
+        # executor + adapter route through outcome_truth and keep the legacy
+        # classify ONLY as an explicit low-confidence hint -- never as
+        # access_achieved=True. Lazy import; a missing dep degrades to unknown.
         try:
-            from tools.exploit_agent.outcome_classify import classify_exploit_result
+            from tools.exploit_agent.outcome_truth import classify_exploit_outcome
 
-            classification = classify_exploit_result(output_text)
+            classification = classify_exploit_outcome(output_text)
         except Exception:
             classification = {"outcome": "unknown", "shell_type": "", "privilege_level": "", "evidence": []}
+        try:
+            from tools.exploit_agent.outcome_classify import classify_exploit_result as _legacy_classify
+
+            legacy = _legacy_classify(output_text)
+            if (
+                str(classification.get("outcome", "unknown")).lower() != "compromise"
+                and str(legacy.get("outcome", "unknown")).lower() == "compromise"
+            ):
+                classification = dict(classification)
+                evidence = list(classification.get("evidence", []) or [])
+                evidence.append("hint:legacy-classifier-only (low confidence, NOT access)")
+                classification["evidence"] = evidence
+        except Exception:
+            pass
 
         return output_text, classification
 

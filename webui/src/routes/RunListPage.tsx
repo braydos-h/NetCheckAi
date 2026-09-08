@@ -139,12 +139,19 @@ export function RunListPage() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-lg font-semibold">Sessions</h1>
           <div className="flex items-center gap-2">
-            <Button asChild size="sm" disabled={atCapacity} title={atCapacity ? `${maxConcurrent} run(s) already active (api.max_concurrent_runs)` : undefined}>
-              <Link to="/runs/new">
+            {atCapacity ? (
+              <Button size="sm" disabled title={`${maxConcurrent} run(s) already active (api.max_concurrent_runs)`}>
                 <Plus className="h-4 w-4" />
                 New run
-              </Link>
-            </Button>
+              </Button>
+            ) : (
+              <Button asChild size="sm">
+                <Link to="/runs/new">
+                  <Plus className="h-4 w-4" />
+                  New run
+                </Link>
+              </Button>
+            )}
           </div>
         </div>
 

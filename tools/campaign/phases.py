@@ -18,6 +18,7 @@ from typing import Any
 
 from tools.attack_modules import ModuleContext
 from tools.logging_setup import get_logger
+from tools.snapshots import autonomy_pack_guidance
 from tools.validation_utils import is_local_target
 
 from tools.campaign.state import AttackPhase, AttackState, AttackTask, TaskStatus, _report_autonomous_progress
@@ -834,19 +835,12 @@ async def _phase_killchain(self, state: AttackState) -> bool:
     the normal module-planning phases.
 
     Returns True only when the FULL edge path verified (goal state reached —
-    the caller skips free-form exploitation); False otherwise (verified
-    partial progress is kept on the graph, but the caller falls back to the
-    normal module-planning phases to finish the job). P3-11 pack gate: no
-    snapshot net fails fast with guidance (timeline event, no playbooks).
+    the caller skips free-form exploitation); False otherwise. P3-11 pack
+    gate: no snapshot net fails fast (timeline event, no playbooks).
     """
-    try:
-        from tools.snapshots import autonomy_pack_guidance as _pack_guidance
-
-        if _g := _pack_guidance(self._mission):
-            state.add_timeline_event("killchain_blocked_no_snapshots", _g)
-            return False
-    except Exception:  # ponytail: bare except intentional — gate failure means no gate
-        pass
+    if _g := autonomy_pack_guidance(self._mission):
+        state.add_timeline_event("killchain_blocked_no_snapshots", _g)
+        return False
     machine = self._get_killchain_machine(state)
     if machine is None:
         return False

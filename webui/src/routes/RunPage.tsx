@@ -19,6 +19,7 @@ import { deriveRunState } from "@/lib/deriveRun";
 import { FastReconProgress } from "@/components/FastReconProgress";
 import { useRunEvents } from "@/api/ws";
 import {
+  POLL_FAST,
   useAnswerDecision,
   useArtifacts,
   useAudit,
@@ -56,22 +57,26 @@ export function RunPage() {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
   const [tab, setTab] = useState("recon");
-  const run = useRun(runId ?? null);
-  const decisions = useDecisions(runId ?? null);
   const events = useRunEvents(runId ?? null);
+  // WS drives run state and decisions live; while it is connected the
+  // interval polls below drop to slow backstops so they only catch missed
+  // frames instead of duplicating the stream every few seconds.
+  const streamLive = events.status === "open";
+  const run = useRun(runId ?? null, streamLive);
+  const decisions = useDecisions(runId ?? null, streamLive);
   const cancel = useCancelRun();
   const resume = useResumeRun();
   const audit = useAudit(runId ?? null, tab === "audit" || tab === "browser");
   const sandbox = useRunSandbox(tab === "sandbox" ? (runId ?? null) : null);
   const capabilities = useCapabilities();
-  const swarm = useSwarmState(runId ?? null, tab === "swarm", isActiveState(run.data?.state as RunState) ? 3000 : false);
-  const campaign = useCampaignState(runId ?? null, tab === "campaign", isActiveState(run.data?.state as RunState) ? 3000 : false);
+  const swarm = useSwarmState(runId ?? null, tab === "swarm", isActiveState(run.data?.state as RunState) ? POLL_FAST : false, streamLive);
+  const campaign = useCampaignState(runId ?? null, tab === "campaign", isActiveState(run.data?.state as RunState) ? POLL_FAST : false, streamLive);
   const witness = useWitness(runId ?? null, tab === "swarm" && capabilities.data?.features.includes("witness") === true);
   const config = useConfig();
   const tools = useRunTools(runId ?? null, (tab === "tools" || tab === "advisory" || tab === "campaign") && isActiveState(run.data?.state as RunState));
   const callTool = useCallTool(runId ?? "");
   const fetchArtifact = useFetchArtifactBlob(runId ?? "");
-  const artifacts = useArtifacts(runId ?? null);
+  const artifacts = useArtifacts(runId ?? null, streamLive);
 
   const artifactNames = useMemo(() => new Set((artifacts.data?.artifacts ?? []).map((a) => a.name)), [artifacts.data]);
   const runIsActive = isActiveState(run.data?.state as RunState);
@@ -129,7 +134,9 @@ export function RunPage() {
     return [...wsAdded, ...merged];
   }, [decisions.data, events.events]);
 
-  const pendingDecisions = mergedDecisions.filter((d) => d.status === "pending");
+  // Memoized so PendingDecisionPanel's memo holds — a fresh array identity
+  // every render would defeat it even with a stable autoAnsweringIds set.
+  const pendingDecisions = useMemo(() => mergedDecisions.filter((d) => d.status === "pending"), [mergedDecisions]);
   const currentState = (events.events.findLast((e) => e.type === "state")?.payload?.state as RunState | undefined) ?? run.data?.state;
   const active = isActiveState(currentState as RunState);
   const terminal = isTerminalState(currentState as RunState);
@@ -140,6 +147,13 @@ export function RunPage() {
   const answerDecision = useAnswerDecision(runId ?? "");
   const inFlight = useRef<Set<string>>(new Set());
   useEffect(() => {
+    // Prune ids that resolved (answered/denied/expired) or vanished after a
+    // run switch, so the auto-answering indicator never sticks and the set
+    // never grows across runs.
+    const pending = new Set(pendingDecisions.map((d) => d.id));
+    for (const id of inFlight.current) {
+      if (!pending.has(id)) inFlight.current.delete(id);
+    }
     if (mode === "read_only") return;
     for (const d of pendingDecisions) {
       if (inFlight.current.has(d.id)) continue;
@@ -153,7 +167,14 @@ export function RunPage() {
     }
   }, [mode, pendingDecisions, answerDecision]);
 
-  const autoAnsweringIds = new Set(pendingDecisions.filter((d) => mode !== "read_only" && inFlight.current.has(d.id)).map((d) => d.id));
+  // Memoized so PendingDecisionPanel's memo isn't defeated by a fresh Set
+  // identity every render. isPending is a dep because the ref mutates without
+  // pendingDecisions changing in the frames right after a mutation starts.
+  const autoAnsweringIds = useMemo(
+    () => new Set(pendingDecisions.filter((d) => mode !== "read_only" && inFlight.current.has(d.id)).map((d) => d.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, pendingDecisions, answerDecision.isPending],
+  );
 
   const transportLabel =
     events.transport === "sse" ? "SSE" : events.transport === "websocket" ? "WS" : events.status === "reconnecting" ? "reconnecting" : events.status === "closed" ? "offline" : events.status === "connecting" ? "connecting" : events.status === "error" ? "error" : "—";
@@ -210,6 +231,12 @@ export function RunPage() {
       {(runData.request?.mode === "fast" || runData.preview?.mode === "fast" || (runData as unknown as Record<string, unknown>).mode === "fast") && <FastReconProgress events={events.events} />}
       <div className="flex min-h-0 flex-1 flex-col gap-2 xl:flex-row xl:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-2 xl:min-h-0 xl:overflow-hidden">
+          {decisions.error && (
+            <div className="flex shrink-0 items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive" role="alert">
+              <span>Failed to load approvals — pending decisions may be invisible.</span>
+              <Button size="sm" variant="outline" className="ml-auto h-6 text-xs" onClick={() => decisions.refetch()}>Retry</Button>
+            </div>
+          )}
           {pendingDecisions.length > 0 && (
             <div className="shrink-0">
               <PendingDecisionPanel decisions={pendingDecisions} runId={runData.id} autoAnsweringIds={autoAnsweringIds} />
@@ -244,10 +271,10 @@ export function RunPage() {
                 <TabsContent value="graph" className="mt-0 space-y-2"><GraphTab runId={runData.id} ready={artifactReady("enhanced/enhanced_report.json")} /></TabsContent>
                 <TabsContent value="summary" className="mt-0 space-y-2"><SummaryTab result={(runData.result ?? {}) as RunResult} title={runData.title} /></TabsContent>
                 <TabsContent value="tools" className="mt-0 space-y-2">
-                  <ManualToolPanel runId={runData.id} tools={tools.data?.tools ?? []} isLoading={tools.isLoading} selectedTool={selectedTool} onSelect={setSelectedTool} args={toolArgs} onArgs={setToolArgs} result={toolResult} onResult={setToolResult} onCall={(name: string, parsedArgs: Record<string, unknown>) => callTool.mutate({ tool: name, arguments: parsedArgs }, { onSuccess: (data) => setToolResult(data.result || "(no output)"), onError: (err) => setToolResult(err instanceof ApiError ? err.message : "Tool call failed.") })} calling={callTool.isPending} />
+                  <ManualToolPanel runId={runData.id} tools={tools.data?.tools ?? []} isLoading={tools.isLoading} toolsError={tools.error} onRetryTools={() => tools.refetch()} selectedTool={selectedTool} onSelect={setSelectedTool} args={toolArgs} onArgs={setToolArgs} result={toolResult} onResult={setToolResult} onCall={(name: string, parsedArgs: Record<string, unknown>) => callTool.mutate({ tool: name, arguments: parsedArgs }, { onSuccess: (data) => setToolResult(data.result || "(no output)"), onError: (err) => setToolResult(err instanceof ApiError ? err.message : "Tool call failed.") })} calling={callTool.isPending} />
                 </TabsContent>
                 <TabsContent value="advisory" className="mt-0 space-y-2">
-                  <AdvisoryPanel tools={tools.data?.tools ?? []} toolsLoading={tools.isLoading} features={capabilities.data?.features ?? []} runActive={active} onCall={(name: string, parsedArgs: Record<string, unknown>) => callTool.mutate({ tool: name, arguments: parsedArgs }, { onSuccess: (data) => setAdvisoryResult(data.result || "(no output)"), onError: (err) => setAdvisoryResult(err instanceof ApiError ? err.message : "Tool call failed.") })} calling={callTool.isPending} lastResult={advisoryResult} />
+                  <AdvisoryPanel tools={tools.data?.tools ?? []} toolsLoading={tools.isLoading} toolsError={tools.error} onRetryTools={() => tools.refetch()} features={capabilities.data?.features ?? []} runActive={active} onCall={(name: string, parsedArgs: Record<string, unknown>) => callTool.mutate({ tool: name, arguments: parsedArgs }, { onSuccess: (data) => setAdvisoryResult(data.result || "(no output)"), onError: (err) => setAdvisoryResult(err instanceof ApiError ? err.message : "Tool call failed.") })} calling={callTool.isPending} lastResult={advisoryResult} />
                 </TabsContent>
                 <TabsContent value="audit" className="mt-0 space-y-2"><AuditView loading={audit.isLoading} error={audit.error} records={audit.data?.records ?? []} chainValid={audit.data?.chain_valid ?? false} chainReason={audit.data?.chain_reason ?? ""} /></TabsContent>
                 <TabsContent value="sandbox" className="mt-0 space-y-2"><SandboxTab loading={sandbox.isLoading} error={sandbox.error} data={sandbox.data} /></TabsContent>

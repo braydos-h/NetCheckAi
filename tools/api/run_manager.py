@@ -119,25 +119,39 @@ class RunHandle:
         self.resolved_ip: str | None = None
 
 
-def _snapshot_allowlist(config: dict[str, Any], target: str) -> list[str]:
+def _snapshot_allowlist(
+    config: dict[str, Any],
+    target: str,
+    *,
+    resolved_ip: str | None = None,
+) -> list[str]:
     """Build the per-run allowlist = ``exploit.allowed_targets`` UNION target.
 
     ``target`` is the run's ``--target`` (IP or domain). When it is a domain,
     the resolved IP is also unioned in (the operator's ``--target`` is the
     primary lock identity; the IP lets IP-based tools target the resolved host).
-    This mirrors ``tools/mcp_shared._allowed_target_list`` but is frozen per
-    run instead of re-read from the process env on each tool call.
+    This mirrors ``tools/kernel/allowlist._allowed_target_list`` but is frozen
+    per run instead of re-read from the process env on each tool call.
+
+    ``resolved_ip`` caches the one DNS resolution for the run: when None it is
+    resolved once via ``resolve_target_to_ip`` (never raises); callers cache
+    the result on ``RunHandle.resolved_ip`` so the hot path never re-resolves.
+
+    Discovered-target expansion after prepare (subdomain enumeration via
+    ``add_discovered_target``) is enforced at the MCP layer
+    (``EXPLOIT_DISCOVERED_TARGETS`` env union) and mirrored here only
+    opportunistically — this snapshot is the WebUI attribution source, the
+    MCP subprocess env is the authoritative lock.
     """
     exploit_cfg = (config or {}).get("exploit", {}) or {}
     allowed = list(exploit_cfg.get("allowed_targets", []) or [])
     target = (target or "").strip()
     if target and target not in allowed:
         allowed.append(target)
-    # ponytail: resolve domain → IP best-effort; the MCP subprocess env carries
-    # the authoritative resolved IP (set in mcp_session.py). Re-resolving here
-    # would add a DNS call per run and could diverge from what the subprocess
-    # actually got; the subprocess env is the lock, this snapshot is the
-    # handle-level mirror for the WebUI.
+    if resolved_ip is None and target:
+        resolved_ip = resolve_target_to_ip(target)
+    if resolved_ip and resolved_ip not in allowed:
+        allowed.append(resolved_ip)
     return allowed
 
 

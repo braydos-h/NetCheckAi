@@ -806,7 +806,10 @@ export function useDeleteRun() {
         `/runs/${encodeURIComponent(runId)}?purge=${purge ? "true" : "false"}`,
         { method: "DELETE" },
       ),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
+      // Drop all run-scoped caches (detail, decisions, tools, artifacts, …)
+      // for the deleted run, then refresh the lists.
+      qc.removeQueries({ queryKey: ["runs", vars.runId] });
       void qc.invalidateQueries({ queryKey: ["runs"] });
     },
   });
@@ -841,7 +844,7 @@ export function useRetitleRun() {
   });
 }
 
-export function useDecisions(runId: string | null | undefined) {
+export function useDecisions(runId: string | null | undefined, live = false) {
   return useQuery<{ decisions: DecisionListRow[] }>({
     queryKey: queryKeys.runDecisions(runId ?? ""),
     queryFn: () => apiFetch<{ decisions: DecisionListRow[] }>(`/runs/${encodeURIComponent(runId as string)}/decisions`),
@@ -851,7 +854,10 @@ export function useDecisions(runId: string | null | undefined) {
       const data = query.state.data;
       if (!data) return 10_000;
       const hasPending = data.decisions.some((d) => d.status === "pending");
-      return hasPending ? POLL_FAST : false;
+      if (!hasPending) return false;
+      // Approval WS events invalidate this cache live; when the stream is
+      // healthy the poll is only a backstop for missed frames.
+      return live ? POLL_IDLE : POLL_FAST;
     },
   });
 }
@@ -904,7 +910,7 @@ export function useCallTool(runId: string) {
   });
 }
 
-export function useArtifacts(runId: string | null | undefined) {
+export function useArtifacts(runId: string | null | undefined, live = false) {
   const qc = useQueryClient();
   return useQuery<ArtifactListResponse>({
     queryKey: queryKeys.runArtifacts(runId ?? ""),
@@ -914,11 +920,12 @@ export function useArtifacts(runId: string | null | undefined) {
     // Poll artifacts only while the run is active (artifacts appear as the run
     // progresses). Once the run reaches a terminal state the artifact set is
     // frozen, so stop polling. The run state is read from the run-detail query
-    // cache so this hook needs no extra prop.
+    // cache so this hook needs no extra prop. Artifact WS events already
+    // invalidate this cache live, so a healthy stream slows the poll to a backstop.
     refetchInterval: () => {
       if (!runId) return false;
       const run = qc.getQueryData<RunDetail>(queryKeys.run(runId));
-      if (!run || isActiveState(run.state)) return 30_000;
+      if (!run || isActiveState(run.state)) return live ? POLL_IDLE : 30_000;
       return false;
     },
   });
@@ -933,13 +940,21 @@ export function useAudit(runId: string | null | undefined, enabled = true) {
   });
 }
 
-export function useSwarmState(runId: string | null | undefined, enabled = true, refetchInterval: number | false = false) {
+export function useSwarmState(
+  runId: string | null | undefined,
+  enabled = true,
+  refetchInterval: number | false = false,
+  live = false,
+) {
   return useQuery<SwarmStateResponse>({
     queryKey: queryKeys.runSwarm(runId ?? ""),
     queryFn: () => apiFetch<SwarmStateResponse>(`/runs/${encodeURIComponent(runId as string)}/swarm`),
     ...defaultQueryOptions,
     enabled: !!runId && enabled,
-    refetchInterval,
+    // Swarm snapshots change on agent dispatch/completion; the WS stream
+    // carries no swarm push, so while the run is active this stays a live
+    // poll — just slowed to a backstop when the stream is healthy.
+    refetchInterval: live && refetchInterval !== false ? POLL_IDLE : refetchInterval,
     retry: (count, error) => {
       if (error instanceof ApiError && error.isNotFound) return false;
       return DEFAULT_RETRY(count, error);
@@ -947,13 +962,20 @@ export function useSwarmState(runId: string | null | undefined, enabled = true, 
   });
 }
 
-export function useCampaignState(runId: string | null | undefined, enabled = true, refetchInterval: number | false = false) {
+export function useCampaignState(
+  runId: string | null | undefined,
+  enabled = true,
+  refetchInterval: number | false = false,
+  live = false,
+) {
   return useQuery<CampaignStateResponse>({
     queryKey: queryKeys.runCampaign(runId ?? ""),
     queryFn: () => apiFetch<CampaignStateResponse>(`/runs/${encodeURIComponent(runId as string)}/campaign`),
     ...defaultQueryOptions,
     enabled: !!runId && enabled,
-    refetchInterval,
+    // Same as swarm: no WS push for campaign snapshots, so slow to a
+    // backstop (not off) while the run is live and the stream is healthy.
+    refetchInterval: live && refetchInterval !== false ? POLL_IDLE : refetchInterval,
     retry: (count, error) => {
       if (error instanceof ApiError && error.isNotFound) return false;
       return DEFAULT_RETRY(count, error);
@@ -1189,9 +1211,9 @@ export function useCheckConnection() {
         body: {},
       }),
     onSuccess: (data) => {
-      qc.setQueryData(queryKeys.connection(data.connection_id), data);
+      // The detail cache is already patched above; invalidate the list and the
+      // listener (whose status may have changed), not the detail we just set.
       void qc.invalidateQueries({ queryKey: queryKeys.connections });
-      void qc.invalidateQueries({ queryKey: queryKeys.connection(data.connection_id) });
       void qc.invalidateQueries({ queryKey: queryKeys.connectionListener(data.connection_id) });
     },
   });

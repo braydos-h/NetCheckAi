@@ -169,3 +169,35 @@ def resolve_default_model(config: Mapping[str, Any], provider_id: str) -> str:
         if alias:
             return str((models_cfg.get("registry") or {}).get(alias) or alias)
     return default
+
+
+def build_client_for_config(
+    config: Mapping[str, Any] | None,
+    alias: str,
+    *,
+    request_timeout_seconds: float | None = None,
+) -> Any:
+    """Build one client for ``alias`` under the active provider (no branching).
+
+    Root-cause seam for every "missing client" fallback: resolves the active
+    provider through the registry and asks its adapter for a client, so
+    provider #4 works without touching any caller. Replaces the old
+    ``if provider in (...) ... else _build_model_client(...)`` chains.
+    """
+    return get_provider_from_config(config).build_client(
+        config,
+        alias,
+        request_timeout_seconds=request_timeout_seconds,
+    )
+
+
+def build_router_for_config(
+    config: Mapping[str, Any] | None,
+    *,
+    request_timeout_seconds: float | None = None,
+) -> Any:
+    """Build the active provider's router from ``config`` (no branching)."""
+    return get_provider_from_config(config).build_router(
+        config,
+        request_timeout_seconds=request_timeout_seconds,
+    )

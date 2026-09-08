@@ -21,7 +21,6 @@ import pytest
 import tools.validation_utils as vu
 from tools.validation_utils import preflight_command_check, resolve_target_bounded
 
-
 # ── Bounded resolve ──────────────────────────────────────────────────────────
 
 
