@@ -78,7 +78,7 @@ def test_load_from_db_replaces_constructor_rules(temp_db):
 
 def test_load_from_db_empty_rules_denies_everything(temp_db):
     with temp_db.connection(write=True) as conn:
-        mid = db.create_mission(conn)["id"] if (db := temp_db) else None
+        mid = temp_db.create_mission(conn)["id"]
     gate = ScopeGate(temp_db, mid, allowed_assets=["example.com"])
     gate.load_from_db()
     assert gate.list_scope()["allow"] == []

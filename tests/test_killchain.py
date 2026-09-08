@@ -53,6 +53,7 @@ def _build_ctx(
     enabled: bool = True,
     require_allowlist_flag: bool = True,
     allowed: tuple[str, ...] = ("10.0.0.50",),
+    snapshots_enabled: bool = True,
 ) -> Any:
     from tools.cve_lookup import CVESearchSettings, NVDClient
     from tools.exploit_search import ExploitSearch, ExploitSearchSettings
@@ -62,6 +63,10 @@ def _build_ctx(
 
     config: dict[str, Any] = {
         "killchain": {"enabled": enabled, "goal_state": "shell_as_root", "require_verification": True},
+        # P3-11 pack gate: destructive killchain_attempt requires the
+        # snapshot net; the harness enables it so attempt tests exercise
+        # the gated-on path (the gated-off path has its own test below).
+        "snapshots": {"enabled": snapshots_enabled},
         "exploit": {
             "require_explicit_allowlist": require_allowlist_flag,
             "allowed_targets": list(allowed),

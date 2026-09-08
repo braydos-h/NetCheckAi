@@ -33,6 +33,7 @@ from tools.snapshots import (
     SnapshotManager,
     SnapshotRef,
     _vm_id_for_target,
+    autonomy_pack_guidance,
     get_provider,
     should_snapshot,
 )
@@ -145,6 +146,38 @@ def test_get_provider_unknown_and_known() -> None:
     with pytest.raises(ValueError, match="unknown snapshot provider"):
         get_provider("vsphere", {})
     assert type(get_provider("docker", {})).__name__ == "DockerProvider"
+
+
+# ── 1c. P3-11 autonomy pack gate ────────────────────────────────────────────
+
+
+def test_pack_guidance_empty_when_coherent() -> None:
+    """Snapshots on, or no destructive-autonomy member on, means no gate."""
+    assert autonomy_pack_guidance(_cfg()) == ""
+    assert autonomy_pack_guidance(_cfg(enabled=False)) == ""
+    assert autonomy_pack_guidance(None) == ""
+    assert autonomy_pack_guidance({}) == ""
+    assert autonomy_pack_guidance({"killchain": {"enabled": False}}) == ""
+
+
+def test_pack_guidance_names_each_offender() -> None:
+    """Each destructive-autonomy flag without snapshots fails fast w/ guidance."""
+    base = {"snapshots": {"enabled": False}}
+    for flag in (
+        {"killchain": {"enabled": True}},
+        {"replay_simulator": {"counterfactual": True}},
+        {"autonomous": {"persistence_phase": True}},
+    ):
+        guidance = autonomy_pack_guidance({**base, **flag})
+        assert guidance.startswith("BLOCKED:"), flag
+        assert "snapshots.enabled" in guidance, flag
+    # Combined offenders are all named in one message.
+    both = autonomy_pack_guidance(
+        {**base, "killchain": {"enabled": True}, "replay_simulator": {"counterfactual": True}}
+    )
+    assert "killchain.enabled" in both and "replay_simulator.counterfactual" in both
+    # Snapshots on clears every offender.
+    assert autonomy_pack_guidance({"snapshots": {"enabled": True}, "killchain": {"enabled": True}}) == ""
 
 
 # ── 1b. Docker provider against mocked named wrappers ─────────────────────

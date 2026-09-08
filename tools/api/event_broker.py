@@ -10,9 +10,9 @@ Plugin dispatch
 
 ``RunEventBroker.emit()`` assigns ``sequence`` under ``_lock``, persists the
 event to JSONL off the event-loop thread (open/write/flush/fsync via
-``asyncio.to_thread``, serialized by ``_persist_lock`` so file order matches
-sequence order), then fans out to WS subscribers. After the locks are
-released the event is handed to a bounded
+``asyncio.to_thread``; the ``_lock`` is held across the await so file order
+matches sequence order while the loop stays unblocked), then fans out to WS
+subscribers. After the lock is released the event is handed to a bounded
 producer/consumer dispatcher for outbound-only plugin subscribers
 (``webhook_notify`` etc.).
 

@@ -68,7 +68,7 @@ import type {
   WitnessResponse,
   WorkspaceListResponse,
 } from "@/api/types";
-import { isActiveState } from "@/api/types";
+import { isActiveState, type RunState } from "@/api/types";
 
 export const queryKeys = {
   capabilities: ["capabilities"] as const,
@@ -339,10 +339,10 @@ export function useTelemetry() {
       const all = qc.getQueriesData<unknown>({ queryKey: ["runs"] });
       for (const [, data] of all) {
         if (!data || typeof data !== "object") continue;
-        const rec = data as { runs?: unknown; state?: unknown };
+        const rec = data as { runs?: Array<{ state?: RunState }>; state?: RunState };
         if (Array.isArray(rec.runs)) {
-          if ((rec.runs as { state?: unknown }[]).some((r) => isActiveState(r?.state as never))) return POLL_FAST;
-        } else if (typeof rec.state === "string" && isActiveState(rec.state as never)) {
+          if (rec.runs.some((r) => r && isActiveState(r.state as RunState))) return POLL_FAST;
+        } else if (rec.state !== undefined && isActiveState(rec.state)) {
           return POLL_FAST;
         }
       }

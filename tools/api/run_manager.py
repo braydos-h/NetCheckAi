@@ -114,6 +114,9 @@ class RunHandle:
         # process boundary is the primary isolation; this snapshot is the
         # handle-level source of truth for the WebUI's target attribution.
         self.allowlist: list[str] = []
+        # Cached DNS resolution of the run's ``--target`` (set at prepare()
+        # time so the hot path never re-resolves; see ``_snapshot_allowlist``).
+        self.resolved_ip: str | None = None
 
 
 def _snapshot_allowlist(config: dict[str, Any], target: str) -> list[str]:

@@ -83,6 +83,17 @@ export function RunPage() {
   const [toolResult, setToolResult] = useState<string>("");
   const [advisoryResult, setAdvisoryResult] = useState<string>("");
 
+  // Navigating between runs reuses this component (same route, new param).
+  // Reset per-run UI state so the previous run's tab/tool results never
+  // render against the new run's data.
+  useEffect(() => {
+    setTab("recon");
+    setSelectedTool("");
+    setToolArgs("{}");
+    setToolResult("");
+    setAdvisoryResult("");
+  }, [runId]);
+
   const mergedDecisions = useMemo(() => {
     const rows = decisions.data?.decisions ?? [];
     const byId = new Map(rows.map((row) => [row.id, row]));
