@@ -442,9 +442,7 @@ def test_killchain_attempt_fails_fast_without_snapshots(tmp_path: Path) -> None:
 
     mcp = _StubMCP()
     register_killchain_tools(mcp, ctx=_build_ctx(tmp_path, snapshots_enabled=False))
-    out = mcp.tools["killchain_attempt"](
-        target="10.0.0.50", from_state="creds_in_hand", to_state="shell_as_user"
-    )
+    out = mcp.tools["killchain_attempt"](target="10.0.0.50", from_state="creds_in_hand", to_state="shell_as_user")
     assert out.startswith("BLOCKED:")
     assert "snapshots.enabled" in out
     assert "killchain.enabled" in out
@@ -475,9 +473,7 @@ class _FakeOrchestrator:
     the real handler bodies.
     """
 
-    def __init__(
-        self, tmp_path: Path, *, enabled: bool, executor: Any, snapshots_enabled: bool = True
-    ) -> None:
+    def __init__(self, tmp_path: Path, *, enabled: bool, executor: Any, snapshots_enabled: bool = True) -> None:
         from tools.campaign.state import AttackState as CampaignState
 
         self._mission = {
@@ -541,9 +537,7 @@ def test_orchestrator_killchain_blocked_without_snapshots(tmp_path: Path) -> Non
     fast (timeline event, no playbook runs) instead of running net-less."""
     import asyncio
 
-    orch = _FakeOrchestrator(
-        tmp_path, enabled=True, executor=lambda name, args: "OUTPUT: ok", snapshots_enabled=False
-    )
+    orch = _FakeOrchestrator(tmp_path, enabled=True, executor=lambda name, args: "OUTPUT: ok", snapshots_enabled=False)
     assert asyncio.run(orch._phase_killchain(orch.state)) is False
     assert any(e.get("event_type") == "killchain_blocked_no_snapshots" for e in orch.state.timeline)
 

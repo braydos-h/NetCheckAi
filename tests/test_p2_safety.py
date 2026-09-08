@@ -60,9 +60,11 @@ def test_review_llm_exception_fail_closed():
 
 def test_review_llm_exception_group_fail_closed():
     """An anyio-style group from the model call must also fail closed, never
-    propagate ( CancellationError nested inside must still be re-raised by the
-    fixer — this probe carries no cancellation, so blocking is correct)."""
-    group = BaseExceptionGroup("model task group died", [ConnectionError("epipe")])
+    propagate. Mixed with a BaseException so it is a TRUE BaseExceptionGroup
+    (an all-Exception group narrows to ExceptionGroup, an Exception subclass,
+    which even a bare ``except Exception`` catches — that would not prove the
+    fail-closed path)."""
+    group = BaseExceptionGroup("model task group died", [ConnectionError("epipe"), KeyboardInterrupt("intr")])
     out = _reviewer_with(side_effect=group).review("r", "10.0.0.50", "g")
     assert out.safe_to_proceed is False
 
