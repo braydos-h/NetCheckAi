@@ -162,6 +162,14 @@ def register_killchain_tools(mcp: Any, *, ctx: ToolContext) -> None:
             return "BLOCKED: target is required."
         if not validate_target_or_ip(target.strip()):
             return f"BLOCKED: {target.strip()!r} is not a valid target IP or hostname."
+        # P3-11 pack gate: destructive kill-chain playbooks require the
+        # snapshot safety net. Fail fast with guidance (never run
+        # net-less); read-only killchain_status/plan are unaffected.
+        from tools.snapshots import autonomy_pack_guidance as _pack_guidance
+
+        _guidance = _pack_guidance(config)
+        if _guidance:
+            return _guidance
         import json as _json
 
         context: dict[str, Any] = {}
