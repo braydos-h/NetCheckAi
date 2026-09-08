@@ -836,17 +836,14 @@ async def _phase_killchain(self, state: AttackState) -> bool:
     Returns True only when the FULL edge path verified (goal state reached —
     the caller skips free-form exploitation); False otherwise (verified
     partial progress is kept on the graph, but the caller falls back to the
-    normal module-planning phases to finish the job).
-
-    P3-11 pack gate: no snapshot net means fail fast with guidance
-    (timeline event, no playbook runs) instead of running net-less.
+    normal module-planning phases to finish the job). P3-11 pack gate: no
+    snapshot net fails fast with guidance (timeline event, no playbooks).
     """
     try:
         from tools.snapshots import autonomy_pack_guidance as _pack_guidance
 
-        _guidance = _pack_guidance(self._mission)
-        if _guidance:
-            state.add_timeline_event("killchain_blocked_no_snapshots", _guidance)
+        if _g := _pack_guidance(self._mission):
+            state.add_timeline_event("killchain_blocked_no_snapshots", _g)
             return False
     except Exception:  # ponytail: bare except intentional — gate failure means no gate
         pass

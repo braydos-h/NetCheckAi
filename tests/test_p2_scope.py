@@ -41,9 +41,7 @@ def _mission_with_rules(db, *, allow=(), deny=(), deny_action=()):
 
 
 def test_load_from_db_hydrates_allow_and_deny(temp_db):
-    mid = _mission_with_rules(
-        temp_db, allow=["example.com"], deny=["evil.example.com"]
-    )
+    mid = _mission_with_rules(temp_db, allow=["example.com"], deny=["evil.example.com"])
     gate = ScopeGate(temp_db, mid, allowed_assets=[], risk_profile="standard_authorized")
     assert gate.list_scope()["allow"] == []
     gate.load_from_db()

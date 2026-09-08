@@ -176,7 +176,10 @@ async def test_parallel_dispatch_shares_single_session_without_crosstalk():
     bridge.attach(session, [], policy, loop=asyncio.get_running_loop())
 
     results = await asyncio.gather(
-        *[asyncio.to_thread(bridge.dispatch, "run_exploit_terminal", {"command": "echo", "tag": i}) for i in range(count)]
+        *[
+            asyncio.to_thread(bridge.dispatch, "run_exploit_terminal", {"command": "echo", "tag": i})
+            for i in range(count)
+        ]
     )
     assert results == [f"resp-{i}" for i in range(count)]  # gather order == caller order
     assert bridge.dispatched == count
