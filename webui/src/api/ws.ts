@@ -41,6 +41,14 @@ function useSafeQueryClient(): QueryClient {
   return useQueryClient();
 }
 
+// Runs-list queries carry a params object (["runs", { limit, offset, … }]);
+// run-scoped queries carry the run id string. Scoping invalidations to the
+// list keeps this run's detail/decisions/artifacts caches untouched.
+function isRunListQuery(query: { queryKey: readonly unknown[] }): boolean {
+  const key = query.queryKey;
+  return key.length > 1 && key[0] === "runs" && typeof key[1] === "object" && key[1] !== null;
+}
+
 export function useRunEvents(runId: string | null | undefined, options: UseRunEventsOptions = {}) {
   const { after: initialAfter = 0, enabled = true } = options;
   const [events, setEvents] = useState<RunEvent[]>([]);
