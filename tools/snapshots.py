@@ -530,6 +530,46 @@ def should_snapshot(tool_name: str, payload: str, config: dict[str, Any] | None)
     return _TOOL_ACTION_CATEGORY.get(tool_name) in _SNAPSHOT_CATEGORIES
 
 
+def autonomy_pack_guidance(config: dict[str, Any] | None) -> str:
+    """Fail-fast guidance when destructive autonomy is on without snapshots.
+
+    P3-11 pack gate: killchain execution, counterfactual replay, and the
+    persistence phase all run destructive steps that the snapshot safety
+    net must cover. Returns "" when the pack is coherent (snapshots
+    enabled, or no destructive-autonomy member on); otherwise a
+    human-readable guidance string naming the offending flags and the fix.
+    Pure; never raises. Callers (killchain_attempt, _phase_killchain,
+    validator) refuse or warn on a non-empty return.
+    """
+    cfg = config or {}
+    try:
+        snap_cfg = cfg.get("snapshots", {}) or {}
+        if bool(snap_cfg.get("enabled", False)):
+            return ""
+        offenders: list[str] = []
+        kc_cfg = cfg.get("killchain", {}) or {}
+        if isinstance(kc_cfg, dict) and bool(kc_cfg.get("enabled", False)):
+            offenders.append("killchain.enabled")
+        replay_cfg = cfg.get("replay_simulator", {}) or {}
+        if isinstance(replay_cfg, dict) and bool(replay_cfg.get("counterfactual", False)):
+            offenders.append("replay_simulator.counterfactual")
+        auto_cfg = cfg.get("autonomous", {}) or {}
+        if isinstance(auto_cfg, dict) and bool(auto_cfg.get("persistence_phase", False)):
+            offenders.append("autonomous.persistence_phase")
+        if not offenders:
+            return ""
+        return (
+            "BLOCKED: destructive autonomy requires the snapshot safety net "
+            f"({', '.join(offenders)} on but snapshots.enabled is false). "
+            "Set snapshots.enabled: true with a snapshots.vm_map entry for "
+            "each target (or SNAPSHOT_VM_MAP env), or turn the offending "
+            "flags off. Snapshot failures are fail-open (log + proceed); "
+            "running destructive autonomy with no net at all is not."
+        )
+    except Exception:  # ponytail: bare except intentional — malformed config means no gate
+        return ""
+
+
 def _vm_id_for_target(target: str, config: dict[str, Any] | None) -> str:
     """Map an attack target to a snapshottable vm_id (injectable seam).
 
