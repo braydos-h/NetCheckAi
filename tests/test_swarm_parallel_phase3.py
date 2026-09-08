@@ -416,10 +416,12 @@ async def test_lab_rollout_three_agent_batch_with_dedup():
             with lock:
                 touched.append((self.phase_name, target))
             bb = context.get("blackboard", {})
-            from tools.swarm.bb_compat import bb_set
+            # Merge API (extend_list): concurrent appends dedupe instead of
+            # last-writer-wins — the contract the P3-10 exit criteria pins.
+            from tools.swarm.bb_compat import bb_extend, bb_set
 
             bb_set(bb, f"{self.phase_name}_complete", True, target=target)
-            bb_set(bb, "vulnerability_hypotheses", [{"phase": self.phase_name, "target": target}], target=target)
+            bb_extend(bb, "vulnerability_hypotheses", [{"phase": self.phase_name, "target": target}], target=target)
             return AgentResult(
                 agent_type=self.agent_type,
                 status=AgentStatus.COMPLETE,
@@ -452,7 +454,9 @@ async def test_lab_rollout_three_agent_batch_with_dedup():
     assert all(r.status == AgentStatus.COMPLETE for r in results)
     # No duplicate target touch: each (phase, target) dispatched exactly once.
     assert sorted(touched) == sorted([("recon", "127.0.0.1"), ("analysis", "127.0.0.1"), ("critic", "127.0.0.1")])
-    # Blackboard dedup: all three phases' hypotheses merged, none dropped.
-    hyps = orch.get_blackboard().get("vulnerability_hypotheses", [])
+    # Blackboard dedup: the per-target bucket merged all three phases'
+    # hypotheses (extend_list dedupes; none dropped by last-writer-wins).
+    bucket = orch.share_blackboard().get_target("127.0.0.1")
+    hyps = bucket.get("vulnerability_hypotheses", [])
     phases = sorted(h.get("phase", "") for h in hyps if isinstance(h, dict))
     assert phases == ["analysis", "critic", "recon"]
