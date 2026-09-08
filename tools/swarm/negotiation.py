@@ -38,16 +38,26 @@ _NEGOTIABLE_KEYS: frozenset[str] = frozenset(
 )
 
 
+# Role -> shared-context key. ``critic`` is the original §13 call site;
+# additional roles fan out through the same stash + ``or``-fallback contract
+# (each agent prefers its role client, falls back to the shared client).
+_ROLE_CONTEXT_KEYS: tuple[tuple[str, str], ...] = (
+    ("critic", "critic_model_client"),
+    ("planner", "planner_model_client"),
+    ("summarizer", "summarizer_model_client"),
+)
+
+
 def _ensure_role_clients(self) -> None:
     """Resolve ``models.roles`` clients once, lazily (capability-upgrade §13).
 
-    Stashes ``critic_model_client`` in the shared context when the critic
-    role maps to a different model than the shared default client, so the
-    CriticAgent's LLM calls route to the configured role model. The
-    mission_config's ``models`` block (merged by the run-service task
-    builder / AgentLoop callers) is the source; resolution is best-effort —
-    any failure leaves the context untouched and the critic keeps using
-    the shared client, exactly the pre-role-routing behavior.
+    Stashes ``<role>_model_client`` in the shared context when a role maps
+    to a different model than the shared default client, so role agents'
+    LLM calls route to the configured role model. The mission_config's
+    ``models`` block (merged by the run-service task builder / AgentLoop
+    callers) is the source; resolution is best-effort — any failure leaves
+    the context untouched and agents keep using the shared client, exactly
+    the pre-role-routing behavior.
     """
     if self._role_clients_resolved:
         return
@@ -61,9 +71,14 @@ def _ensure_role_clients(self) -> None:
         router = _get_model_router(cfg)
         if router is None:
             return
-        client = router.get_client_for_role("critic", config=cfg)
-        if client is not None and client is not self._context.get("model_client"):
-            self._context["critic_model_client"] = client
+        shared = self._context.get("model_client")
+        for role, key in _ROLE_CONTEXT_KEYS:
+            try:
+                client = router.get_client_for_role(role, config=cfg)
+            except Exception:  # noqa: BLE001 — one bad role never blocks the others
+                continue
+            if client is not None and client is not shared:
+                self._context[key] = client
     except Exception:  # noqa: BLE001 — role routing must never break dispatch
         pass
 

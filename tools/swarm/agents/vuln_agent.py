@@ -107,7 +107,10 @@ class VulnAgent(Agent):
         task_id = task.get("task_id", task.get("id", ""))
         services = task.get("services", [])
         config = context.get("config", {})
-        model_client = context.get("model_client")
+        # §13: prefer the role-routed planner client (models.roles.planner,
+        # resolved by SwarmOrchestrator._ensure_role_clients) over the shared
+        # default client. Unset -> shared client, unchanged behavior.
+        model_client = context.get("planner_model_client") or context.get("model_client")
         blackboard = context.get("blackboard", {})
 
         # Pull services from blackboard if not in task

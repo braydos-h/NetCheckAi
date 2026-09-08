@@ -61,7 +61,8 @@ def register_planning_tools(mcp: Any, *, ctx: ToolContext) -> None:
             )
 
             # Try to use the model router to generate intelligent steps
-            client, model_name = _get_model_client(config)
+            # (§13 planner role: routes to models.roles.planner when set).
+            client, model_name = _get_model_client(config, role="planner")
             if client is not None:
                 try:
                     prompt = build_planning_prompt(
@@ -172,7 +173,8 @@ def register_planning_tools(mcp: Any, *, ctx: ToolContext) -> None:
             if plan is None:
                 return f"NO_PLAN_FOUND: No attack plan exists for {target_ip}. Use create_attack_plan first."
 
-            client, model_name = _get_model_client(config)
+            # §13 planner role (see create_attack_plan above).
+            client, model_name = _get_model_client(config, role="planner")
             if client is not None:
                 try:
                     prompt = build_replanning_prompt(

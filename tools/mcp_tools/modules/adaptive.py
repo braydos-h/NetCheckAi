@@ -69,7 +69,9 @@ def register_adaptive_tools(mcp: Any, *, ctx: ToolContext) -> None:
             except Exception:  # ponytail: bare except intentional
                 experience_store = None
 
-            client, model_name = _get_model_client(config)
+            # §13 code_generator role: PoC synthesis routes to
+            # models.roles.code_generator when set.
+            client, model_name = _get_model_client(config, role="code_generator")
             max_mutations = int(adaptive_cfg.get("max_mutations", 5))
 
             mutator = ExploitMutator(
@@ -206,7 +208,8 @@ def register_adaptive_tools(mcp: Any, *, ctx: ToolContext) -> None:
             except Exception:  # ponytail: bare except intentional
                 experience_store = None
 
-            client, model_name = _get_model_client(config)
+            # §13 code_generator role (see craft_exploit above).
+            client, model_name = _get_model_client(config, role="code_generator")
             max_mutations = int(adaptive_cfg.get("max_mutations", 5))
 
             mutator = ExploitMutator(

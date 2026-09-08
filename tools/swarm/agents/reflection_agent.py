@@ -163,7 +163,10 @@ class ReflectionAgent(Agent):
         battle_log = task.get("battle_log", [])
         session_state = task.get("session_state", {})
         memory = context.get("memory")
-        model_client = context.get("model_client")
+        # §13: prefer the role-routed summarizer client (models.roles.summarizer,
+        # resolved by SwarmOrchestrator._ensure_role_clients) over the shared
+        # default client. Unset -> shared client, unchanged behavior.
+        model_client = context.get("summarizer_model_client") or context.get("model_client")
         blackboard = context.get("blackboard", {})
         # Tier 1.1: cross-mission learning handles. May be None (semantic memory
         # off); guarded below so a down Ollama degrades to a no-op, never raises.

@@ -358,6 +358,112 @@ def test_swarm_ensure_role_clients_noop_without_models_config() -> None:
     assert "critic_model_client" not in context
 
 
+def test_swarm_ensure_role_clients_fans_out_planner_and_summarizer() -> None:
+    """§13 fan-out: planner/summarizer roles stash alongside critic."""
+    from tools.swarm.orchestrator import SwarmOrchestrator
+
+    shared_client = _FakeClient("glm")
+    context: dict[str, Any] = {
+        "config": {
+            "models": {
+                "default_alias": "glm",
+                "roles": {"critic": "deepseek", "planner": "kimi", "summarizer": "minimax"},
+            }
+        },
+        "model_client": shared_client,
+    }
+
+    router = _router_with("glm", "deepseek", "kimi", "minimax")
+    with patch("tools.mcp_tools.registry._get_model_router", return_value=router):
+        orch = SwarmOrchestrator(context)
+        orch._ensure_role_clients()
+
+    assert context["critic_model_client"] is router.get_client("deepseek")
+    assert context["planner_model_client"] is router.get_client("kimi")
+    assert context["summarizer_model_client"] is router.get_client("minimax")
+
+
+def test_swarm_ensure_role_clients_unset_roles_leave_no_keys() -> None:
+    """Empty roles resolve to the shared client — no stash keys appear."""
+    from tools.swarm.orchestrator import SwarmOrchestrator
+
+    shared_client = _FakeClient("glm")
+    context: dict[str, Any] = {
+        "config": {"models": {"default_alias": "glm", "roles": {}}},
+        "model_client": shared_client,
+    }
+
+    router = _router_with("glm")
+    with patch("tools.mcp_tools.registry._get_model_router", return_value=router):
+        orch = SwarmOrchestrator(context)
+        orch._ensure_role_clients()
+
+    assert "critic_model_client" not in context
+    assert "planner_model_client" not in context
+    assert "summarizer_model_client" not in context
+
+
+def test_vuln_agent_prefers_planner_role_client() -> None:
+    """VulnAgent reads planner_model_client over the shared model_client."""
+    role_client = _FakeClient("kimi")
+    shared_client = _FakeClient("glm")
+    context = {"planner_model_client": role_client, "model_client": shared_client}
+    assert context.get("planner_model_client") or context.get("model_client") is role_client
+
+
+def test_reflection_agent_prefers_summarizer_role_client() -> None:
+    """ReflectionAgent reads summarizer_model_client over the shared model_client."""
+    role_client = _FakeClient("minimax")
+    shared_client = _FakeClient("glm")
+    context = {"summarizer_model_client": role_client, "model_client": shared_client}
+    assert context.get("summarizer_model_client") or context.get("model_client") is role_client
+
+
+def test_get_model_client_role_falls_back_to_default_alias() -> None:
+    """_get_model_client(config, role=...) with empty roles == default alias."""
+    import tools.mcp_tools.registry as _registry
+
+    router = _router_with("glm", "deepseek")
+    config = {"models": {"default_alias": "glm", "roles": {}}}
+    with (
+        patch.object(_registry, "_get_model_router", return_value=router),
+        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+    ):
+        client, name = _registry._get_model_client(config, role="planner")
+        assert client.name == "glm"
+        assert name == "glm"
+
+
+def test_get_model_client_role_resolves_configured_role() -> None:
+    """_get_model_client(config, role=...) routes to the configured alias."""
+    import tools.mcp_tools.registry as _registry
+
+    router = _router_with("glm", "deepseek")
+    config = {"models": {"default_alias": "glm", "roles": {"code_generator": "deepseek"}}}
+    with (
+        patch.object(_registry, "_get_model_router", return_value=router),
+        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+    ):
+        client, name = _registry._get_model_client(config, role="code_generator")
+        assert client.name == "deepseek"
+        assert name == "deepseek"
+
+
+def test_get_model_client_without_role_is_unchanged() -> None:
+    """No role passed — legacy default-alias behavior, byte-identical."""
+    import tools.mcp_tools.registry as _registry
+
+    router = _router_with("glm", "deepseek")
+    config = {"models": {"default_alias": "glm", "roles": {"planner": "deepseek"}}}
+    with (
+        patch.object(_registry, "_get_model_router", return_value=router),
+        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+    ):
+        client, name = _registry._get_model_client(config)
+        assert client.name == "glm"
+        assert name == "glm"
+
+
 # ---------------------------------------------------------------------------
 # 7. agent.decision_log_enabled=False -> the §17 decision-log hook is silent.
 # ---------------------------------------------------------------------------

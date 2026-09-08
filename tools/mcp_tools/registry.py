@@ -137,8 +137,16 @@ def _get_model_router(config: dict[str, Any] | None) -> Any | None:
     return _get_model_router_impl(config)
 
 
-def _get_model_client(config: dict[str, Any] | None) -> tuple[Any | None, str]:
-    """Return (client, model_name) from the router for the default alias (provider-aware)."""
+def _get_model_client(config: dict[str, Any] | None, role: str = "") -> tuple[Any | None, str]:
+    """Return (client, model_name) from the router (provider-aware).
+
+    ``role`` (capability-upgrade §13) resolves via
+    ``get_client_for_role(role)`` — a configured ``models.roles.<role>``
+    routes that call to a different model, empty/unresolvable roles fall
+    back to the default alias, so callers without a role are byte-identical
+    to before. ``ModelClient.chat()`` ignores positional model args (its own
+    model is baked in), but callers still pass the returned name through.
+    """
     from tools.config_manager import get_ai_provider, get_chatgpt_config, get_opencode_go_config
 
     router = _get_model_router(config)
@@ -152,6 +160,12 @@ def _get_model_client(config: dict[str, Any] | None) -> tuple[Any | None, str]:
     else:
         default_alias = str((config or {}).get("models", {}).get("default_alias", "glm") or "glm")
     try:
+        if role:
+            try:
+                client = router.get_client_for_role(role, config=config, fallback_alias=default_alias)
+                return client, str(getattr(client, "name", "") or default_alias)
+            except Exception:  # ponytail: bare except intentional — role failure falls back below
+                pass
         client = router.get_client(default_alias)
         return client, default_alias
     except Exception:  # ponytail: bare except intentional
