@@ -59,14 +59,25 @@ def test_review_llm_exception_fail_closed():
 
 
 def test_review_llm_exception_group_fail_closed():
-    """An anyio-style group from the model call must also fail closed, never
-    propagate. Mixed with a BaseException so it is a TRUE BaseExceptionGroup
-    (an all-Exception group narrows to ExceptionGroup, an Exception subclass,
-    which even a bare ``except Exception`` catches — that would not prove the
-    fail-closed path)."""
-    group = BaseExceptionGroup("model task group died", [ConnectionError("epipe"), KeyboardInterrupt("intr")])
+    """An anyio-style group of plain errors from the model call must fail
+    closed, never propagate. (All-``Exception`` leaves narrow to
+    ``ExceptionGroup``, an ``Exception`` subclass — the realistic model-call
+    failure shape; a group carrying cancellation/user-abort must instead
+    propagate, covered by the next test.)"""
+    group = ExceptionGroup("model task group died", [ConnectionError("epipe")])
     out = _reviewer_with(side_effect=group).review("r", "10.0.0.50", "g")
     assert out.safe_to_proceed is False
+
+
+def test_review_cancellation_propagates():
+    """Cancellation / user-abort must never be swallowed into a review —
+    it propagates so the run tears down. (Global rule: never swallow
+    ``CancelledError``; ``KeyboardInterrupt`` likewise aborts.)"""
+    import asyncio
+
+    for exc in (asyncio.CancelledError("cancelled"), KeyboardInterrupt("intr")):
+        with pytest.raises(type(exc)):
+            _reviewer_with(side_effect=exc).review("r", "10.0.0.50", "g")
 
 
 # ── 2. dict vs object response shapes ────────────────────────────────────────
