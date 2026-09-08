@@ -325,14 +325,30 @@ export function useHostPlatform() {
 }
 
 export function useTelemetry() {
+  const qc = useQueryClient();
   return useQuery<TelemetryResponse>({
     queryKey: queryKeys.telemetry,
     queryFn: () => apiFetch<TelemetryResponse>("/system/telemetry"),
     ...defaultQueryOptions,
     staleTime: 15_000,
-    // Active-tab only: telemetry is advisory, and background polling kept an
-    // idle dashboard hitting the daemon every 8s forever.
-    refetchInterval: POLL_FAST,
+    // Telemetry is advisory and mounted on every page (via useSessionTokens in
+    // Layout). Poll fast only while an active run is cached; otherwise a slow
+    // backstop so idle dashboards stop hitting the daemon every 5s forever.
+    refetchInterval: () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return POLL_IDLE;
+      const all = qc.getQueriesData<unknown>({ queryKey: ["runs"] });
+      for (const [, data] of all) {
+        if (!data || typeof data !== "object") continue;
+        const rec = data as { runs?: unknown; state?: unknown };
+        if (Array.isArray(rec.runs)) {
+          if ((rec.runs as { state?: unknown }[]).some((r) => isActiveState(r?.state as never))) return POLL_FAST;
+        } else if (typeof rec.state === "string" && isActiveState(rec.state as never)) {
+          return POLL_FAST;
+        }
+      }
+      return POLL_IDLE;
+    },
+    refetchIntervalInBackground: false,
   });
 }
 

@@ -100,7 +100,18 @@ export function EventViewer({
   }, [query]);
 
   useEffect(() => {
+    // A new run is a fresh stream: drop the previous run's older-events
+    // buffer, paging cursor, errors, and view state so nothing leaks across.
     setBootDismissed(false);
+    setOlder([]);
+    setHasMoreOlder(false);
+    setOlderError("");
+    setFilter("all");
+    setQuery("");
+    setDebouncedQuery("");
+    setPaused(false);
+    setUnseen(0);
+    followRef.current = true;
   }, [runId]);
 
   const decisionsById = useMemo(() => new Map(decisions.map((d) => [d.id, d])), [decisions]);
