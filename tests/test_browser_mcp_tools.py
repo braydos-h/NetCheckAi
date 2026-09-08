@@ -419,6 +419,46 @@ def test_replay_by_event_id_and_rejections(tmp_path, monkeypatch):
     assert missing.startswith("BLOCKED:")
 
 
+def test_replay_rejects_non_replayable_event(tmp_path, monkeypatch):
+    """browser_replay refuses a captured event whose replayable flag is False
+    (non-HTTP(S) scheme) — the flag set at capture time is honored."""
+
+    class WsLauncher(FakeLauncher):
+        def __init__(self) -> None:
+            super().__init__()
+            self._armed = True
+
+        async def take_network(self, token: str, *, body_sample_max_bytes: int = 4096, target_ip: str = "") -> list:
+            del token, body_sample_max_bytes, target_ip
+            if not self._armed:
+                return []
+            self._armed = False
+            return [
+                {
+                    "direction": "request",
+                    "method": "GET",
+                    "url": "ws://10.0.0.50/socket",
+                    "req_headers": {},
+                    "resource_type": "websocket",
+                    "observed_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+
+    import tools.browser.sandbox_launcher as _launcher_mod
+
+    monkeypatch.setattr(_launcher_mod, "resolve_browser_launcher", lambda ctx, config: (WsLauncher(), ""))
+    from tools.browser import playwright_backend as _mod
+
+    monkeypatch.setattr(_mod, "playwright_present", lambda: True)
+    mcp, _ctx = _register(_opt_in_config(), tmp_path)
+    session_id = _started_session(mcp)
+    listed = mcp.tools["browser_network_events"]("10.0.0.50", session_id)
+    event_id = [line for line in listed.splitlines() if "ws://10.0.0.50/socket" in line][0].split()[1].strip("[]")
+    refused = mcp.tools["browser_replay"]("10.0.0.50", session_id, event_id=event_id)
+    assert refused.startswith("BLOCKED:")
+    assert "not replayable" in refused
+
+
 def test_launcher_state_survives_across_tool_calls(tmp_path, monkeypatch):
     """Engine tokens live in launcher instances: the stack must reuse the
     launcher across calls, or every session orphans after its first call."""

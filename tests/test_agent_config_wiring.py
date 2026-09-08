@@ -387,13 +387,15 @@ def test_swarm_ensure_role_clients_unset_roles_leave_no_keys() -> None:
     """Empty roles resolve to the shared client — no stash keys appear."""
     from tools.swarm.orchestrator import SwarmOrchestrator
 
-    shared_client = _FakeClient("glm")
+    router = _router_with("glm")
+    # Production resolves the shared client from the same cached router, so
+    # identity holds; mirror that by sharing the router's own client object.
+    shared_client = router.get_client("glm")
     context: dict[str, Any] = {
         "config": {"models": {"default_alias": "glm", "roles": {}}},
         "model_client": shared_client,
     }
 
-    router = _router_with("glm")
     with patch("tools.mcp_tools.registry._get_model_router", return_value=router):
         orch = SwarmOrchestrator(context)
         orch._ensure_role_clients()
@@ -427,7 +429,7 @@ def test_get_model_client_role_falls_back_to_default_alias() -> None:
     config = {"models": {"default_alias": "glm", "roles": {}}}
     with (
         patch.object(_registry, "_get_model_router", return_value=router),
-        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+        patch("tools.config_manager.get_ai_provider", return_value="ollama"),
     ):
         client, name = _registry._get_model_client(config, role="planner")
         assert client.name == "glm"
@@ -442,7 +444,7 @@ def test_get_model_client_role_resolves_configured_role() -> None:
     config = {"models": {"default_alias": "glm", "roles": {"code_generator": "deepseek"}}}
     with (
         patch.object(_registry, "_get_model_router", return_value=router),
-        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+        patch("tools.config_manager.get_ai_provider", return_value="ollama"),
     ):
         client, name = _registry._get_model_client(config, role="code_generator")
         assert client.name == "deepseek"
@@ -457,9 +459,24 @@ def test_get_model_client_without_role_is_unchanged() -> None:
     config = {"models": {"default_alias": "glm", "roles": {"planner": "deepseek"}}}
     with (
         patch.object(_registry, "_get_model_router", return_value=router),
-        patch("tools.mcp_tools.registry.get_ai_provider", return_value="ollama"),
+        patch("tools.config_manager.get_ai_provider", return_value="ollama"),
     ):
         client, name = _registry._get_model_client(config)
+        assert client.name == "glm"
+        assert name == "glm"
+
+
+def test_get_model_client_typo_role_falls_back_to_default() -> None:
+    """Non-empty but unresolvable role alias falls back to default, never raises."""
+    import tools.mcp_tools.registry as _registry
+
+    router = _router_with("glm")
+    config = {"models": {"default_alias": "glm", "roles": {"planner": "no-such-alias"}}}
+    with (
+        patch.object(_registry, "_get_model_router", return_value=router),
+        patch("tools.config_manager.get_ai_provider", return_value="ollama"),
+    ):
+        client, name = _registry._get_model_client(config, role="planner")
         assert client.name == "glm"
         assert name == "glm"
 

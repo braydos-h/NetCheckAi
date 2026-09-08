@@ -72,10 +72,76 @@ def test_stock_builds_report_no_browser_availability():
     assert browser_available({}) is False
 
 
-def test_capability_unavailable_failure_category_is_reserved():
-    """The category exists for future shortfall classification — nothing sets it.
+def test_capability_unavailable_failure_category_is_emitted():
+    """The runner's capability gate (step 0b) classifies unmet-requirement
+    trials SKIPPED / CAPABILITY_UNAVAILABLE without provisioning anything."""
+    import asyncio
+    from pathlib import Path
+    from unittest.mock import MagicMock
 
-    Runner status/failure mapping must not start emitting it until the
-    capability-gated skip path is implemented (deferred by design).
-    """
-    assert FailureCategory.CAPABILITY_UNAVAILABLE.value == "CAPABILITY_UNAVAILABLE"
+    from tools.benchmark.models import TrialStatus
+    from tools.benchmark.runner import BenchmarkRunner
+
+    scenario = parse_manifest({**BASE_MANIFEST, "requires_capabilities": ["browser.navigate"]})
+    runner = BenchmarkRunner(
+        {},  # stock config: no browser backend -> requirement unmet
+        Path("reports/benchmarks"),
+        run_session=MagicMock(),
+        target_manager=MagicMock(),  # must never be touched (no provisioning)
+    )
+    event_logger = MagicMock()
+    trial = asyncio.run(
+        runner._run_trial(
+            scenario,
+            0,
+            f"{scenario.scenario_id}#t1",
+            runner._make_target_manager(),
+            MagicMock(),
+            event_logger,
+            run_id="run-cap-test",
+            run_dir=Path("/tmp/bp-cap-test"),
+            sandbox_required=False,
+            sandbox_shortfall=False,
+            progress=None,
+        )
+    )
+    assert trial.status == TrialStatus.SKIPPED.value
+    assert trial.failure_category == FailureCategory.CAPABILITY_UNAVAILABLE.value
+    assert "browser.navigate" in trial.failure_detail
+    logged = [c.args[0] for c in event_logger.log.call_args_list]
+    assert "capability_unavailable" in logged
+
+
+def test_capability_gate_passes_when_requirements_met_or_empty():
+    """Empty requires_capabilities never gates; a met requirement proceeds
+    to the sandbox gate (which returns INFRASTRUCTURE_ERROR here only to
+    prove the capability gate did NOT fire first)."""
+    import asyncio
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from tools.benchmark.models import TrialStatus
+    from tools.benchmark.runner import BenchmarkRunner
+
+    plain = parse_manifest(BASE_MANIFEST)  # requires_capabilities == []
+    runner = BenchmarkRunner({}, Path("reports/benchmarks"), run_session=MagicMock())
+    event_logger = MagicMock()
+    trial = asyncio.run(
+        runner._run_trial(
+            plain,
+            0,
+            f"{plain.scenario_id}#t1",
+            MagicMock(),  # provision raises -> proves we got past the gate
+            MagicMock(),
+            event_logger,
+            run_id="run-cap-test",
+            run_dir=Path("/tmp/bp-cap-test"),
+            sandbox_required=False,
+            sandbox_shortfall=False,
+            progress=None,
+        )
+    )
+    # No capability gate fired: the trial proceeded past step 0b (it fails
+    # later on the MagicMock manager, which is fine — the gate is what we pin).
+    assert trial.status != TrialStatus.SKIPPED.value
+    assert trial.failure_category != FailureCategory.CAPABILITY_UNAVAILABLE.value

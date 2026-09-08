@@ -707,6 +707,11 @@ def register_browser_tools(mcp: Any, *, ctx: ToolContext) -> None:
                     f"ERROR: unknown network event {event_id.strip()!r} for this session. "
                     "List events via browser_network_events first."
                 )
+            if not bool(getattr(match, "replayable", False)):
+                return (
+                    f"BLOCKED: network event {event_id.strip()!r} is not replayable "
+                    "(non-HTTP(S) scheme or unparsable URL — only http/https events replay)."
+                )
             base_url = match.url
             base_method = match.method or "GET"
             base_headers = dict(match.request_headers or {})

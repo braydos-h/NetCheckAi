@@ -72,7 +72,14 @@ def _ensure_role_clients(self) -> None:
         if router is None:
             return
         shared = self._context.get("model_client")
+        roles_cfg = (cfg.get("models", {}) or {}).get("roles", {}) or {}
         for role, key in _ROLE_CONTEXT_KEYS:
+            # Only a non-empty role mapping stashes a client — an empty role
+            # resolves to the default alias, whose router-built client is a
+            # different object than the shared one and would stash a useless
+            # duplicate (plus override caller-supplied fakes in tests).
+            if not str(roles_cfg.get(role, "") or "").strip():
+                continue
             try:
                 client = router.get_client_for_role(role, config=cfg)
             except Exception:  # noqa: BLE001 — one bad role never blocks the others

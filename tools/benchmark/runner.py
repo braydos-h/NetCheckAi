@@ -338,6 +338,36 @@ class BenchmarkRunner:
             trial.ended_at = datetime.now(timezone.utc).isoformat()
             return trial
 
+        # 0b. Capability gate: a scenario whose requires_capabilities the
+        # running build cannot provide skips without provisioning anything.
+        # Detection reuses tools.browser.capabilities.unmet_requirements —
+        # no browser is ever launched to decide this. SKIPPED (not FAILED):
+        # an unavailable capability says nothing about exploitation ability.
+        try:
+            _required = list(getattr(scenario, "requires_capabilities", []) or [])
+        except Exception:  # ponytail: bare except intentional — malformed scenario means no gate
+            _required = []
+        if _required:
+            try:
+                from tools.browser.capabilities import unmet_requirements as _unmet_requirements
+
+                _unmet = _unmet_requirements(_required, self.config)
+            except Exception:  # ponytail: bare except intentional — detection failure means no gate
+                _unmet = []
+            if _unmet:
+                trial.status = TrialStatus.SKIPPED.value
+                trial.failure_category = FailureCategory.CAPABILITY_UNAVAILABLE.value
+                trial.failure_detail = f"unmet requires_capabilities: {', '.join(_unmet)}"
+                trial.ended_at = datetime.now(timezone.utc).isoformat()
+                event_logger.log(
+                    "capability_unavailable",
+                    {"detail": trial.failure_detail, "unmet": _unmet},
+                    trial_id=trial_id,
+                    scenario_id=scenario.scenario_id,
+                    level="warn",
+                )
+                return trial
+
         # 1. Provision (or reset) the target. Reset failures map distinctly
         # from first-provision failures.
         try:

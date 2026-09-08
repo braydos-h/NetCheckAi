@@ -83,8 +83,10 @@ newer/older never breaks a reader).
   (`BrowserActionKind`: navigate / observe / execute_js / screenshot /
   get_network_events / get_storage / discover_forms / discover_endpoints /
   replay_request / submit_form / wait / close) + free-form `parameters` +
-  `run_id` + `target_ip`. `replay_request` and `submit_form` are declared but
-  deferred — no preparation code path can execute them.
+  `run_id` + `target_ip`. `replay_request` and `submit_form` execute behind
+  the explicit lab opt-in `browser.allow_mutating_actions` (Phase 2, landed;
+  without it both return `BLOCKED`). `browser_replay` additionally refuses
+  captured events whose `replayable` flag is False.
 - **`BrowserObservation`** — compact harvest of one kind
   (`BrowserObservationKind`: page_state / dom / forms / endpoints / network /
   storage / console / screenshot / scripts). Carries `payload`, `sensitive`
@@ -98,7 +100,8 @@ newer/older never breaks a reader).
   scripts, framework indicators, `graphql_endpoints`.
 - **`BrowserNetworkEvent`** — request/response record with headers, sizes +
   sha256 digests, optional truncated `body_sample` (treated as sensitive),
-  `replayable` flag (future).
+  `replayable` flag (True for http/https captures; `browser_replay` refuses
+  non-replayable events).
 - **`BrowserCookie` / `BrowserStorageSnapshot`** — credential material.
   `to_dict()` redacts values by DEFAULT; `to_dict(redact=False)` is the
   explicit opt-in for the credential-store path only (§6).

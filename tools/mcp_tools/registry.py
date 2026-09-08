@@ -160,7 +160,18 @@ def _get_model_client(config: dict[str, Any] | None, role: str = "") -> tuple[An
     else:
         default_alias = str((config or {}).get("models", {}).get("default_alias", "glm") or "glm")
     try:
+        # Only resolve a role when models.roles.<role> names a non-empty
+        # alias — an empty role falls back to the default alias anyway, so
+        # skip the round-trip (and never mask a typo'd alias: a non-empty
+        # but unresolvable role falls through to the default below).
+        _role_alias = ""
         if role:
+            try:
+                _roles_cfg = ((config or {}).get("models", {}) or {}).get("roles", {}) or {}
+                _role_alias = str(_roles_cfg.get(role, "") or "").strip()
+            except Exception:  # ponytail: bare except intentional
+                _role_alias = ""
+        if _role_alias:
             try:
                 client = router.get_client_for_role(role, config=config, fallback_alias=default_alias)
                 return client, str(getattr(client, "name", "") or default_alias)

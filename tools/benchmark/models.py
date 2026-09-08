@@ -83,10 +83,10 @@ class FailureCategory(str, Enum):
     NO_EXPLOIT_PATH = "NO_EXPLOIT_PATH"
     AGENT_ABORTED = "AGENT_ABORTED"
     TARGET_RESET_FAILED = "TARGET_RESET_FAILED"
-    #: Reserved for future capability-shortfall classification: a trial whose
-    #: scenario declares ``requires_capabilities`` the running build cannot
-    #: provide (e.g. browser.* with no backend). Nothing sets this today —
-    #: detection is via tools/browser/capabilities.unmet_requirements.
+    #: Capability-shortfall classification: a trial whose scenario declares
+    #: ``requires_capabilities`` the running build cannot provide (e.g.
+    #: browser.* with no backend). Set by the runner's capability gate
+    #: (step 0b) via tools/browser/capabilities.unmet_requirements.
     CAPABILITY_UNAVAILABLE = "CAPABILITY_UNAVAILABLE"
     UNKNOWN = "UNKNOWN"
 
@@ -144,11 +144,11 @@ class BenchmarkScenario:
     source_manifest: str = ""  # path/URL of the definition, for reproducibility
     #: Capability names the scenario cannot run without (e.g.
     #: ``["browser.navigate", "browser.dom.inspect"]``). Scenarios declare
-    #: requirements only — nothing here evaluates or launches them; a
-    #: capability-unavailable build detects the shortfall via
-    #: ``tools.browser.capabilities.unmet_requirements`` and (in a later
-    #: change) classifies such trials SKIPPED / CAPABILITY_UNAVAILABLE
-    #: instead of running them. Default [] = same behavior as before.
+    #: requirements only — nothing here evaluates or launches them; the
+    #: runner's capability gate detects the shortfall via
+    #: ``tools.browser.capabilities.unmet_requirements`` and classifies such
+    #: trials SKIPPED / CAPABILITY_UNAVAILABLE instead of running them.
+    #: Default [] = same behavior as before.
     requires_capabilities: list[str] = field(default_factory=list)
 
     @property
