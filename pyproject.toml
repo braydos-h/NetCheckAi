@@ -103,6 +103,11 @@ tools = ["mitre_technique_map.json"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 120
+# ponytail: bare pytest runs the CI envelope (mocked/offline). Docker-backed
+# integration + live-LLM evals are opt-in via `-m integration` / `-m live_llm`;
+# without this, concurrent `-n auto` full-suite runs on a laptop spawn real
+# containers/Chromium against the same GPU kwin is compositing on.
+addopts = ["-m", "not integration and not live_llm"]
 markers = [
     "live_llm: live-model evaluations requiring API keys/network (skipped in normal CI)",
     "integration: integration tests requiring Docker or external services (skipped in normal CI when unavailable)",

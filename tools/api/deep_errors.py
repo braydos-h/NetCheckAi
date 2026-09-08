@@ -83,7 +83,9 @@ async def emit_deep_error(
         record = build_deep_error_record(run_id, kind=kind, exc=exc, ctx=ctx)
         await sink.emit("error", record)
         if reports_dir is not None:
-            with open(Path(reports_dir) / "errors.jsonl", "a", encoding="utf-8") as handle:
+            _mirror = Path(reports_dir) / "errors.jsonl"
+            _mirror.parent.mkdir(parents=True, exist_ok=True)
+            with open(_mirror, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, default=str) + "\n")
     except _EXC_GROUP_CATCH:
         pass

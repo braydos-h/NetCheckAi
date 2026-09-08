@@ -8,11 +8,28 @@ fixtures are opt-in, never breaking.
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 from tools.api.event_broker import _reset_plugin_dispatcher
+
+
+def pytest_xdist_auto_num_workers(config):  # type: ignore[no-untyped-def]
+    """Cap ``-n auto`` workers to the CI value (``-n 2``).
+
+    CI's blessed invocation is ``-n 2 -m "not integration and not live_llm"``;
+    bare local runs must not exceed it. Override via
+    PYTEST_XDIST_AUTO_NUM_WORKERS.
+    """
+    env = os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return 2
 
 
 @pytest.fixture(autouse=True)
