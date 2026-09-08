@@ -463,11 +463,11 @@ class RunEventBroker:
                 "type": event_type,
                 "payload": clean,
             }
-            self._events_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._events_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event, default=str) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+            # ponytail: fsync off the event-loop thread — a sync fsync here
+            # stalled every emitter/subscriber on the loop. The asyncio lock
+            # is held across the await (waiters yield, they don't stall), so
+            # sequence order == file order is preserved.
+            await asyncio.to_thread(self._append_event_sync, event)
             self._ring.append(event)
             subscribers = tuple(self._subscribers)
         for queue in subscribers:
