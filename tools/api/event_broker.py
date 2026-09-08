@@ -8,9 +8,11 @@ run — the ring buffer holds recent events for reconnect.
 Plugin dispatch
 ---------------
 
-``RunEventBroker.emit()`` persists the event (JSONL + WS fan-out) while
-holding ``_lock`` so ``sequence`` ordering and durability are preserved.
-After the lock is released the event is handed to a bounded
+``RunEventBroker.emit()`` assigns ``sequence`` under ``_lock``, persists the
+event to JSONL off the event-loop thread (open/write/flush/fsync via
+``asyncio.to_thread``, serialized by ``_persist_lock`` so file order matches
+sequence order), then fans out to WS subscribers. After the locks are
+released the event is handed to a bounded
 producer/consumer dispatcher for outbound-only plugin subscribers
 (``webhook_notify`` etc.).
 

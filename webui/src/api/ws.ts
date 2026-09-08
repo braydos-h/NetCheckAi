@@ -5,7 +5,7 @@ import { queryKeys } from "@/api/hooks";
 import { eventStore } from "@/api/eventStore";
 import { MAX_EVENTS_PER_RUN, appendBounded } from "@/api/eventBuffer";
 import { streamSSE, type SseHandle } from "@/api/sse";
-import type { EventReplayResponse, RunDetail, RunEvent, RunState } from "@/api/types";
+import { isTerminalState, type EventReplayResponse, type RunDetail, type RunEvent, type RunState } from "@/api/types";
 
 export type WsStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "error";
 

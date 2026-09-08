@@ -62,6 +62,7 @@ from tools.run_service.providers import (
     ApiEventSink,
     CancellationToken,
 )
+from tools.validation_utils import resolve_target_to_ip
 
 if TYPE_CHECKING:
     from tools.run_service.service import Callables
