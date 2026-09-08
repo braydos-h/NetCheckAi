@@ -1,8 +1,6 @@
-# BreachPilot — Autonomous Security Assessment
+# BreachPilot — Autonomous Security Testing
 
 <div align="center">
-
-**Autonomous security assessment. Operator supervised.**
 
 Open-source agentic operator for authorized testing — plans, verifies, and reports with evidence, target-locked and audited.
 
