@@ -352,3 +352,107 @@ async def test_route_parallel_preserves_input_order():
     ]
     results = await orch.route_parallel(tasks)
     assert [r.task_id for r in results] == ["R-1", "R-2", "R-3"]
+
+
+# ── P3-10: config-driven parallel rollout ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_parallel_flags_resolve_from_config():
+    """P3-10: flipping swarm.parallel flags in config (not constructor args)
+    reaches the orchestrator — max_parallel_agents, per_phase_concurrency,
+    and exploit_parallel all resolve from context config. Explicit
+    constructor args still win over config."""
+    orch = SwarmOrchestrator(
+        {
+            "config": {
+                "swarm": {
+                    "max_parallel_agents": 5,
+                    "per_phase_concurrency": 2,
+                    "exploit_parallel": True,
+                }
+            }
+        },
+        critic_enabled=False,
+    )
+    assert orch._max_parallel == 5
+    assert orch._per_phase_concurrency == 2
+    assert orch._exploit_parallel is True
+
+    # Explicit args win over config.
+    orch2 = SwarmOrchestrator(
+        {"config": {"swarm": {"max_parallel_agents": 5, "exploit_parallel": True}}},
+        critic_enabled=False,
+        max_parallel=2,
+        exploit_parallel=False,
+    )
+    assert orch2._max_parallel == 2
+    assert orch2._exploit_parallel is False
+
+    # Absent block keeps schema defaults (3 / 3 / False).
+    orch3 = SwarmOrchestrator({"config": {}}, critic_enabled=False)
+    assert orch3._max_parallel == 3
+    assert orch3._per_phase_concurrency == 3
+    assert orch3._exploit_parallel is False
+
+
+@pytest.mark.asyncio
+async def test_lab_rollout_three_agent_batch_with_dedup():
+    """P3-10 proof: a lab-only 3-agent recon/vuln/critic batch with flags
+    flipped completes with blackboard dedup and no duplicate target touch.
+
+    Each agent records the targets it touched; the batch asserts every
+    target was touched exactly once per phase (no duplicate dispatches)
+    and the blackboard merged all three phases' findings (dedup, not
+    last-writer-wins)."""
+    touched: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    class _RecordingAgent(Agent):
+        phase_name = "recon"
+
+        def run(self, task, context):
+            target = task.get("target", "")
+            with lock:
+                touched.append((self.phase_name, target))
+            bb = context.get("blackboard", {})
+            from tools.swarm.bb_compat import bb_set
+
+            bb_set(bb, f"{self.phase_name}_complete", True, target=target)
+            bb_set(bb, "vulnerability_hypotheses", [{"phase": self.phase_name, "target": target}], target=target)
+            return AgentResult(
+                agent_type=self.agent_type,
+                status=AgentStatus.COMPLETE,
+                task_id=task.get("task_id", ""),
+                output={"phase": self.phase_name, "target": target},
+            )
+
+    class _Recon(_RecordingAgent):
+        phase_name = "recon"
+
+    class _Vuln(_RecordingAgent):
+        phase_name = "analysis"
+
+    class _Criticish(_RecordingAgent):
+        phase_name = "critic"
+
+    orch = SwarmOrchestrator(
+        {"config": {"swarm": {"max_parallel_agents": 3, "per_phase_concurrency": 3}}},
+        agent_registry={"recon": _Recon, "analysis": _Vuln, "critic": _Criticish},
+        critic_enabled=False,
+        max_parallel=3,
+    )
+    tasks = [
+        {"task_id": "R-1", "phase": "recon", "target": "127.0.0.1"},
+        {"task_id": "V-1", "phase": "analysis", "target": "127.0.0.1"},
+        {"task_id": "C-1", "phase": "critic", "target": "127.0.0.1", "force_parallel": True},
+    ]
+    results = await orch.route_parallel(tasks)
+    assert len(results) == 3
+    assert all(r.status == AgentStatus.COMPLETE for r in results)
+    # No duplicate target touch: each (phase, target) dispatched exactly once.
+    assert sorted(touched) == sorted([("recon", "127.0.0.1"), ("analysis", "127.0.0.1"), ("critic", "127.0.0.1")])
+    # Blackboard dedup: all three phases' hypotheses merged, none dropped.
+    hyps = orch.get_blackboard().get("vulnerability_hypotheses", [])
+    phases = sorted(h.get("phase", "") for h in hyps if isinstance(h, dict))
+    assert phases == ["analysis", "critic", "recon"]

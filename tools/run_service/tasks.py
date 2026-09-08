@@ -433,6 +433,10 @@ class TasksMixin:
             # on the autonomous path. Both read defensively downstream.
             "models": (config or {}).get("models", {}),
             "agent": (config or {}).get("agent", {}),
+            # P3-10: the swarm block rides along so SwarmOrchestrator reads
+            # max_parallel_agents / per_phase_concurrency / exploit_parallel
+            # from config on Flow A (previously constructor-only defaults).
+            "swarm": (config or {}).get("swarm", {}),
         }
         swarm_workspace = reports_dir / "swarm_workspace"
         swarm_workspace.mkdir(parents=True, exist_ok=True)

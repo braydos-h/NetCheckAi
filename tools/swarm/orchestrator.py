@@ -38,6 +38,23 @@ _DEFAULT_AGENT_MAP: dict[str, type[Agent]] = {
 }
 
 
+def _swarm_config(config: Any) -> dict[str, Any]:
+    """Defensive ``swarm`` config-block read (never raises, {} when absent).
+
+    P3-10 seam: parallel flags (``max_parallel_agents``,
+    ``per_phase_concurrency``, ``exploit_parallel``, ``parallel_enabled``)
+    resolve through here so constructor ``None`` defaults pick up a flipped
+    config.yaml. Explicit constructor args always win over this.
+    """
+    try:
+        if not isinstance(config, dict):
+            return {}
+        swarm_cfg = config.get("swarm", {})
+        return dict(swarm_cfg) if isinstance(swarm_cfg, dict) else {}
+    except Exception:  # ponytail: bare except intentional — malformed config means defaults
+        return {}
+
+
 class SwarmOrchestrator:
     """Routes tasks to registered agents and aggregates their results.
 
@@ -57,7 +74,7 @@ class SwarmOrchestrator:
         context: dict[str, Any],
         *,
         agent_registry: dict[str, type[Agent]] | None = None,
-        max_parallel: int = 3,
+        max_parallel: int | None = None,
         critic_enabled: bool = True,
         reflection_enabled: bool = True,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
@@ -67,7 +84,7 @@ class SwarmOrchestrator:
         # first policy (only recon + analysis parallelize). True = exploits
         # also run in parallel (higher IDS/crash risk; opt in via
         # ``swarm.exploit_parallel: true`` in config.yaml).
-        exploit_parallel: bool = False,
+        exploit_parallel: bool | None = None,
         # Bounded critic↔exploit negotiation rounds. 0 = legacy one-shot
         # behavior (critic's ``modify`` is applied once, then the task runs).
         # N>0 = after applying a ``modify``, the modified task is re-reviewed
@@ -81,11 +98,28 @@ class SwarmOrchestrator:
     ) -> None:
         self._context = context
         self._agent_registry = agent_registry or dict(_DEFAULT_AGENT_MAP)
-        self._max_parallel = max_parallel
+        # P3-10: parallel flags resolve explicit-arg → config → schema
+        # default. ``None`` (the new default) means "read
+        # ``swarm.max_parallel_agents`` / ``swarm.exploit_parallel`` /
+        # ``swarm.per_phase_concurrency`` from context config"; an explicit
+        # arg always wins (tests + legacy/agent_loop.py pass theirs
+        # directly). Previously the flags were constructor-only, so a
+        # flipped config.yaml never reached the orchestrator on Flow A.
+        _swarm_cfg = _swarm_config(context.get("config"))
+        self._max_parallel = (
+            max(1, int(max_parallel))
+            if max_parallel is not None
+            else max(1, int(_swarm_cfg.get("max_parallel_agents", 3) or 3))
+        )
+        self._per_phase_concurrency = max(
+            1, int(_swarm_cfg.get("per_phase_concurrency", self._max_parallel) or self._max_parallel)
+        )
         self._critic_enabled = critic_enabled
         self._reflection_enabled = reflection_enabled
         self._event_callback = event_callback
-        self._exploit_parallel = exploit_parallel
+        self._exploit_parallel = (
+            bool(exploit_parallel) if exploit_parallel is not None else bool(_swarm_cfg.get("exploit_parallel", False))
+        )
         self._negotiation_rounds = max(0, int(negotiation_rounds))
         self._state_path: Path | None = Path(state_path) if state_path else None
         self._agents: dict[str, Agent] = {}
@@ -362,7 +396,11 @@ class SwarmOrchestrator:
             else:
                 sequential_tasks.append(t)
 
-        semaphore = asyncio.Semaphore(self._max_parallel)
+        # P3-10: ``swarm.per_phase_concurrency`` sizes the same-phase
+        # semaphore (schema default 3); ``max_parallel`` stays the
+        # constructor-level ceiling for backward compatibility. Explicit
+        # constructor args and config both flow through __init__.
+        semaphore = asyncio.Semaphore(max(1, min(self._per_phase_concurrency, self._max_parallel)))
 
         async def _run_one(task: dict[str, Any]) -> AgentResult:
             # Precondition gating: wait for the dependency milestone before

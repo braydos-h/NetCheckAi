@@ -80,9 +80,7 @@ def test_sandbox_opt_out_returns_in_process_launcher():
 
     import tools.browser.sandbox_launcher as _launcher_mod
 
-    launcher, block = _launcher_mod.resolve_browser_launcher(
-        types.SimpleNamespace(), {"sandbox": {"enabled": False}}
-    )
+    launcher, block = _launcher_mod.resolve_browser_launcher(types.SimpleNamespace(), {"sandbox": {"enabled": False}})
     assert block == ""
     assert getattr(launcher, "kind", "") == "in_process"
 
