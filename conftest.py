@@ -25,6 +25,42 @@ import traceback
 
 import pytest
 
+# Tests in this repository are intended to be hermetic.  In particular, a
+# test process must not inherit the desktop's GPU/display stack just because
+# pytest was started from a Wayland terminal.  A native graphics or BLAS
+# library can otherwise create GPU contexts or a large number of worker
+# threads before a test has had a chance to mock it.  Keep an escape hatch for
+# the small number of explicitly hardware-backed tests.
+_TEST_HARDWARE_OPT_IN = "BREACHPILOT_TEST_ALLOW_HARDWARE"
+_SAFE_TEST_ENV = {
+    "CUDA_VISIBLE_DEVICES": "",
+    "ROCR_VISIBLE_DEVICES": "",
+    "HIP_VISIBLE_DEVICES": "",
+    "NVIDIA_VISIBLE_DEVICES": "void",
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "QT_QPA_PLATFORM": "offscreen",
+    "MPLBACKEND": "Agg",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+}
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Make ordinary pytest runs independent of the logged-in desktop.
+
+    This hook runs before test modules are collected, so optional numerical,
+    plotting, or Qt dependencies see the safe environment during import.
+    Hardware-backed tests can opt in explicitly with
+    ``BREACHPILOT_TEST_ALLOW_HARDWARE=1``.
+    """
+    if os.environ.get(_TEST_HARDWARE_OPT_IN) == "1":
+        return
+    os.environ.update(_SAFE_TEST_ENV)
+
+
 try:
     import _pytest.nodes as _n
 
