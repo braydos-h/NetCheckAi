@@ -475,10 +475,17 @@ class _FakeOrchestrator:
     the real handler bodies.
     """
 
-    def __init__(self, tmp_path: Path, *, enabled: bool, executor: Any) -> None:
+    def __init__(
+        self, tmp_path: Path, *, enabled: bool, executor: Any, snapshots_enabled: bool = True
+    ) -> None:
         from tools.campaign.state import AttackState as CampaignState
 
-        self._mission = {"killchain": {"enabled": enabled, "goal_state": "shell_as_user"}, "agent": {}}
+        self._mission = {
+            "killchain": {"enabled": enabled, "goal_state": "shell_as_user"},
+            # P3-11 pack gate: the gated-on path needs the snapshot net.
+            "snapshots": {"enabled": snapshots_enabled},
+            "agent": {},
+        }
         self._workspace = tmp_path
         self._tool_executor = executor
         self._killchain_enabled = enabled
@@ -527,6 +534,18 @@ def test_orchestrator_falls_back_when_disabled(tmp_path: Path) -> None:
     orch = _FakeOrchestrator(tmp_path, enabled=False, executor=lambda name, args: "OUTPUT: ok")
     assert asyncio.run(orch._phase_killchain(orch.state)) is False
     assert not any(str(e.get("event_type", "")).startswith("killchain") for e in orch.state.timeline)
+
+
+def test_orchestrator_killchain_blocked_without_snapshots(tmp_path: Path) -> None:
+    """P3-11 pack gate: campaign killchain without the snapshot net fails
+    fast (timeline event, no playbook runs) instead of running net-less."""
+    import asyncio
+
+    orch = _FakeOrchestrator(
+        tmp_path, enabled=True, executor=lambda name, args: "OUTPUT: ok", snapshots_enabled=False
+    )
+    assert asyncio.run(orch._phase_killchain(orch.state)) is False
+    assert any(e.get("event_type") == "killchain_blocked_no_snapshots" for e in orch.state.timeline)
 
 
 # ---------------------------------------------------------------------------

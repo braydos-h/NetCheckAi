@@ -75,10 +75,16 @@ def _drive(tmp_path, **kwargs):
 
 
 def test_group_is_not_an_exception_but_is_in_exc_group_catch():
-    """Pin the reason the helper exists: a bare ``except Exception`` misses a
-    dead-task-group ``BaseExceptionGroup``; ``_EXC_GROUP_CATCH`` gets it."""
-    assert not issubclass(BaseExceptionGroup, Exception)
-    group = BaseExceptionGroup("stdio task group died", [ConnectionError("epipe")])
+    """Pin the reason the helper exists: a task-group death group carrying a
+    non-``Exception`` (cancellation / keyboard interrupt / subprocess kill)
+    is a true ``BaseExceptionGroup`` — a bare ``except Exception`` MISSES it
+    while ``_EXC_GROUP_CATCH`` gets it.
+
+    (An all-``Exception`` group auto-narrows to ``ExceptionGroup``, an
+    ``Exception`` subclass, so the probe must mix in a ``BaseException`` to
+    exercise the real miss path.)"""
+    group = BaseExceptionGroup("stdio task group died", [ConnectionError("epipe"), KeyboardInterrupt("intr")])
+    assert not isinstance(group, Exception)
     assert _is_exception_group(group) is True
 
     caught = False

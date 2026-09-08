@@ -128,7 +128,10 @@ async def test_run_manager_second_answer_is_404(tmp_path):
     try:
         persistence.create_run(run_id="r1", request={}, preview={}, state="awaiting_input")
         handle = RunHandle("r1")
-        handle.event_broker = registry.get_or_create("r1")
+        # Stub the event broker: the contract under test is the 404 mapping,
+        # not the WS fan-out (which needs a live loop + JSONL broker).
+        handle.event_broker = MagicMock()
+        handle.event_broker.emit = AsyncMock(return_value={})
         handle.decision_broker = DecisionBroker("r1", persistence)
         manager._active["r1"] = handle
         decision = Decision(

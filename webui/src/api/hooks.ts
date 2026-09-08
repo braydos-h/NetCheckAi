@@ -740,7 +740,7 @@ export function useRuns(limit = 50, offset = 0, sort: string = "created_desc", q
   });
 }
 
-export function useRun(runId: string | null | undefined) {
+export function useRun(runId: string | null | undefined, live = false) {
   return useQuery<RunDetail>({
     queryKey: queryKeys.run(runId ?? ""),
     queryFn: () => apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId as string)}`),
@@ -753,7 +753,9 @@ export function useRun(runId: string | null | undefined) {
       // wizard's startup panel reflects the transition promptly.
       if (data.state === "preparing") return 1_000;
       if (data.state === "running" || data.state === "queued" || data.state === "cancelling") {
-        return POLL_FAST;
+        // The WS stream patches state/result into this cache live; when it is
+        // healthy the poll is only a backstop.
+        return live ? POLL_IDLE : POLL_FAST;
       }
       return false;
     },
