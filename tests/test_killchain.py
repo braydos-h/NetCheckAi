@@ -435,6 +435,21 @@ def test_killchain_attempt_bad_context_json(tmp_path: Path) -> None:
     assert out.startswith("BLOCKED:")
 
 
+def test_killchain_attempt_fails_fast_without_snapshots(tmp_path: Path) -> None:
+    """P3-11 pack gate: killchain on + snapshots off fails fast with
+    guidance — no playbook runs net-less. Read-only status/plan unaffected."""
+    from tools.mcp_tools.killchain import register_killchain_tools
+
+    mcp = _StubMCP()
+    register_killchain_tools(mcp, ctx=_build_ctx(tmp_path, snapshots_enabled=False))
+    out = mcp.tools["killchain_attempt"](
+        target="10.0.0.50", from_state="creds_in_hand", to_state="shell_as_user"
+    )
+    assert out.startswith("BLOCKED:")
+    assert "snapshots.enabled" in out
+    assert "killchain.enabled" in out
+
+
 def test_killchain_plan_block(tmp_path: Path) -> None:
     from tools.mcp_tools.killchain import register_killchain_tools
 

@@ -57,7 +57,7 @@ import threading
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tools.api.errors import sanitize
 
