@@ -548,6 +548,21 @@ class ExecuteMixin:
             if _is_exception_group(exc):
                 _log_nested_exceptions(exc)
             await event_sink.emit(EVENT_ERROR, {"message": str(exc), "log_path": str(log_path)})
+            # Deep Run Logs: the session "errored out" — mirror the crash
+            # into errors.jsonl so the fixer-agent gets kind/class/traceback,
+            # not just the one-line message above. Fail-open, never gates.
+            try:
+                from tools.run_service.tasks import _emit_service_deep_error
+
+                await _emit_service_deep_error(
+                    event_sink,
+                    reports_dir,
+                    exc,
+                    {"phase": "attack", "response_excerpt": str(log_path)},
+                    kind="tool_error",
+                )
+            except _EXC_GROUP_CATCH:
+                pass
             return RunResult(
                 run_id=run_id,
                 target_ip=target_ip,

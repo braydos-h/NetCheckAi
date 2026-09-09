@@ -46,13 +46,14 @@ from tools.swarm_bridge import SwarmMcpBridge
 ui = get_ui()
 
 
-async def _emit_swarm_deep_error(
+async def _emit_service_deep_error(
     event_sink: Any,
     reports_dir: Path | None,
     exc: BaseException,
     ctx: dict[str, Any],
+    kind: str = "stuck_loop",
 ) -> None:
-    """Best-effort stuck_loop record for swarm timeout/error. Never raises.
+    """Best-effort deep-error record for service-layer failures. Never raises.
 
     Lazy import keeps ``tools.api``/fastapi off the service's cold path;
     ``emit_deep_error`` itself is fail-open, so this double-guards the run.
@@ -64,9 +65,19 @@ async def _emit_swarm_deep_error(
         from tools.api.deep_errors import emit_deep_error
 
         run_id = reports_dir.name if isinstance(reports_dir, Path) else ""
-        await emit_deep_error(event_sink, run_id, kind="stuck_loop", exc=exc, ctx=dict(ctx), reports_dir=reports_dir)
+        await emit_deep_error(event_sink, run_id, kind=kind, exc=exc, ctx=dict(ctx), reports_dir=reports_dir)
     except _EXC_GROUP_CATCH:
         pass
+
+
+async def _emit_swarm_deep_error(
+    event_sink: Any,
+    reports_dir: Path | None,
+    exc: BaseException,
+    ctx: dict[str, Any],
+) -> None:
+    """Best-effort stuck_loop record for swarm timeout/error. Never raises."""
+    await _emit_service_deep_error(event_sink, reports_dir, exc, ctx, kind="stuck_loop")
 
 
 class TasksMixin:
@@ -150,6 +161,16 @@ class TasksMixin:
             ui.warning(f"Recon-first session hit an unexpected error: {exc}")
             if _is_exception_group(exc):
                 _log_nested_exceptions(exc)
+            # Deep Run Logs: a failed recon-first degrades to UNKNOWN and the
+            # run continues — persist the traceback so the fixer-agent sees WHY
+            # recon produced no services/CVEs. Fail-open, never gates.
+            await _emit_service_deep_error(
+                event_sink,
+                reports_dir,
+                exc,
+                {"tool_name": "recon_first", "phase": "recon", "response_excerpt": str(log_path)},
+                kind="preparation",
+            )
             assessment = ReconAssessment(target_ip=target_ip, os_verdict="UNKNOWN", services=[], cve_findings=[])
         if assessment is None:
             assessment = ReconAssessment(target_ip=target_ip, os_verdict="UNKNOWN", services=[], cve_findings=[])
@@ -321,6 +342,15 @@ class TasksMixin:
                 ui.warning(f"Fast recon hit an unexpected error: {exc}")
                 if _is_exception_group(exc):
                     _log_nested_exceptions(exc)
+                # Deep Run Logs: same as recon-first above — the UNKNOWN
+                # fallback hides the cause; keep the traceback in errors.jsonl.
+                await _emit_service_deep_error(
+                    event_sink,
+                    reports_dir,
+                    exc,
+                    {"tool_name": "fast_recon", "phase": "recon", "response_excerpt": str(log_path)},
+                    kind="preparation",
+                )
                 assessment = ReconAssessment(target_ip=target_ip, os_verdict="UNKNOWN", services=[], cve_findings=[])
             if assessment is None:
                 assessment = ReconAssessment(target_ip=target_ip, os_verdict="UNKNOWN", services=[], cve_findings=[])
