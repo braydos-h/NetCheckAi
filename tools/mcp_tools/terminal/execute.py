@@ -42,14 +42,13 @@ from tools.kernel.audit import _mask_secret_content
 from tools.mcp_shared import _is_inside_workspace
 from tools.mcp_tools.registry import ToolContext, _attempt_dir, _positive_int, _run_with_pgrp_timeout
 from tools.mcp_tools.sandbox_exec import (
-    collect_command_targets,
     loopback_hint,
     run_argv_in_sandbox,
     run_command_in_sandbox,
     sandbox_error_block,
     sandbox_fallback_notice,
 )
-from tools.mcp_tools.terminal.allowlist import _opsec_advisory_block, _target_lock_block
+from tools.mcp_tools.terminal.allowlist import _extract_lock_targets, _opsec_advisory_block, _target_lock_block
 from tools.mcp_tools.terminal.privilege import _find_windows_bash, _require_sudo_or_pivot
 from tools.sandbox.exceptions import SandboxError
 from tools.validation_utils import preflight_command_check

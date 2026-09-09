@@ -426,16 +426,9 @@ class SandboxManager:
         pol = self._apply_policy()
         extra_env = self._build_env(env)
         start = time.monotonic()
-        self._audit(
-            target_ip=target_ip,
-            tool_name=tool_name,
-            status="started",
-            command=audit_command,
-            extra_env=extra_env,
-            policy_payload=_policy.audit_policy_payload(pol),
-            exit_code=None,
-            duration=None,
-        )
+        # Collapsed audit: no "started" row (it doubled JSONL volume on the
+        # hot path). The timed_out/terminal rows below carry the duration, so
+        # no execution is ever unaccounted for.
         try:
             rc, out, err = self.backend.exec(
                 container,

@@ -310,6 +310,7 @@ def run_command_in_sandbox(
     cwd_host: Any = None,
     tool_name: str = "",
     user: str = "",
+    targets: list[str] | None = None,
 ) -> tuple[bool, Any]:
     """Execute one shell command inside the session sandbox.
 
@@ -324,6 +325,10 @@ def run_command_in_sandbox(
             ``run_exploit_terminal``, the shell funnel's caller).
         user: Container user ("" = backend default; otherwise a safe
             ``--user`` token such as ``root``).
+        targets: Pre-parsed destination list (single-parse threading: the
+            caller already ran the lock union over ``command``). When given,
+            ``collect_command_targets`` is skipped; the list is still run
+            through the manager scope gate below. None = parse here.
 
     Returns:
         ``(True, SandboxResult)`` on a contained execution (the sandbox
@@ -351,7 +356,7 @@ def run_command_in_sandbox(
     tool_value = _validate_tool_name(tool_name, default="run_exploit_terminal")
     user_value = _validate_user(user)
     _validate_cwd_host(cwd_host)
-    targets = collect_command_targets(command)
+    targets = list(targets) if targets is not None else collect_command_targets(command)
     _enforce_full_scope(manager, targets)
     target_ip = targets[0] if targets else ""
     cwd = _container_path_for_caller(manager, cwd_host, tool_name=tool_value)
@@ -375,6 +380,7 @@ def run_argv_in_sandbox(
     timeout: int = 300,
     cwd_host: Any = None,
     tool_name: str = "",
+    targets: list[str] | None = None,
 ) -> tuple[bool, Any]:
     """Argv-list variant for structured tools (web_scan, impacket, msfvenom...).
 
@@ -391,6 +397,9 @@ def run_argv_in_sandbox(
             container prefix (paths outside the workspace fail closed).
         tool_name: Calling MCP tool name for scope/audit (passed through;
             empty lets the manager audit fall back to ``sandbox.execute``).
+        targets: Pre-parsed command-derived destination list (single-parse
+            threading: skips ``collect_command_targets`` on ``command``;
+            ``target_ip`` is still merged at the head). None = parse here.
 
     Returns:
         ``(True, SandboxResult)`` on a contained execution;
@@ -428,7 +437,7 @@ def run_argv_in_sandbox(
     timeout_value = _validate_timeout(timeout)
     tool_value = _validate_tool_name(tool_name, default="")
     _validate_cwd_host(cwd_host)
-    targets = collect_command_targets(command_text) if command_text else []
+    targets = list(targets) if targets is not None else (collect_command_targets(command_text) if command_text else [])
     if target_text and target_text not in targets:
         targets.insert(0, target_text)
     primary = targets[0] if targets else target_text
