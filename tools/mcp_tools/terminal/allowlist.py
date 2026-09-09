@@ -15,6 +15,7 @@ from tools.opsec import OpsecManager
 from tools.validation_utils import extract_ips_from_command, is_private_or_local_target, is_target_in_allowlist
 
 __all__ = [
+    "_extract_lock_targets",
     "_is_union_entry_local",
     "_opsec_advisory_block",
     "_runtime_target_union",
@@ -200,6 +201,49 @@ def _opsec_advisory_block(sanitized_command: str, config: Any) -> str:
         return ""
 
 
+def _extract_lock_targets(command: str, *, include_scanner_targets: bool = True) -> list[str]:
+    """Single-parse union of every destination extractor the target-IP lock gates on.
+
+    One pass over the 3-extractor union (URL/dev-tcp/LHOST-RHOST destinations
+    + bare-IP backstop + scanner-verb targets) with endpoint-IP decode, so the
+    lock gate and downstream consumers (sandbox scope, loopback hints) share
+    one parse instead of re-running the extractors per call site.
+
+    Args:
+        command: Full shell command / script-body text (never truncated).
+        include_scanner_targets: Only ``False`` for Python-source scans
+            (``run_python_file``): the scanner-verb argv heuristic is built
+            for shell and misfires on Python source.
+
+    Returns:
+        Deduped, order-preserving destination tokens (decoded endpoint IPs
+        where decoding applies, else the raw token).
+
+    Gates:
+        None (pure extraction -- the lock gate consumes the result).
+
+    Side-effects:
+        None.
+    """
+    tokens: list[str] = []
+    for tok in _cmd_extract_destinations(command):
+        if tok not in tokens:
+            tokens.append(tok)
+    for ip in extract_ips_from_command(command):
+        if ip not in tokens:
+            tokens.append(ip)
+    if include_scanner_targets:
+        for tok in _extract_scanner_targets(command):
+            if tok not in tokens:
+                tokens.append(tok)
+    targets: list[str] = []
+    for tok in tokens:
+        for t in _cmd_endpoint_ips(tok) or [tok]:
+            if t and t not in targets:
+                targets.append(t)
+    return targets
+
+
 def _target_lock_block(
     command: str, config: Any, *, allow_empty: bool = False, include_scanner_targets: bool = True
 ) -> str | None:
@@ -281,17 +325,7 @@ def _target_lock_block(
             "name the destination literally so it can be checked against "
             "exploit.allowed_targets."
         )
-    _dest_tokens: list[str] = []
-    for _tok in _cmd_extract_destinations(command):
-        if _tok not in _dest_tokens:
-            _dest_tokens.append(_tok)
-    for _ip in extract_ips_from_command(command):
-        if _ip not in _dest_tokens:
-            _dest_tokens.append(_ip)
-    if include_scanner_targets:
-        for _tok in _extract_scanner_targets(command):
-            if _tok not in _dest_tokens:
-                _dest_tokens.append(_tok)
+    _dest_tokens = _extract_lock_targets(command, include_scanner_targets=include_scanner_targets)
     if not _dest_tokens and not allow_empty:
         # Fail closed: a target-touching free-text command that names no
         # destination cannot prove it stays inside the allowlist (bare
@@ -303,16 +337,15 @@ def _target_lock_block(
             "exploit.allowed_targets. (For local enumeration, declare scope "
             "first, e.g. 'echo <target-ip> & whoami & hostname'.)"
         )
-    for _tok in _dest_tokens:
-        _decoded = _cmd_endpoint_ips(_tok)
-        _targets = _decoded if _decoded else [_tok]
-        for _t in _targets:
-            if isinstance(_t, str) and _t.strip().lower() in _BIND_ALL_TOKENS:
-                continue
-            if not is_target_in_allowlist(_t, allowed_targets):
-                return (
-                    f"Target {_t} is not in the explicit allowlist. "
-                    f"Add it to config.yaml exploit.allowed_targets to authorize."
-                    f"{_env_widening_note(config)}"
-                )
+    # Tokens arrive endpoint-decoded from _extract_lock_targets (decode is
+    # idempotent, so no re-decode here -- this loop is the single parse).
+    for _t in _dest_tokens:
+        if isinstance(_t, str) and _t.strip().lower() in _BIND_ALL_TOKENS:
+            continue
+        if not is_target_in_allowlist(_t, allowed_targets):
+            return (
+                f"Target {_t} is not in the explicit allowlist. "
+                f"Add it to config.yaml exploit.allowed_targets to authorize."
+                f"{_env_widening_note(config)}"
+            )
     return None
