@@ -287,3 +287,39 @@ async def test_swarm_deep_error_emitter_mirrors(tmp_path):
     assert len(sink.events) == 1
     assert sink.events[0][1]["kind"] == "stuck_loop"
     assert (reports_dir / "errors.jsonl").is_file()
+
+
+# ── Service emitter (kind override) ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_service_emitter_preparation_kind(tmp_path):
+    from tools.run_service.tasks import _emit_service_deep_error
+
+    sink = _RecordingSink()
+    reports_dir = tmp_path / "run-p"
+    await _emit_service_deep_error(
+        sink,
+        reports_dir,
+        RuntimeError("recon boom"),
+        {"tool_name": "recon_first", "phase": "recon"},
+        kind="preparation",
+    )
+    assert len(sink.events) == 1
+    _, record = sink.events[0]
+    assert record["kind"] == "preparation"
+    assert record["tool"]["name"] == "recon_first"
+    # preparation is a traceback kind — the cause is preserved.
+    assert record["error"]["traceback"] is not None
+    row = json.loads((reports_dir / "errors.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert row["kind"] == "preparation"
+
+
+@pytest.mark.asyncio
+async def test_service_emitter_defaults_to_stuck_loop(tmp_path):
+    from tools.run_service.tasks import _emit_service_deep_error
+
+    sink = _RecordingSink()
+    reports_dir = tmp_path / "run-s2"
+    await _emit_service_deep_error(sink, reports_dir, RuntimeError("x"), {})
+    assert sink.events[0][1]["kind"] == "stuck_loop"

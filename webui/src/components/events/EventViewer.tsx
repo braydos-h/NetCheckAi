@@ -554,7 +554,7 @@ function DeepErrorRow({ event }: { event: RunEvent }) {
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-red-200/70">
           {phase && <span>phase:{phase}</span>}
           {round !== null && <span>round:{round}</span>}
-          {toolName && <span>tool:{toolName}</span>}
+          {toolName && <span>tool:{toolName}{action !== null ? ` #${action}` : ""}</span>}
           {errClass && <span>{errClass}</span>}
           {corrId && <span title="correlation id">corr:{corrId}</span>}
           {(traceback || phase || toolName) && (
