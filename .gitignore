@@ -48,7 +48,12 @@ secr.json
 !.env.example
 
 # Agent / editor-internal state (never commit)
-.claude/
+.claude/*
+# ...except the safety hooks: the pytest guard travels with the repo
+!.claude/hooks
+!.claude/settings.json
+.claude/hooks/*
+!.claude/hooks/guard-pytest.py
 
 # OS / editor junk
 .DS_Store

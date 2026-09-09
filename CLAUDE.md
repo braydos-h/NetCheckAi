@@ -427,6 +427,8 @@ The operator's laptop kills its desktop session when a single pytest run gets to
 Correct: `.venv/bin/python -m pytest tests/test_scope_gate.py -q -p no:cacheprovider -n 0`
 Banned: `.venv/bin/python -m pytest tests/ -n auto` ← crashes the machine
 
+Enforced by `.claude/hooks/guard-pytest.py` (PreToolUse hook in `.claude/settings.json`) — it blocks banned invocations before they run, so the rules hold even when the model forgets them.
+
 ## Things To Watch Out For
 
 - **`config.yaml` exploit.permission is `full_access` in the lab checked-in file (`config.yaml:61`) — schema default is also `full_access` (`tools/config/schema.py:150`); the *missing-key* fallback (`tools/cli_exploit_settings.py:13-30`) is `read_only` so a partial config never silently becomes live.** Do not change the lab default without updating `docs/safety-model.md` and README.
