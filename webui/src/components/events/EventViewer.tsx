@@ -525,6 +525,9 @@ function DeepErrorRow({ event }: { event: RunEvent }) {
   const round = typeof p.round === "number" ? p.round : null;
   const tool = p.tool as Record<string, unknown> | undefined;
   const toolName = typeof tool?.name === "string" ? tool.name : "";
+  // Numeric action joins this error to its ToolCallCard (corrIdOf groups
+  // request/start/result by action) — the visible error→tool link.
+  const action = typeof tool?.action === "number" && tool.action > 0 ? tool.action : null;
   const err = p.error as Record<string, unknown> | undefined;
   const errClass = typeof err?.class === "string" ? err.class : "";
   const traceback = typeof err?.traceback === "string" ? err.traceback : "";
