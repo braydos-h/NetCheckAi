@@ -411,6 +411,22 @@ searchsploit/metasploit/hydra/crackmapexec/impacket; Windows attacker = Python-o
 - `pyproject.toml` configures pytest with `asyncio_mode = "auto"` and `testpaths = ["tests"]`. Coverage is configured in `[tool.coverage.run]` with `source = ["tools", "main", "cli", "legacy"]`; run it the way CI does — `python3 -m coverage run -m pytest tests/` then `python3 -m coverage report` (pytest-cov is NOT a dependency, so `pytest --cov` fails).
 - Lint / type-check are CI-enforced repo-wide: `ruff check .` (0 errors) + `ruff format --check .` (0 diffs) and `mypy --follow-imports=skip tools` (~335 files, 0 errors with current `disable_error_code` masks; see `.github/workflows/ci.yml`). `pyproject.toml` has `ruff` line-length 120 `select = ["E","F","W","I"]` (`pyproject.toml:127-174`, with `ignore` + per-file-ignores documenting intentional patterns) and `mypy` configs with strict zero-disable tiers (`validation_utils`, `exceptions`, `mcp_shared`, `kernel.*`, `sandbox.*`). Keep security-sensitive diffs readable.
 
+## TEST-RUN RULES (operator hardware constraint — follow exactly)
+
+The operator's laptop kills its desktop session when a single pytest run gets too big. A full ~5000-test run in one command WILL log them out. These rules are mandatory:
+
+1. NEVER run the full suite in one command. No `pytest tests/` bare, ever.
+2. Run SLICES only: one test file at a time, or at most ~30 files per command.
+3. Always use `-n 0` (serial) or `-n 2` max. NEVER `-n auto`, `-n 4`, or higher.
+4. NEVER override the `-m` flag. The repo default deselects `integration` and `live_llm` tests on purpose (they spawn real Docker/Chromium). If you need one of those files, run that single file explicitly with `-m integration`.
+5. NEVER set `PYTEST_XDIST_AUTO_NUM_WORKERS` above 2.
+6. NEVER run full suites in parallel across sessions. One slice at a time.
+7. Full-suite verification is GitHub CI's job, not yours. You verify slices.
+8. If a run dies mid-way, DO NOT retry the whole thing. Report the last file that ran (check `~/pytest-crash-logs/`) and continue from the next file.
+
+Correct: `.venv/bin/python -m pytest tests/test_scope_gate.py -q -p no:cacheprovider -n 0`
+Banned: `.venv/bin/python -m pytest tests/ -n auto` ← crashes the machine
+
 ## Things To Watch Out For
 
 - **`config.yaml` exploit.permission is `full_access` in the lab checked-in file (`config.yaml:61`) — schema default is also `full_access` (`tools/config/schema.py:150`); the *missing-key* fallback (`tools/cli_exploit_settings.py:13-30`) is `read_only` so a partial config never silently becomes live.** Do not change the lab default without updating `docs/safety-model.md` and README.

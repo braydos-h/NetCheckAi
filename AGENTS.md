@@ -26,12 +26,13 @@ bp --self-test       # safe localhost smoke test
 bp                   # WebUI daemon + browser (default no-args); --menu for the terminal menu
 
 # Tests (~250 files in tests/, all mock subprocess/network — no live Nmap)
-python3 -m pytest tests/ -v                                              # full suite
-python3 -m pytest tests/ -q -n 2                                         # full suite, bounded parallelism for workstation stability
-python3 -m pytest tests/test_scope_gate.py -v                            # one file
-python3 -m pytest tests/test_recon_pipeline.py::TestClass::test_method   # one test
-python3 -m pytest tests/ -v -k "scope"                                   # by keyword
-python3 -m coverage run -m pytest tests/; python3 -m coverage report     # coverage (CI command; pytest-cov is not installed)
+python3 -m pytest tests/test_scope_gate.py -v -p no:cacheprovider -n 0   # one file (preferred)
+python3 -m pytest tests/test_recon_pipeline.py::TestClass::test_method -n 0  # one test
+# ── TEST-RUN RULES (operator laptop logs out on big runs — mandatory) ──
+# NEVER `pytest tests/` bare. Slices only: one file at a time, ~30 files max.
+# Always `-n 0` or `-n 2` max (never `-n auto`/4+); never override `-m`
+# (integration/live_llm deselected on purpose); never run suites in parallel
+# across sessions. Full-suite verification is CI's job. See CLAUDE.md §TEST-RUN RULES.
 
 # Lint (repo-wide, CI honest: 0 errors, 0 format diffs)
 python3 -m pip install -e ".[dev]"   # ruff + pytest + coverage + mypy + build + twine
