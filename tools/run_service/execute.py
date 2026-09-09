@@ -533,6 +533,7 @@ class ExecuteMixin:
                     request=request,
                     result=result,
                     event_sink=event_sink,
+                    reports_dir=reports_dir,
                 )
         except _EXC_GROUP_CATCH as exc:
             log_path = reports_dir / "session_error.log"
@@ -587,6 +588,13 @@ class ExecuteMixin:
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
             RunLog.detach()
+            # Deep Run Logs: flush the activity buffer so the run's final
+            # <10 audit rows survive (success AND error paths share this
+            # finally). Best-effort — a logging failure must not break teardown.
+            try:
+                activity.stop()
+            except Exception:  # noqa: BLE001 -- teardown only, never gates
+                pass
 
         # Telemetry.
         _tel = _telemetry_acc.snapshot()

@@ -133,6 +133,13 @@ export const RunOutcomeCard = memo(function RunOutcomeCard({
               Arts
             </Link>
           </Button>
+          {failed && (
+            <Button asChild size="sm" variant="outline" className="h-7 text-xs border-destructive/40 text-red-200">
+              <Link to={`/runs/${run.id}/artifacts?log=session_error.log`}>
+                View error log
+              </Link>
+            </Button>
+          )}
           {(finalTokens != null || finalCalls != null) && (
             <span className="ml-auto inline-flex items-center gap-1 text-[10px] leading-none text-muted-foreground">
               {finalTokens != null ? finalTokens.toLocaleString() : "—"} tok

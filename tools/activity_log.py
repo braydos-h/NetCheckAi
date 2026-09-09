@@ -76,7 +76,9 @@ class ActivityLog:
     # helpers
     # ------------------------------------------------------------------
     def _now(self) -> str:
-        return datetime.now(timezone.utc).strftime("%H:%M:%S")
+        # ISO-8601 UTC (not HH:MM:SS): a fixer-agent needs date + ordering to
+        # correlate activity.jsonl rows with events.jsonl / exploit_audit.jsonl.
+        return datetime.now(timezone.utc).isoformat()
 
     def _elapsed(self) -> str:
         elapsed = int(time.monotonic() - self._start)
@@ -179,7 +181,10 @@ class ActivityLog:
         pass
 
     def stop(self) -> None:
-        pass
+        # Flush buffered audit rows on shutdown: the 10-line buffer otherwise
+        # drops the run's final <10 lines — exactly the tail a fixer-agent
+        # needs when the agent gets stuck and errors out.
+        self._flush_audit()
 
     def __enter__(self) -> ActivityLog:
         self.start()
@@ -199,7 +204,10 @@ class ActivityLog:
     def tool_call(self, name: str, arguments: dict[str, Any], result: str = "") -> None:
         detail = f"Args: {json.dumps(arguments)}"
         if result:
-            detail += f" | Result: {result[:120]}"
+            # Deep Run Logs: keep failure output, not just 120 chars. The old
+            # clip hid exactly the error text a fixer-agent needs; 2000 chars
+            # stays bounded while preserving real failure context.
+            detail += f" | Result: {result[:2000]}"
         cat = name.replace("run_nmap_", "").replace("_", "_")
         self.log(cat, name, detail=detail)
 

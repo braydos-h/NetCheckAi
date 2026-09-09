@@ -511,6 +511,69 @@ function ConnectionStatus({
   );
 }
 
+/**
+ * Deep-error row (Deep Run Logs). Renders the one-line message plus an
+ * expander with the fixer-agent fields the backend already emits:
+ * kind/phase/round/tool/traceback/corr_id. Plain events without those
+ * fields fall back to the old message-only rendering.
+ */
+function DeepErrorRow({ event }: { event: RunEvent }) {
+  const [open, setOpen] = useState(false);
+  const p = (event.payload ?? {}) as Record<string, unknown>;
+  const kind = typeof p.kind === "string" ? p.kind : "";
+  const phase = typeof p.phase === "string" ? p.phase : "";
+  const round = typeof p.round === "number" ? p.round : null;
+  const tool = p.tool as Record<string, unknown> | undefined;
+  const toolName = typeof tool?.name === "string" ? tool.name : "";
+  const err = p.error as Record<string, unknown> | undefined;
+  const errClass = typeof err?.class === "string" ? err.class : "";
+  const traceback = typeof err?.traceback === "string" ? err.traceback : "";
+  const corrId = typeof p.corr_id === "string" ? p.corr_id : "";
+  const message =
+    typeof err?.message === "string" && err.message
+      ? err.message
+      : typeof p.message === "string"
+        ? p.message
+        : safeStringify(p);
+  const hasDeep = Boolean(kind || phase || round !== null || toolName || errClass || traceback || corrId);
+  return (
+    <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-red-200">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">{String(message)}</div>
+        {kind && (
+          <Badge variant="destructive" className="shrink-0 text-[10px] uppercase">
+            {kind}
+          </Badge>
+        )}
+      </div>
+      {hasDeep && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-red-200/70">
+          {phase && <span>phase:{phase}</span>}
+          {round !== null && <span>round:{round}</span>}
+          {toolName && <span>tool:{toolName}</span>}
+          {errClass && <span>{errClass}</span>}
+          {corrId && <span title="correlation id">corr:{corrId}</span>}
+          {(traceback || phase || toolName) && (
+            <button
+              type="button"
+              className="ml-auto underline underline-offset-2 hover:text-red-100"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {open ? "hide detail" : "show detail"}
+            </button>
+          )}
+        </div>
+      )}
+      {open && traceback && (
+        <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-[11px] leading-snug text-red-100/90">
+          {traceback}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function renderSimpleEvent(event: RunEvent, key: string): React.ReactNode {
   switch (event.type) {
     case "state":
@@ -666,12 +729,7 @@ function renderSimpleEvent(event: RunEvent, key: string): React.ReactNode {
         </div>
       );
     case "error":
-      return (
-        <div key={key} className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-red-200">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="whitespace-pre-wrap break-words">{String(event.payload.message ?? safeStringify(event.payload))}</div>
-        </div>
-      );
+      return <DeepErrorRow key={key} event={event} />;
     default:
       return (
         <div key={key} className="rounded-md bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">

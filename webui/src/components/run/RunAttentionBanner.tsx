@@ -11,6 +11,9 @@ interface RunAttentionBannerProps {
   /** True when the stream is open but silent past the watchdog threshold —
    *  the socket says "connected" yet nothing has arrived for a while. */
   stale?: boolean;
+  /** Count of error events this run (from deriveRun). A burst while active
+   *  means the agent is stuck erroring — surface it above the fold. */
+  errorCount?: number;
 }
 
 function scrollToPending() {
@@ -28,6 +31,7 @@ export const RunAttentionBanner = memo(function RunAttentionBanner({
   active,
   eventsStatus,
   stale = false,
+  errorCount = 0,
 }: RunAttentionBannerProps) {
   if (authError) {
     return (
@@ -65,6 +69,27 @@ export const RunAttentionBanner = memo(function RunAttentionBanner({
           <ArrowDown className="h-3.5 w-3.5" aria-hidden />
           Review now
         </Button>
+      </div>
+    );
+  }
+
+  // Deep Run Logs: an active run accumulating error events (stuck_loop /
+  // tool_error / circuit_open) is erroring, not just quiet — say so above
+  // the fold. The detail lives in the Errors filter + errors.jsonl artifact.
+  if (active && errorCount > 0) {
+    return (
+      <div
+        role="alert"
+        className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-red-200"
+      >
+        <AlertTriangle className="h-4 w-4 shrink-0 animate-pulse" aria-hidden />
+        <span>
+          Run is logging errors —{" "}
+          <span className="font-semibold">
+            {errorCount} error event{errorCount === 1 ? "" : "s"}
+          </span>
+          . Check the Errors filter or errors.jsonl for kind/phase/traceback.
+        </span>
       </div>
     );
   }

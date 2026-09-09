@@ -227,7 +227,7 @@ export function RunPage() {
   return (
     <div className="flex min-h-0 flex-col gap-2 p-2 xl:h-full xl:flex-1 xl:overflow-hidden">
       <RunCommandHeader run={runData} state={currentState as RunState} active={active} terminal={terminal} transportLabel={transportLabel} eventsStatus={events.status} derived={derived} onCancelRequest={() => setShowCancel(true)} cancelPending={cancel.isPending} onResume={resumeRun} resumePending={resume.isPending} />
-      <RunAttentionBanner authError={events.authError} pendingCount={pendingDecisions.length} active={active} eventsStatus={events.status} stale={events.stale} />
+      <RunAttentionBanner authError={events.authError} pendingCount={pendingDecisions.length} active={active} eventsStatus={events.status} stale={events.stale} errorCount={derived.errorEvents} />
       {(runData.request?.mode === "fast" || runData.preview?.mode === "fast" || (runData as unknown as Record<string, unknown>).mode === "fast") && <FastReconProgress events={events.events} />}
       <div className="flex min-h-0 flex-1 flex-col gap-2 xl:flex-row xl:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-2 xl:min-h-0 xl:overflow-hidden">

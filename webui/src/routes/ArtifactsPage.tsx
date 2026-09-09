@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft, FileText, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,11 @@ const ATTEMPT_LOGS = ["terminal.log", "python_run.log", "msf_output.log", "run_a
 
 export function ArtifactsPage() {
   const { runId } = useParams<{ runId: string }>();
-  const [tab, setTab] = useState("artifacts");
+  const [searchParams] = useSearchParams();
+  // Deep-link support: /runs/:id/artifacts?log=session_error.log opens the
+  // Logs tab with that log preselected (used by the failed-run card).
+  const deepLog = searchParams.get("log") ?? "";
+  const [tab, setTab] = useState(deepLog ? "logs" : "artifacts");
   const artifacts = useArtifacts(runId ?? null);
   const audit = useAudit(runId ?? null, tab === "audit");
   const workspace = useWorkspace(runId ?? null);
@@ -142,7 +146,7 @@ export function ArtifactsPage() {
         </TabsContent>
 
         <TabsContent value="logs">
-          <LogsPanel runId={runId ?? ""} attemptCandidates={attemptCandidates} />
+          <LogsPanel runId={runId ?? ""} attemptCandidates={attemptCandidates} initialLog={deepLog} />
         </TabsContent>
       </Tabs>
     </div>
@@ -217,8 +221,10 @@ interface LogsPanelProps {
   attemptCandidates: Array<{ target: string; attempt: string }>;
 }
 
-function LogsPanel({ runId, attemptCandidates }: LogsPanelProps) {
-  const [name, setName] = useState<string>(RUN_LOGS[0] ?? "");
+function LogsPanel({ runId, attemptCandidates, initialLog = "" }: LogsPanelProps & { initialLog?: string }) {
+  const [name, setName] = useState<string>(
+    [...RUN_LOGS, ...ATTEMPT_LOGS].includes(initialLog) ? initialLog : (RUN_LOGS[0] ?? ""),
+  );
   const [tail, setTail] = useState<number>(200);
   const [attempt, setAttempt] = useState<string>(attemptCandidates[0]?.attempt ?? "");
   const [target, setTarget] = useState<string>(attemptCandidates[0]?.target ?? "");

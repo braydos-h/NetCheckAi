@@ -46,6 +46,29 @@ from tools.swarm_bridge import SwarmMcpBridge
 ui = get_ui()
 
 
+async def _emit_swarm_deep_error(
+    event_sink: Any,
+    reports_dir: Path | None,
+    exc: BaseException,
+    ctx: dict[str, Any],
+) -> None:
+    """Best-effort stuck_loop record for swarm timeout/error. Never raises.
+
+    Lazy import keeps ``tools.api``/fastapi off the service's cold path;
+    ``emit_deep_error`` itself is fail-open, so this double-guards the run.
+    No-op when ``reports_dir`` is None (no run dir to mirror errors.jsonl to).
+    """
+    if reports_dir is None:
+        return
+    try:
+        from tools.api.deep_errors import emit_deep_error
+
+        run_id = reports_dir.name if isinstance(reports_dir, Path) else ""
+        await emit_deep_error(event_sink, run_id, kind="stuck_loop", exc=exc, ctx=dict(ctx), reports_dir=reports_dir)
+    except _EXC_GROUP_CATCH:
+        pass
+
+
 class TasksMixin:
     def _find_resume_match(self, reports_dir: Path, resume_key: str) -> Path | None:
         """Find a run subdir matching ``resume_key`` (name or session_id)."""
@@ -473,6 +496,8 @@ class TasksMixin:
                 return await asyncio.to_thread(swarm_loop.run, max_cycles)
             except _EXC_GROUP_CATCH as exc:
                 ui.error(f"Swarm campaign error: {exc}")
+                # Deep Run Logs: keep the traceback, not just str(exc).
+                await _emit_swarm_deep_error(event_sink, reports_dir, exc, {"tool_name": "swarm_campaign"})
                 return {"error": str(exc)}
 
         swarm_task = asyncio.create_task(_run_swarm())
@@ -578,6 +603,7 @@ class TasksMixin:
         request: RunRequest,
         result: dict[str, Any],
         event_sink: EventSink,
+        reports_dir: Path | None = None,
     ) -> dict[str, Any]:
         from tools.cli_exploit_settings import _compute_swarm_timeout
 
@@ -621,9 +647,24 @@ class TasksMixin:
             ui.error(f"Swarm task timed out ({int(swarm_timeout)}s). Cancelling.")
             swarm_task.cancel()
             result["swarm_result"] = {"error": "timeout"}
+            # Deep Run Logs: a timed-out swarm is a stuck run — persist the
+            # full stall context (timeout budget, snapshot) so the fixer-agent
+            # sees it in errors.jsonl, not just {"error": "timeout"}.
+            await _emit_swarm_deep_error(
+                event_sink,
+                reports_dir,
+                asyncio.TimeoutError(f"swarm task timed out after {int(swarm_timeout)}s"),
+                {"tool_name": "swarm_campaign", "response_excerpt": _read_swarm_snapshot(swarm_workspace)},
+            )
         except _EXC_GROUP_CATCH as exc:
             ui.error(f"Swarm task error: {exc}")
             result["swarm_result"] = {"error": str(exc)}
+            await _emit_swarm_deep_error(
+                event_sink,
+                reports_dir,
+                exc,
+                {"tool_name": "swarm_campaign"},
+            )
         finally:
             if not swarm_task.done():
                 swarm_task.cancel()

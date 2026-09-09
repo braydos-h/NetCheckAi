@@ -30,6 +30,7 @@ _ARTIFACT_WHITELIST = frozenset(
         "activity.jsonl",
         "exploit_audit.jsonl",
         "events.jsonl",
+        "errors.jsonl",
         "session_error.log",
         "recon_first_error.log",
     }
@@ -651,6 +652,36 @@ def create_router(auth: BearerAuth, persistence: ApiPersistence, run_manager: Ru
             except Exception as exc:
                 chain_valid, chain_reason = False, f"verification error: {exc}"
         return {"records": records, "chain_valid": chain_valid, "chain_reason": chain_reason}
+
+    # ── Deep error records (Deep Run Logs) ────────────────────────────────────
+
+    @router.get("/runs/{run_id}/errors")
+    async def get_errors(
+        run_id: str,
+        kind: str = Query("", description="Filter by deep-error kind (e.g. stuck_loop, tool_error)"),
+        tail: int = Query(200, ge=1, le=2000),
+        auth: str = Depends(_require_auth),
+    ) -> dict[str, Any]:
+        """Read the run's deep-error records (errors.jsonl), newest last.
+
+        Each record carries kind/phase/round/tool/traceback/corr_id so a later
+        fixer-agent can diagnose a stuck run without replaying the transcript.
+        200 with an empty list when the run wrote no deep errors; 404 for
+        unknown runs. The file is also in the artifact whitelist.
+        """
+        if _ps().get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        errors_path = _run_dir(run_id) / "errors.jsonl"
+        records: list[dict[str, Any]] = list(_read_jsonl_dicts(errors_path)) if errors_path.is_file() else []
+        kinds = sorted({str(r.get("kind") or "") for r in records if r.get("kind")})
+        if kind:
+            records = [r for r in records if str(r.get("kind") or "") == kind]
+        return {
+            "run_id": run_id,
+            "records": records[-tail:],
+            "total_records": len(records),
+            "kinds": kinds,
+        }
 
     # ── Per-run sandbox summary (WebUI Sandbox tab) ─────────────────────────────
 

@@ -26,6 +26,7 @@ DEEP_ERROR_KINDS = frozenset(
         "tool_error",
         "preparation",
         "hook_silent",
+        "stuck_loop",
     }
 )
 
@@ -35,7 +36,12 @@ _TRACEBACK_KINDS = frozenset({"model_call", "mcp_transport", "parse", "tool_erro
 def build_deep_error_record(run_id: str, *, kind: str, exc: BaseException, ctx: dict[str, Any]) -> dict[str, Any]:
     """Build a DeepErrorRecord dict (pure sync builder: no I/O)."""
     if ctx.get("traceback") or kind in _TRACEBACK_KINDS:
-        tb_text: str | None = sanitize("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[:8000])
+        # Same mask→truncate→sanitize pipeline as the message field: the raw
+        # traceback embeds str(exc), so skipping _mask_secret_content would
+        # leak key=value secrets into errors.jsonl that the message masks.
+        tb_text: str | None = sanitize(
+            _mask_secret_content("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))[:8000]
+        )
     else:
         tb_text = None
     return {
