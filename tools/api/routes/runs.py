@@ -286,7 +286,11 @@ def create_router(auth: BearerAuth, persistence: ApiPersistence, run_manager: Ru
                         "allow_dns": network.get("allow_dns"),
                     }
         counts["total"] = counts["completed"] + counts["failed"] + counts["timed_out"]
-        summary["executions"] = {"attempts": counts.pop("started"), **counts}
+        # Collapsed audit (no manager "started" rows on new trails): attempts
+        # is the max of started-rows and terminal-rows. Legacy trails carry
+        # 1:1 started:terminal rows (max = either); new trails carry terminal
+        # rows only (max = total). Never the sum (that would double-count).
+        summary["executions"] = {"attempts": max(counts.pop("started"), counts["total"]), **counts}
         events_path = _run_dir(run_id) / "events.jsonl"
         blocks: list[dict[str, Any]] = []
         for event in _read_jsonl_dicts(events_path):

@@ -245,7 +245,12 @@ def _extract_lock_targets(command: str, *, include_scanner_targets: bool = True)
 
 
 def _target_lock_block(
-    command: str, config: Any, *, allow_empty: bool = False, include_scanner_targets: bool = True
+    command: str,
+    config: Any,
+    *,
+    allow_empty: bool = False,
+    include_scanner_targets: bool = True,
+    targets: list[str] | None = None,
 ) -> str | None:
     """Return a block reason if ``command`` touches a host outside the target allowlist, else None.
 
@@ -271,6 +276,12 @@ def _target_lock_block(
             shell, and on Python source it misfires (an ``nmap -sV`` mention in
             a comment plus ``s.settimeout(...)`` extracts ``s.settimeout`` as a
             "target"). Literal-IP / URL / socket.connect gates still apply.
+        targets: Pre-parsed destination list (single-parse threading: the
+            caller already ran :func:`_extract_lock_targets` over the FULL
+            ``command``). When given, extraction is skipped and the SAME list
+            is gated (plus returned for reuse via :func:`_check_lock_targets`
+            when the caller needs it). None = parse here. ``command`` is
+            still required (never None) for the empty/``file:`` pre-gates.
 
     Returns:
         ``None`` when every extracted destination is allowlisted (or exempt
@@ -325,7 +336,11 @@ def _target_lock_block(
             "name the destination literally so it can be checked against "
             "exploit.allowed_targets."
         )
-    _dest_tokens = _extract_lock_targets(command, include_scanner_targets=include_scanner_targets)
+    _dest_tokens = (
+        list(targets)
+        if targets is not None
+        else _extract_lock_targets(command, include_scanner_targets=include_scanner_targets)
+    )
     if not _dest_tokens and not allow_empty:
         # Fail closed: a target-touching free-text command that names no
         # destination cannot prove it stays inside the allowlist (bare

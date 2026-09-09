@@ -214,6 +214,7 @@ registration, `—` = neither (no target touch).
 | Tool | Params | Target | Lock |
 |---|---|---|---|
 | `run_exploit_terminal` | `command` | free text | lock via `_target_lock_block` + audit |
+| `run_exploit_terminals` | `commands` (1-20) | free text (joined) | lock via `_target_lock_block` on joined text + audit — one sandbox round-trip |
 | `run_as_root` | `command` | free text | lock via `_target_lock_block` + audit |
 | `apt_install` | `packages` | — | audit |
 | `pip_install` | `packages` | — | audit |

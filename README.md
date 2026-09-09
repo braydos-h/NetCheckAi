@@ -388,7 +388,7 @@ Orchestrated via `tools/swarm/orchestrator.py` with a shared blackboard, battle 
 
 | Family | Capability |
 |--------|-----------|
-| `terminal` | Shell execution with target-IP allowlist enforcement and OPSEC advisory |
+| `terminal` | Shell execution with target-IP allowlist enforcement and OPSEC advisory (`run_exploit_terminals` batches probes into one round-trip) |
 | `workspace` | `write_python_file` / `run_python_file` / `read_workspace_file` (lab build: operator-box filesystem is unrestricted) |
 | `recon` | `check_os`, `quick_scan`, `run_full_recon`, `get_service_fingerprint` |
 | `attack_modules` + `planning` + `synthesis` + `adaptive` + `campaign` | `run_attack_module`, `craft_exploit`, `mutate_exploit`, plan DAG, prerequisite synthesis, campaign control |
