@@ -33,7 +33,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Parser check (PowerShell 5.1 + 7)
         shell: powershell
@@ -45,7 +45,7 @@ jobs:
             exit 1
           }
           Write-Host "Parser: OK (Windows PowerShell $($PSVersionTable.PSVersion))"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: PSScriptAnalyzer (errors + unused params)
@@ -92,8 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Static contract tests
