@@ -29,7 +29,7 @@ dependencies = [
     # `ollama` extra below. Selecting `models.provider: opencode_go` (or
     # `chatgpt`) needs NO Ollama package or daemon at runtime.
     "httpx>=0.27.0",
-    "mcp>=1.27.0,<2.0.0",
+    "mcp>=1.27.0,<3.0.0",
     "PyYAML>=6.0.2",
     "uvicorn>=0.30.0",
     "starlette>=0.37.0",
