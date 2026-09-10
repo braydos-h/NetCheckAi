@@ -13,7 +13,7 @@
 # playwright>=1.44  # browser extra only — uncomment/install explicitly.
  ollama>=0.6.1
 httpx>=0.27.0
-mcp>=1.27.0,<2.0.0
+mcp>=1.27.0,<3.0.0
 PyYAML>=6.0.2
 uvicorn>=0.30.0
 starlette>=0.37.0
